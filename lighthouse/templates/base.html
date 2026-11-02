@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Lighthouse{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="{{ url_for('index') }}"><span class="beam" aria-hidden="true"></span>Lighthouse</a>
+    <form method="post" action="{{ url_for('refresh') }}">
+      <button class="btn ghost" type="submit" title="Pull all configured boards now">Refresh boards</button>
+    </form>
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

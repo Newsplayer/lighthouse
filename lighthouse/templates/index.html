@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<form class="filters" method="get">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search title, location, team…" autofocus>
+  <select name="company">
+    <option value="">All companies</option>
+    {% for c in companies %}<option {% if c == company %}selected{% endif %}>{{ c }}</option>{% endfor %}
+  </select>
+  <label class="check"><input type="checkbox" name="hide_ghosts" value="1" {% if hide_ghosts %}checked{% endif %}> Hide possible ghosts</label>
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+<p class="meta">
+  {{ jobs|length }} shown · {{ stats.unique_roles or 0 }} unique roles from {{ stats.total or 0 }} postings
+  {% if stats.last_fetch %}· last fetch {{ stats.last_fetch[:16].replace('T', ' ') }} UTC{% endif %}
+</p>
+
+{% if not jobs %}
+  <div class="empty">
+    <p>No jobs yet. Click <strong>Refresh boards</strong> or run <code>python -m lighthouse fetch</code>.</p>
+  </div>
+{% endif %}
+
+<ul class="jobs">
+{% for j in jobs %}
+  {% set ghosts = j.ghost_reasons|fromjson %}
+  <li class="job">
+    <div class="job-main">
+      <a class="title" href="{{ url_for('job', uid=j.uid) }}">{{ j.title }}</a>
+      <div class="sub">
+        <span class="company">{{ j.company }}</span>
+        {% if j.location %}<span>· {{ j.location }}</span>{% endif %}
+        {% for d in (j.departments|fromjson)[:1] %}<span>· {{ d }}</span>{% endfor %}
+      </div>
+      <div class="tags">
+        <span class="tag">{{ j.source }}</span>
+        {% if j.posted_at %}<span class="tag">posted {{ j.posted_at[:10] }}</span>{% endif %}
+        {% if j.dup_count > 1 %}<span class="tag">listed {{ j.dup_count }}×</span>{% endif %}
+        {% for g in ghosts %}<span class="tag warn" title="Possible ghost job">⚠ {{ g }}</span>{% endfor %}
+      </div>
+    </div>
+    <a class="btn" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+  </li>
+{% endfor %}
+</ul>
+{% endblock %}

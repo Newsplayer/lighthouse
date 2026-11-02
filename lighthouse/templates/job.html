@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} · Lighthouse{% endblock %}
+{% block content %}
+<a class="back" href="{{ url_for('index') }}">← All jobs</a>
+<article class="detail">
+  <header>
+    <h1>{{ job.title }}</h1>
+    <p class="sub">{{ job.company }}{% if job.location %} · {{ job.location }}{% endif %}</p>
+    <div class="tags">
+      <span class="tag">{{ job.source }} / {{ job.source_board }}</span>
+      {% if job.posted_at %}<span class="tag">posted {{ job.posted_at[:10] }}</span>{% endif %}
+      {% if job.updated_at %}<span class="tag">updated {{ job.updated_at[:10] }}</span>{% endif %}
+      {% for g in job.ghost_reasons|fromjson %}<span class="tag warn">⚠ {{ g }}</span>{% endfor %}
+      {% if not job.active %}<span class="tag warn">no longer listed</span>{% endif %}
+    </div>
+    <p><a class="btn" href="{{ job.url }}" target="_blank" rel="noopener noreferrer">Apply on original posting ↗</a></p>
+    {% if dups %}
+    <p class="meta">Also listed at:
+      {% for d in dups %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.source }}/{{ d.source_board }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+  </header>
+  <section class="body">
+    {% if body %}{{ body }}{% else %}<p class="meta">No description copy stored — use the link above.</p>{% endif %}
+  </section>
+</article>
+{% endblock %}

@@ -1,0 +1,20 @@
+# Which job boards Lighthouse pulls from.
+# Greenhouse: the "board token" is the slug in a company's board URL,
+#   e.g. job-boards.greenhouse.io/<token>  ->  token = "<token>"
+
+[settings]
+# Postings older than this many days get a "possible ghost" flag (not hidden).
+ghost_age_days = 60
+request_timeout_seconds = 20
+
+[[greenhouse]]
+token = "anthropic"
+
+[[greenhouse]]
+token = "stripe"
+
+[[greenhouse]]
+token = "airbnb"
+
+[[greenhouse]]
+token = "discord"

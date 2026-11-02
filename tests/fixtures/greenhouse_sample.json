@@ -1,0 +1,26 @@
+{
+  "jobs": [
+    {
+      "id": 1001,
+      "title": "Senior Data Analyst",
+      "company_name": "Acme",
+      "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/1001",
+      "location": {"name": "Austin, TX"},
+      "departments": [{"id": 1, "name": "Analytics"}],
+      "first_published": "2026-10-20T09:00:00-05:00",
+      "updated_at": "2026-10-25T09:00:00-05:00",
+      "content": "&lt;p&gt;Join our &lt;strong&gt;analytics&lt;/strong&gt; team.&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;a href=&quot;javascript:alert(2)&quot;&gt;bad&lt;/a&gt;&lt;a href=&quot;https://acme.com&quot;&gt;site&lt;/a&gt;"
+    },
+    {
+      "id": 1002,
+      "title": "General Application - Talent Pool",
+      "company_name": "Acme",
+      "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/1002",
+      "location": {"name": "Remote"},
+      "departments": [],
+      "first_published": "2025-01-01T00:00:00Z",
+      "updated_at": "2025-01-01T00:00:00Z",
+      "content": "&lt;p&gt;Always hiring.&lt;/p&gt;"
+    }
+  ]
+}
