@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Profile · Lighthouse{% endblock %}
+{% block content %}
+<h1>Profile</h1>
+<p class="meta">Stored only in your local database. Eligibility rules use the structured fields; fit tiers use the text.</p>
+{% if saved %}<p class="ok">Saved. Eligibility has been rechecked for every posting.</p>{% endif %}
+<form method="post" class="panel form">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>What you're looking for, in plain words
+    <textarea name="about" rows="3" placeholder="Senior data analyst roles in fintech or health, remote or Austin. Want SQL/Python-heavy work, not dashboard-only.">{{ p.about }}</textarea></label>
+  <label>Resume (paste text)
+    <textarea name="resume" rows="10">{{ p.resume }}</textarea></label>
+  <div class="grid2">
+    <label>Years of experience <input type="text" inputmode="numeric" name="years_experience" value="{{ p.years_experience if p.years_experience is not none else '' }}"></label>
+    <label>Highest degree
+      <select name="degree">{% for v, l in [('none', 'None / other'), ('bachelors', "Bachelor's"), ('masters', "Master's"), ('phd', 'PhD')] %}
+        <option value="{{ v }}" {% if p.degree == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+    <label>Locations (comma-separated; include “Remote” if remote roles anywhere are fine)
+      <input type="text" name="locations" value="{{ p.locations|join(', ') }}" placeholder="Austin, New York, Remote"></label>
+    <label>Minimum salary (annual) <input type="text" inputmode="numeric" name="min_salary" value="{{ p.min_salary or '' }}"></label>
+    <fieldset><legend>Workplace</legend>
+      {% for w in ('remote', 'hybrid', 'onsite') %}<label class="check"><input type="checkbox" name="workplaces" value="{{ w }}" {% if w in p.workplaces %}checked{% endif %}> {{ w|capitalize }}</label>{% endfor %}
+    </fieldset>
+    <fieldset><legend>Work authorization</legend>
+      <label class="check"><input type="checkbox" name="needs_sponsorship" value="1" {% if p.needs_sponsorship %}checked{% endif %}> I need visa sponsorship</label>
+      <label class="check"><input type="checkbox" name="us_citizen" value="1" {% if p.us_citizen %}checked{% endif %}> I'm a U.S. citizen</label>
+    </fieldset>
+    <label>Security clearance held
+      <select name="clearance">{% for v, l in [('none', 'None'), ('public_trust', 'Public Trust'), ('secret', 'Secret'), ('ts', 'Top Secret'), ('ts_sci', 'TS/SCI')] %}
+        <option value="{{ v }}" {% if p.clearance == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>
+  </div>
+  <button class="btn" type="submit">Save profile</button>
+</form>
+
+{% if preview %}
+<section class="panel">
+  <h2>What Claude would receive</h2>
+  <p class="meta">This is the exact request body for one fit check (using your newest posting). Your name, email, phone,
+    links and street address are stripped from the resume before anything is sent. Nothing is sent until you click
+    “Assess fit” or ask from your own Claude app.</p>
+  <pre class="payload">{{ preview }}</pre>
+</section>
+{% endif %}
+{% endblock %}

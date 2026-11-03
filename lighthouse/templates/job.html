@@ -2,26 +2,122 @@
 {% block title %}{{ job.title }} · Lighthouse{% endblock %}
 {% block content %}
 <a class="back" href="{{ url_for('index') }}">← All jobs</a>
+{% set ghosts = job.ghost_reasons|fromjson %}
+{% set inelig = job.elig_reasons|fromjson %}
 <article class="detail">
   <header>
     <h1>{{ job.title }}</h1>
-    <p class="sub">{{ job.company }}{% if job.location %} · {{ job.location }}{% endif %}</p>
+    <p class="sub">{{ job.company }}{% for l in (job.cluster_locations|fromjson)[:6] %} · {{ l }}{% endfor %}</p>
     <div class="tags">
       <span class="tag">{{ job.source }} / {{ job.source_board }}</span>
-      {% if job.posted_at %}<span class="tag">posted {{ job.posted_at[:10] }}</span>{% endif %}
-      {% if job.updated_at %}<span class="tag">updated {{ job.updated_at[:10] }}</span>{% endif %}
-      {% for g in job.ghost_reasons|fromjson %}<span class="tag warn">⚠ {{ g }}</span>{% endfor %}
+      {% if job.workplace_eff %}<span class="tag">{{ job.workplace_eff|capitalize }}</span>{% endif %}
+      {% if job.pay_max_annual %}<span class="tag">{{ job.pay_min_annual|money(job.pay_currency) }}–{{ job.pay_max_annual|money(job.pay_currency) }} / yr</span>{% endif %}
       {% if not job.active %}<span class="tag warn">no longer listed</span>{% endif %}
+      {% if mark %}<span class="tag ok">{{ mark }}</span>{% endif %}
     </div>
-    <p><a class="btn" href="{{ job.url }}" target="_blank" rel="noopener noreferrer">Apply on original posting ↗</a></p>
-    {% if dups %}
-    <p class="meta">Also listed at:
-      {% for d in dups %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.source }}/{{ d.source_board }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
-    </p>
-    {% endif %}
+    <div class="cta">
+      <a class="btn" href="{{ job.url }}" target="_blank" rel="noopener noreferrer">Apply on original posting ↗</a>
+      <form method="post" action="{{ url_for('mark') }}" class="marks">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="uid" value="{{ job.uid }}">
+        <input type="hidden" name="next" value="{{ request.full_path }}">
+        {% if mark %}<button class="link" name="status" value="">Clear “{{ mark }}”</button>
+        {% else %}<button class="link" name="status" value="saved">Save</button>
+        <button class="link" name="status" value="applied">Mark applied</button>
+        <button class="link" name="status" value="hidden">Hide</button>{% endif %}
+      </form>
+    </div>
   </header>
+
+  <div class="panels">
+    <section class="panel">
+      <h2>Fit</h2>
+      {% if fit %}
+        <p><span class="tier tier-{{ fit.tier|lower }}">{{ fit.tier }}</span> {{ fit.summary }}</p>
+        <ul class="reqs">
+        {% for r in fit.requirements|fromjson %}
+          <li class="req {{ r.status }}"><span class="mark-{{ r.status }}">{{ {'met': '✓', 'missing': '✕', 'unclear': '?'}[r.status] }}</span>
+            <strong>{{ r.requirement }}</strong>{% if r.kind == 'preferred' %} <em class="meta">(preferred)</em>{% endif %}
+            {% if r.reason %}<br><span class="meta">{{ r.reason }}</span>{% endif %}</li>
+        {% endfor %}
+        </ul>
+        <p class="meta">Judged by {{ fit.model }} ({{ fit.method }}) on {{ fit.at|day }}.</p>
+      {% else %}
+        <p class="meta">Not assessed yet. Use “Assess fit” on the job list, or ask your Claude app via the MCP tools.</p>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>Eligibility</h2>
+      {% if job.elig is none %}<p class="meta">Set up your <a href="{{ url_for('profile_page') }}">profile</a> to check.</p>
+      {% elif inelig %}<ul class="plain">{% for r in inelig %}<li class="bad">✕ {{ r }}</li>{% endfor %}</ul>
+      {% else %}<p class="ok">✓ Nothing in the posting rules you out.</p>{% endif %}
+      <h3>Extracted from the posting <span class="meta">({{ method or 'not yet' }})</span></h3>
+      <dl class="facts">
+        {% set labels = {'salary': 'Salary', 'workplace': 'Workplace', 'yoe_min': 'Years asked', 'clearance': 'Clearance',
+                         'citizenship': 'Citizenship', 'degree': 'Degree', 'visa': 'Visa sponsorship'} %}
+        {% for key, label in labels.items() %}
+          {% set fld = extracted.get(key) or {} %}
+          <dt>{{ label }}</dt>
+          <dd>{% if fld.value is none %}<span class="meta">unknown</span>
+              {% elif key == 'salary' %}{{ fld.value.min|money(fld.value.currency) }}–{{ fld.value.max|money(fld.value.currency) }} / {{ fld.value.interval }}
+              {% elif fld.value is sameas true %}required{% else %}{{ fld.value }}{% endif %}
+              {% if fld.evidence %}<br><q class="evidence">{{ fld.evidence }}</q>{% endif %}</dd>
+        {% endfor %}
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h2>Ghost check</h2>
+      {% if ghosts|length >= settings.ghost_hide_signals %}<p class="bad">Likely ghost — {{ ghosts|length }} signals. Hidden from the list by default.</p>
+      {% elif ghosts|length >= settings.ghost_flag_signals %}<p class="warn-ink">Possible ghost — {{ ghosts|length }} signals.</p>
+      {% elif ghosts %}<p>One signal (not enough to flag on its own).</p>
+      {% else %}<p class="ok">✓ No ghost signals.</p>{% endif %}
+      {% if ghosts %}<ul class="plain">{% for g in ghosts %}<li>{{ g }}</li>{% endfor %}</ul>{% endif %}
+      <h3>History</h3>
+      <ul class="plain meta">
+        <li>Earliest seen: {{ job.effective_first_seen|day }}{% if job.posted_at %} · ATS posted date {{ job.posted_at|day }}{% endif %}</li>
+        <li>Lighthouse first saw this posting {{ job.first_seen|day }}, last saw it {{ job.last_seen|day }}</li>
+        {% if job.repost_count %}<li>Reposted {{ job.repost_count }}×</li>{% endif %}
+        {% for e in events[-8:] %}<li>{{ e.at|day }} · {{ e.kind }} · {{ e.uid.split(':', 1)[1] }}</li>{% endfor %}
+      </ul>
+      {% if members|length > 1 %}
+      <h3>Same role, other listings</h3>
+      <ul class="plain">
+        {% for m in members if m.uid != job.uid %}
+          <li><a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">{{ m.source }}/{{ m.source_board }}</a>
+            · {{ m.location }} · {{ 'open' if m.active else 'closed ' ~ (m.closed_at|day) }} · since {{ (m.posted_at or m.first_seen)|day }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="panel">
+      <h2>Sponsorship history</h2>
+      {% if sponsor %}
+        <p class="meta">Matched employer names: {{ sponsor.names|join(', ') }}. Past filings don't promise sponsorship for this role.</p>
+        {% if sponsor.lca %}
+        <h3>DOL labor condition applications</h3>
+        <table class="mini"><tr><th>FY</th><th>Filed</th><th>Certified</th><th>Wage levels I–IV</th></tr>
+          {% for r in sponsor.lca %}<tr><td>{{ r.fiscal_year }}</td><td>{{ r.f }}</td><td>{{ r.c }}</td><td>{{ r.l1 }} / {{ r.l2 }} / {{ r.l3 }} / {{ r.l4 }}</td></tr>{% endfor %}
+        </table>
+        <p class="meta">A certified LCA is a prerequisite, not proof a petition was filed or approved.</p>
+        {% endif %}
+        {% if sponsor.uscis %}
+        <h3>USCIS H-1B petitions</h3>
+        <table class="mini"><tr><th>FY</th><th>Initial approved / denied</th><th>Continuing approved / denied</th></tr>
+          {% for r in sponsor.uscis %}<tr><td>{{ r.fiscal_year }}</td><td>{{ r.ia }} / {{ r.idn }}</td><td>{{ r.ca }} / {{ r.cd }}</td></tr>{% endfor %}
+        </table>
+        {% endif %}
+      {% else %}
+        <p class="meta">No matching records. Import DOL / USCIS files on the <a href="{{ url_for('sponsorship_page') }}">Sponsorship</a> page.</p>
+      {% endif %}
+    </section>
+  </div>
+
   <section class="body">
-    {% if body %}{{ body }}{% else %}<p class="meta">No description copy stored — use the link above.</p>{% endif %}
+    <h2>Posting (local copy)</h2>
+    {% if body %}{{ body }}{% else %}<p class="meta">No description copy stored yet — use the link above.</p>{% endif %}
   </section>
 </article>
 {% endblock %}

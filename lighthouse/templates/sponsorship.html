@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Sponsorship · Lighthouse{% endblock %}
+{% block content %}
+<h1>Sponsorship data</h1>
+<section class="panel">
+  <p>Lighthouse can show each employer's visa-sponsorship history from free government data. Download the files, then import them here.</p>
+  <ul class="plain">
+    <li><strong>DOL LCA disclosure data</strong> (quarterly .xlsx): <a href="https://www.dol.gov/agencies/eta/foreign-labor/performance" target="_blank" rel="noopener noreferrer">dol.gov › Foreign Labor › Performance data</a> → “LCA Programs (H-1B, H-1B1, E-3)”.</li>
+    <li><strong>USCIS H-1B Employer Data Hub</strong> (annual .csv): <a href="https://www.uscis.gov/tools/reports-and-studies/h-1b-employer-data-hub" target="_blank" rel="noopener noreferrer">uscis.gov › H-1B Employer Data Hub</a>.</li>
+  </ul>
+  <form method="post" action="{{ url_for('sponsorship_import') }}" enctype="multipart/form-data" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="file" name="files" multiple accept=".csv,.tsv,.txt,.xlsx" aria-label="Files">
+    <button class="btn" type="submit">Import</button>
+  </form>
+  <p class="meta">Or drop files into <code>{{ folder }}</code> and click Import with no file selected. Large LCA spreadsheets take a few minutes.</p>
+  {% if results %}<ul class="plain">{% for r in results %}
+    <li class="{{ 'bad' if r.error else 'ok' }}">{{ r.file }} — {{ r.error or r.skipped or (r.kind ~ ': ' ~ r.rows ~ ' rows, ' ~ r.employers ~ ' employers') }}</li>{% endfor %}</ul>{% endif %}
+</section>
+<section class="panel">
+  <h2>Imported</h2>
+  {% if files %}
+  <table class="mini"><tr><th>File</th><th>Type</th><th>Rows</th><th>Imported</th></tr>
+    {% for f in files %}<tr><td>{{ f.file_key }}</td><td>{{ f.kind|upper }}</td><td>{{ '{:,}'.format(f.rows) }}</td><td>{{ f.imported_at[:10] }}</td></tr>{% endfor %}
+  </table>
+  <p class="meta">{{ matched }} companies on your boards have matching records. If a company's legal name differs (e.g. a board called “Acme” files as “Acme Labs Holdings”), add <code>sponsor_name = "..."</code> to its <code>[[boards]]</code> entry.</p>
+  {% else %}<p class="meta">Nothing imported yet.</p>{% endif %}
+</section>
+{% endblock %}

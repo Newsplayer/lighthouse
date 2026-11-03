@@ -1,0 +1,195 @@
+{
+ "lever": [
+  {
+   "id": "6ed76ce8-aaaa",
+   "text": "Data Analyst",
+   "hostedUrl": "https://jobs.lever.co/acme/6ed76ce8-aaaa",
+   "applyUrl": "https://jobs.lever.co/acme/6ed76ce8-aaaa/apply",
+   "createdAt": 1786469891368,
+   "categories": {
+    "commitment": "Full-time",
+    "location": "Austin, TX",
+    "team": "Analytics",
+    "allLocations": [
+     "Austin, TX",
+     "Remote - US"
+    ]
+   },
+   "workplaceType": "hybrid",
+   "description": "<div>Join us.</div>",
+   "lists": [
+    {
+     "text": "Requirements",
+     "content": "<li>3+ years of experience with SQL</li>"
+    }
+   ],
+   "additional": "<div>We are unable to sponsor visas.</div>",
+   "salaryRange": {
+    "min": 90000,
+    "max": 120000,
+    "currency": "USD",
+    "interval": "per-year-salary"
+   }
+  }
+ ],
+ "ashby": {
+  "apiVersion": "1",
+  "jobs": [
+   {
+    "id": "34413f8d",
+    "title": " Security Engineer, Cloud",
+    "location": "New York, NY (HQ)",
+    "isListed": true,
+    "isRemote": true,
+    "workplaceType": "Hybrid",
+    "department": "Engineering",
+    "team": "Backend",
+    "employmentType": "FullTime",
+    "publishedAt": "2026-04-07T17:12:35.753+00:00",
+    "jobUrl": "https://jobs.ashbyhq.com/acme/34413f8d",
+    "descriptionHtml": "<p>About Acme</p>",
+    "secondaryLocations": [
+     {
+      "location": "Remote (US)"
+     }
+    ],
+    "compensation": {
+     "compensationTiers": [
+      {
+       "components": [
+        {
+         "compensationType": "EquityPercentage",
+         "interval": "NONE",
+         "minValue": null,
+         "maxValue": null
+        },
+        {
+         "compensationType": "Salary",
+         "interval": "1 YEAR",
+         "currencyCode": "USD",
+         "minValue": 211400,
+         "maxValue": 290600
+        }
+       ]
+      }
+     ]
+    }
+   },
+   {
+    "id": "unlisted",
+    "title": "Hidden",
+    "isListed": false
+   }
+  ]
+ },
+ "workable": {
+  "name": "Hugging Face",
+  "description": "",
+  "jobs": [
+   {
+    "shortcode": "81B46579FE",
+    "title": "ML Engineer - EMEA Remote",
+    "url": "https://apply.workable.com/j/81B46579FE",
+    "city": "Paris",
+    "state": "Île-de-France",
+    "country": "France",
+    "telecommuting": true,
+    "department": "Open Source",
+    "employment_type": "Full-time",
+    "published_on": "2026-05-29",
+    "description": "<p>Build things.</p>",
+    "locations": [
+     {
+      "country": "France",
+      "city": "Paris",
+      "region": "Île-de-France",
+      "hidden": false
+     }
+    ]
+   }
+  ]
+ },
+ "smartrecruiters_list": {
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 1,
+  "content": [
+   {
+    "id": "744000159462147",
+    "name": "Quality Auditor",
+    "releasedDate": "2026-11-03T18:01:30.753Z",
+    "company": {
+     "identifier": "Acme",
+     "name": "Acme Group"
+    },
+    "department": {},
+    "function": {
+     "id": "m",
+     "label": "Manufacturing"
+    },
+    "typeOfEmployment": {
+     "label": "Full-time"
+    },
+    "location": {
+     "city": "San Luis Potosí",
+     "country": "mx",
+     "remote": false,
+     "hybrid": false,
+     "fullLocation": "San Luis Potosí, S.L.P., Mexico"
+    },
+    "ref": "https://api.smartrecruiters.com/v1/companies/Acme/postings/744000159462147"
+   }
+  ]
+ },
+ "smartrecruiters_detail": {
+  "id": "744000159462147",
+  "postingUrl": "https://jobs.smartrecruiters.com/Acme/744000159462147-quality-auditor",
+  "jobAd": {
+   "sections": {
+    "companyDescription": {
+     "title": "About",
+     "text": "<p>Acme makes parts.</p>"
+    },
+    "jobDescription": {
+     "title": "Role",
+     "text": "<p>Audit quality.</p>"
+    }
+   }
+  }
+ },
+ "recruitee": {
+  "offers": [
+   {
+    "id": 2804401,
+    "title": "AML Manager, Austria",
+    "status": "published",
+    "company_name": "bunq",
+    "location": "Vienna, Wien, Austria",
+    "locations": [
+     {
+      "name": "Vienna",
+      "city": "Vienna",
+      "state": "Wien",
+      "country": "Austria"
+     }
+    ],
+    "remote": false,
+    "hybrid": true,
+    "on_site": false,
+    "salary": {
+     "min": null,
+     "max": null,
+     "period": null,
+     "currency": null
+    },
+    "published_at": "2026-10-30 16:32:58 UTC",
+    "updated_at": "2026-11-02 10:18:50 UTC",
+    "department": "Risk",
+    "careers_url": "https://careers.bunq.com/o/aml-manager-austria",
+    "description": "<p>At bunq…</p>",
+    "requirements": "<ul><li>You live in Austria</li></ul>",
+    "employment_type_code": "fulltime_permanent"
+   }
+  ]
+ }
+}

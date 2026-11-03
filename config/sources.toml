@@ -1,20 +1,64 @@
-# Which job boards Lighthouse pulls from.
-# Greenhouse: the "board token" is the slug in a company's board URL,
-#   e.g. job-boards.greenhouse.io/<token>  ->  token = "<token>"
+# Lighthouse configuration. Every setting is optional; defaults are shown.
+#
+# Boards: add them here, on the website's Sources page, or with
+#   python -m lighthouse add https://jobs.lever.co/<slug>
+# Supported ATSs and where the slug comes from:
+#   greenhouse       job-boards.greenhouse.io/<slug>
+#   lever            jobs.lever.co/<slug>
+#   ashby            jobs.ashbyhq.com/<slug>
+#   workable         apply.workable.com/<slug>
+#   smartrecruiters  jobs.smartrecruiters.com/<CompanyId>   (case-sensitive)
+#   recruitee        <slug>.recruitee.com
+# Optional per board: company = "Display Name", sponsor_name = "Legal name used in DOL/USCIS filings"
 
 [settings]
-# Postings older than this many days get a "possible ghost" flag (not hidden).
-ghost_age_days = 60
+ghost_age_days = 60              # open longer than this = one ghost signal
+ghost_flag_signals = 2           # flag a possible ghost at this many signals (never on one alone)
+ghost_hide_signals = 3           # hide likely ghosts by default at this many (one click shows them)
+repost_gap_days = 7              # near-identical posting this much later = a repost
 request_timeout_seconds = 20
+per_host_requests_per_second = 4 # politeness limit per ATS host, shared by all workers
+fetch_workers = 8                # boards fetched in parallel
+fetch_interval_hours = 6         # automatic refresh while the site is open (0 = off)
+max_detail_calls_per_board = 400 # SmartRecruiters: description calls per run; the rest fill in next run
+inactive_content_retention_days = 180
+yoe_slack_years = 2              # "asks 5+ years" still counts as eligible with 3
 
-[[greenhouse]]
-token = "anthropic"
+[claude]
+extract_model = "claude-haiku-5-5"
+fit_model = "claude-sonnet-5-5"
+monthly_cap_usd = 5.0
+batch_threshold = 20             # this many requests or more use the Batch API (half price)
 
-[[greenhouse]]
-token = "stripe"
+[[boards]]
+ats = "greenhouse"
+slug = "anthropic"
 
-[[greenhouse]]
-token = "airbnb"
+[[boards]]
+ats = "greenhouse"
+slug = "stripe"
 
-[[greenhouse]]
-token = "discord"
+[[boards]]
+ats = "greenhouse"
+slug = "airbnb"
+
+[[boards]]
+ats = "greenhouse"
+slug = "discord"
+
+[[boards]]
+ats = "lever"
+slug = "palantir"
+
+[[boards]]
+ats = "ashby"
+slug = "ramp"
+company = "Ramp"
+
+[[boards]]
+ats = "workable"
+slug = "huggingface"
+
+[[boards]]
+ats = "recruitee"
+slug = "bunq"

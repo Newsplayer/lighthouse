@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from html import escape
 from html.parser import HTMLParser
 
@@ -58,3 +59,42 @@ def sanitize_html(raw: str) -> str:
     parser.feed(raw or "")
     parser.close()
     return "".join(parser.out)
+
+
+_BLOCK = {"p", "br", "li", "div", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "blockquote", "ul", "ol"}
+
+
+class _Text(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.out: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _BLOCK:
+            self.out.append("\n- " if tag == "li" else "\n")
+
+    def handle_endtag(self, tag):
+        if tag in _BLOCK:
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        self.out.append(data)
+
+
+@lru_cache(maxsize=2048)
+def html_to_text(html: str) -> str:
+    """Plain text from (already sanitized) HTML, for search, similarity and extraction.
+    Cached: clustering and extraction convert the same descriptions back to back."""
+    parser = _Text()
+    parser.feed(html or "")
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.out).splitlines())
+    text, blank = [], False
+    for line in lines:
+        if line:
+            text.append(line)
+            blank = False
+        elif not blank and text:
+            text.append("")
+            blank = True
+    return "\n".join(text).strip()

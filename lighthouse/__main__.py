@@ -1,16 +1,29 @@
 """CLI:
-    python -m lighthouse start    # one step: fetch if empty, pick a free port, open browser, serve
-    python -m lighthouse fetch    # pull all configured boards
-    python -m lighthouse serve [--port 5000]
+    python -m lighthouse start              # one step: fetch if empty, pick a free port, open browser, serve
+    python -m lighthouse serve [--port N]   # website + scheduled fetches
+    python -m lighthouse fetch              # pull all enabled boards
+    python -m lighthouse add URL|FILE ...   # add boards (ATS links, careers pages, ats:slug, or a file of them)
+    python -m lighthouse boards             # list boards and their status
+    python -m lighthouse reprocess          # re-run clustering, extraction, ghost and eligibility on everything
+    python -m lighthouse visa import FILE…  # import DOL LCA / USCIS H-1B hub files (or data/visa/ if none given)
+    python -m lighthouse claude extract|fit [--limit N]   # optional Claude passes (uses your API key)
+    python -m lighthouse claude poll        # collect finished batches
+    python -m lighthouse key set|clear      # store / remove your Anthropic API key in the OS keychain
+    python -m lighthouse mcp                # MCP server (stdio) for your own Claude app
 """
 
+from __future__ import annotations
+
 import argparse
+import getpass
 import logging
 import socket
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 
-from . import db, fetch
+from . import config, db, fetch
 
 
 def _free_port(host: str, preferred: int, tries: int = 50) -> int:
@@ -26,27 +39,57 @@ def _free_port(host: str, preferred: int, tries: int = 50) -> int:
 
 
 def _serve(host: str, port: int, open_browser: bool) -> None:
+    from . import scheduler
     from .web import create_app
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        raise SystemExit("Lighthouse only serves on this computer (127.0.0.1).")
+    conn = db.connect()
+    if fetch.needs_reprocess(conn):
+        print("Upgrading your job database (one time, takes a moment)...")
+        fetch.postprocess(conn)
+    conn.close()
     url = f"http://{host}:{port}"
     print(f"\n  Lighthouse is running at {url}\n  Close this window or press Ctrl+C to stop.\n")
+    scheduler.start()
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=[url]).start()
-    create_app().run(host=host, port=port, debug=False)
+    create_app().run(host=host, port=port, debug=False, threaded=True)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="lighthouse")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="pull all configured job boards into the local DB")
+    sub.add_parser("fetch", help="pull all enabled job boards into the local DB")
     for name, help_text in (("serve", "run the local website"),
                             ("start", "fetch if empty, then serve and open the browser")):
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--port", type=int, default=5000)
         p.add_argument("--host", default="127.0.0.1")
         p.add_argument("--no-browser", action="store_true", help="don't open a browser tab")
+    p = sub.add_parser("add", help="add boards from URLs, careers pages, ats:slug, or a text file of them")
+    p.add_argument("items", nargs="+")
+    p.add_argument("--no-check", action="store_true", help="don't test-fetch each board first")
+    sub.add_parser("boards", help="list boards")
+    sub.add_parser("reprocess", help="recompute clusters, extraction, ghost scores and eligibility")
+    p = sub.add_parser("visa", help="sponsorship data")
+    p.add_argument("action", choices=["import"])
+    p.add_argument("files", nargs="*")
+    p.add_argument("--force", action="store_true", help="re-import files already imported")
+    p = sub.add_parser("claude", help="optional Claude passes")
+    p.add_argument("action", choices=["extract", "fit", "poll"])
+    p.add_argument("--limit", type=int, default=25)
+    p = sub.add_parser("key", help="manage your Anthropic API key")
+    p.add_argument("action", choices=["set", "clear"])
+    sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     args = parser.parse_args()
 
+    if args.cmd == "mcp":  # stdout is the protocol channel: log to stderr only
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+        from .mcp_server import serve
+        serve()
+        return
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     if args.cmd == "fetch":
         for r in fetch.run():
             print(r)
@@ -54,12 +97,74 @@ def main() -> None:
         _serve(args.host, args.port, open_browser=not args.no_browser)
     elif args.cmd == "start":
         conn = db.connect()
+        db.sync_config_boards(conn, config.load().boards)
         empty = not db.stats(conn)["total"]
         conn.close()
         if empty:
             print("First run: pulling jobs from your boards (this takes a few seconds)...")
             fetch.run()
         _serve(args.host, _free_port(args.host, args.port), open_browser=not args.no_browser)
+    elif args.cmd == "add":
+        from .boards import add_many
+        lines = []
+        for item in args.items:
+            p = Path(item)
+            lines += p.read_text(encoding="utf-8").splitlines() if p.is_file() else [item]
+        conn = db.connect()
+        results = add_many(conn, lines, origin="cli", check=not args.no_check)
+        for r in results:
+            print(f"  ✕ {r['input']}: {r['error']}" if "error" in r else
+                  f"  ✓ {r['ats']}:{r['slug']}" + (f" ({r['count']} postings)" if r["count"] is not None else ""))
+        added = [(r["ats"], r["slug"]) for r in results if "error" not in r]
+        conn.close()
+        if added:
+            print("Fetching the new boards...")
+            fetch.run(only=added)
+    elif args.cmd == "boards":
+        conn = db.connect()
+        db.sync_config_boards(conn, config.load().boards)
+        for b in db.list_boards(conn):
+            state = "off" if not b["enabled"] else ("error: " + b["last_error"][:60]) if b["last_error"] else "ok"
+            print(f"  {b['ats']:16} {b['slug']:30} {b['job_count'] or 0:>6}  {state}")
+    elif args.cmd == "reprocess":
+        conn = db.connect()
+        fetch.postprocess(conn)
+        print("Done.")
+    elif args.cmd == "visa":
+        from . import sponsors
+        conn = db.connect()
+        results = ([sponsors.import_file(conn, f, force=args.force) for f in args.files]
+                   if args.files else sponsors.import_folder(conn))
+        for r in results:
+            print(" ", r)
+    elif args.cmd == "claude":
+        from . import claude_api
+        from . import profile as profile_mod
+        cfg = config.load()
+        conn = db.connect()
+        if args.action == "poll":
+            n = claude_api.poll_batches(conn, cfg)
+            if n:
+                fetch.refresh_derived(conn, cfg)
+            print(f"{n} batch(es) collected.")
+            return
+        if args.action == "fit":
+            prof = profile_mod.load(conn)
+            rows = claude_api.fit_candidates(conn, profile_mod.fit_hash(prof), None, args.limit,
+                                             cfg.settings.ghost_hide_signals)
+        else:
+            rows = claude_api.extraction_candidates(conn, None, args.limit)
+        print(claude_api.run(conn, cfg, args.action, rows))
+        if args.action == "extract":
+            fetch.refresh_derived(conn, cfg)
+    elif args.cmd == "key":
+        from . import claude_api
+        if args.action == "set":
+            claude_api.set_key(getpass.getpass("Anthropic API key (input hidden): "))
+            print("Saved to your OS keychain.")
+        else:
+            claude_api.clear_key()
+            print("Removed.")
 
 
 if __name__ == "__main__":

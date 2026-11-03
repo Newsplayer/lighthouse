@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Sources · Lighthouse{% endblock %}
+{% block content %}
+<h1>Sources</h1>
+<section class="panel">
+  <h2>Add boards</h2>
+  <p class="meta">Paste one per line: a job-board link (<code>jobs.lever.co/palantir</code>, <code>jobs.ashbyhq.com/ramp</code>),
+    a company careers page (Lighthouse looks for an embedded board), or <code>ats:slug</code>.
+    Supported: {% for k, c in ats.items() %}{{ c.label }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+  <form method="post" action="{{ url_for('sources_add') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <textarea name="urls" rows="5" placeholder="https://jobs.lever.co/palantir&#10;https://jobs.ashbyhq.com/ramp&#10;smartrecruiters:BoschGroup"></textarea>
+    <button class="btn" type="submit">Check and add</button>
+  </form>
+  {% if results %}
+  <ul class="plain">
+    {% for r in results %}
+      {% if r.error %}<li class="bad">✕ {{ r.input }} — {{ r.error }}</li>
+      {% else %}<li class="ok">✓ {{ r.ats }}:{{ r.slug }} — {{ r.count }} postings. Fetching now.</li>{% endif %}
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Boards ({{ boards|length }})</h2>
+  <table class="grid">
+    <tr><th>ATS</th><th>Board</th><th>Postings</th><th>Last fetch</th><th>Status</th><th></th></tr>
+    {% for b in boards %}
+    <tr class="{% if not b.enabled %}dim{% endif %}">
+      <td>{{ ats[b.ats].label if b.ats in ats else b.ats }}</td>
+      <td>{{ b.slug }}{% if b.company %} <span class="meta">({{ b.company }})</span>{% endif %}</td>
+      <td>{{ b.job_count if b.job_count is not none else '—' }}</td>
+      <td>{{ (b.last_fetch or '')[:16].replace('T', ' ') }}</td>
+      <td>{% if b.last_error %}<span class="bad" title="{{ b.last_error }}">error</span>{% elif b.last_ok %}<span class="ok">ok</span>{% else %}—{% endif %}</td>
+      <td>
+        <form method="post" action="{{ url_for('sources_toggle') }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="ats" value="{{ b.ats }}"><input type="hidden" name="slug" value="{{ b.slug }}">
+          <button class="link" name="enabled" value="{{ 0 if b.enabled else 1 }}">{{ 'Disable' if b.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="meta">Boards in <code>config/sources.toml</code> are added automatically; disabling one here keeps it off.</p>
+</section>
+{% endblock %}

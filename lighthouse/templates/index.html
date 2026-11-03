@@ -1,46 +1,145 @@
 {% extends "base.html" %}
 {% block content %}
 <form class="filters" method="get">
-  <input type="search" name="q" value="{{ q }}" placeholder="Search title, location, team…" autofocus>
-  <select name="company">
-    <option value="">All companies</option>
-    {% for c in companies %}<option {% if c == company %}selected{% endif %}>{{ c }}</option>{% endfor %}
-  </select>
-  <label class="check"><input type="checkbox" name="hide_ghosts" value="1" {% if hide_ghosts %}checked{% endif %}> Hide possible ghosts</label>
-  <button class="btn" type="submit">Filter</button>
+  <input type="hidden" name="view" value="{{ f.view }}">
+  <div class="row">
+    <input type="search" name="q" value="{{ f.q }}" placeholder="Search title, company, description…" aria-label="Search">
+    <input type="text" name="location" value="{{ f.location }}" placeholder="Location" aria-label="Location" class="short">
+    <button class="btn" type="submit">Filter</button>
+  </div>
+  <div class="row small">
+    <select name="company" aria-label="Company">
+      <option value="">All companies</option>
+      {% for c in companies %}<option {% if c == f.company %}selected{% endif %}>{{ c }}</option>{% endfor %}
+    </select>
+    <select name="workplace" aria-label="Workplace">
+      <option value="">Any workplace</option>
+      {% for w in ('remote', 'hybrid', 'onsite') %}<option value="{{ w }}" {% if w == f.workplace %}selected{% endif %}>{{ w|capitalize }}</option>{% endfor %}
+    </select>
+    <input type="text" inputmode="numeric" name="min_salary" value="{{ f.min_salary|int if f.min_salary else '' }}" placeholder="Min salary / yr" aria-label="Minimum salary" class="tiny">
+    <input type="text" inputmode="numeric" name="max_yoe" value="{{ f.max_yoe if f.max_yoe is not none else '' }}" placeholder="Max yrs exp." aria-label="Maximum years of experience asked" class="tiny">
+    <select name="visa" aria-label="Visa sponsorship">
+      <option value="">Visa: any</option>
+      <option value="not_no" {% if f.visa == 'not_no' %}selected{% endif %}>Doesn't rule out sponsorship</option>
+      <option value="sponsors" {% if f.visa == 'sponsors' %}selected{% endif %}>Sponsors (posting or history)</option>
+    </select>
+    <select name="tier" aria-label="Fit">
+      <option value="">Any fit</option>
+      {% for t in ('Strong', 'Strong+Possible', 'Possible', 'Weak') %}<option {% if t == f.tier %}selected{% endif %}>{{ t }}</option>{% endfor %}
+    </select>
+    <select name="sort" aria-label="Sort">
+      <option value="newest">Newest first</option>
+      <option value="fit" {% if f.sort == 'fit' %}selected{% endif %}>Best fit first</option>
+      <option value="salary" {% if f.sort == 'salary' %}selected{% endif %}>Highest pay first</option>
+    </select>
+    {% if profile_set %}
+    <select name="elig" aria-label="Eligibility">
+      <option value="1">Eligible only</option>
+      <option value="0" {% if not f.eligible_only %}selected{% endif %}>Include ineligible</option>
+    </select>
+    {% endif %}
+    <label class="check"><input type="checkbox" name="ghosts" value="1" {% if f.show_ghosts %}checked{% endif %}> Show likely ghosts</label>
+  </div>
 </form>
 
+<nav class="tabs" aria-label="Lists">
+  {% set tabs = [('all', 'All'), ('new', 'New since last visit'), ('saved', 'Saved'), ('applied', 'Applied'), ('hidden', 'Hidden')] %}
+  {% for key, label in tabs %}
+    <a href="{{ qs(view=key) }}" {% if f.view == key %}aria-current="page"{% endif %}>{{ label }}
+      {% if key == 'new' and new_count %}<span class="count">{{ new_count }}</span>{% endif %}
+      {% if key in marks %}<span class="count">{{ marks[key] }}</span>{% endif %}
+    </a>
+  {% endfor %}
+</nav>
+
 <p class="meta">
-  {{ jobs|length }} shown · {{ stats.unique_roles or 0 }} unique roles from {{ stats.total or 0 }} postings
+  {{ total }} roles{% if page > 1 %} · page {{ page }} of {{ pages }}{% endif %}
+  · {{ stats.unique_roles or 0 }} unique from {{ stats.total or 0 }} postings
+  {% if stats.hidden_ghosts and not f.show_ghosts %}· {{ stats.hidden_ghosts }} likely ghosts hidden (<a href="{{ qs(ghosts=1) }}">show</a>){% endif %}
   {% if stats.last_fetch %}· last fetch {{ stats.last_fetch[:16].replace('T', ' ') }} UTC{% endif %}
 </p>
+{% if not profile_set %}
+  <p class="hint">Add a <a href="{{ url_for('profile_page') }}">profile</a> to filter out roles you can't apply to and to get fit tiers.</p>
+{% endif %}
 
 {% if not jobs %}
   <div class="empty">
-    <p>No jobs yet. Click <strong>Refresh boards</strong> or run <code>python -m lighthouse fetch</code>.</p>
+    {% if stats.total %}<p>Nothing matches these filters.</p>
+    {% else %}<p>No jobs yet. Add boards on <a href="{{ url_for('sources_page') }}">Sources</a>, then click <strong>Refresh boards</strong>.</p>{% endif %}
   </div>
 {% endif %}
 
 <ul class="jobs">
 {% for j in jobs %}
   {% set ghosts = j.ghost_reasons|fromjson %}
-  <li class="job">
+  {% set locs = j.cluster_locations|fromjson %}
+  {% set inelig = j.elig_reasons|fromjson %}
+  <li class="job{% if j.elig == 0 %} dim{% endif %}">
     <div class="job-main">
-      <a class="title" href="{{ url_for('job', uid=j.uid) }}">{{ j.title }}</a>
+      <div class="title-row">
+        {% if j.fit_tier %}<span class="tier tier-{{ j.fit_tier|lower }}" title="{{ j.fit_summary }}">{{ j.fit_tier }}</span>{% endif %}
+        <a class="title" href="{{ url_for('job', uid=j.uid) }}">{{ j.title }}</a>
+      </div>
       <div class="sub">
         <span class="company">{{ j.company }}</span>
-        {% if j.location %}<span>· {{ j.location }}</span>{% endif %}
-        {% for d in (j.departments|fromjson)[:1] %}<span>· {{ d }}</span>{% endfor %}
+        {% if locs %}<span>· {{ locs[0] }}{% if locs|length > 1 %} +{{ locs|length - 1 }} more{% endif %}</span>{% endif %}
+        {% if j.workplace_eff %}<span>· {{ j.workplace_eff|capitalize }}</span>{% endif %}
+        {% if j.pay_max_annual %}<span>· {{ j.pay_min_annual|money(j.pay_currency) }}{% if j.pay_max_annual != j.pay_min_annual %}–{{ j.pay_max_annual|money(j.pay_currency) }}{% endif %}</span>{% endif %}
       </div>
       <div class="tags">
+        {% if f.since and j.effective_first_seen and j.effective_first_seen > f.since %}<span class="tag new">new</span>{% endif %}
         <span class="tag">{{ j.source }}</span>
-        {% if j.posted_at %}<span class="tag">posted {{ j.posted_at[:10] }}</span>{% endif %}
-        {% if j.dup_count > 1 %}<span class="tag">listed {{ j.dup_count }}×</span>{% endif %}
-        {% for g in ghosts %}<span class="tag warn" title="Possible ghost job">⚠ {{ g }}</span>{% endfor %}
+        <span class="tag" title="Earliest date this role was seen, including reposts">since {{ j.effective_first_seen|day }}</span>
+        {% if j.yoe_min %}<span class="tag">{{ j.yoe_min }}+ yrs</span>{% endif %}
+        {% if j.visa == 'no' %}<span class="tag">no sponsorship</span>{% elif j.visa == 'yes' %}<span class="tag ok">sponsors visas</span>{% endif %}
+        {% if j.cluster_count > 1 %}<span class="tag" title="Same role listed more than once">listed {{ j.cluster_count }}×</span>{% endif %}
+        {% if j.ghost_score >= settings.ghost_flag_signals %}
+          <span class="tag warn" title="{{ ghosts|join('; ') }}">⚠ possible ghost: {{ ghosts|join(', ') }}</span>
+        {% elif ghosts %}
+          <span class="tag" title="One signal alone doesn't flag a ghost">{{ ghosts[0] }}</span>
+        {% endif %}
+        {% for r in inelig %}<span class="tag bad">✕ {{ r }}</span>{% endfor %}
       </div>
     </div>
-    <a class="btn" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+    <div class="actions">
+      <a class="btn" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+      <form method="post" action="{{ url_for('mark') }}" class="marks">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="uid" value="{{ j.uid }}">
+        <input type="hidden" name="next" value="{{ request.full_path }}">
+        {% if j.mrank %}
+          <button class="link" name="status" value="">{{ {3: 'Applied', 2: 'Saved', 1: 'Hidden'}[j.mrank] }} · undo</button>
+        {% else %}
+          <button class="link" name="status" value="saved">Save</button>
+          <button class="link" name="status" value="applied">Applied</button>
+          <button class="link" name="status" value="hidden">Hide</button>
+        {% endif %}
+      </form>
+    </div>
   </li>
 {% endfor %}
 </ul>
+
+{% if pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  {% if page > 1 %}<a href="{{ qs(page=page - 1) }}">← Previous</a>{% endif %}
+  <span>Page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a href="{{ qs(page=page + 1) }}">Next →</a>{% endif %}
+</nav>
+{% endif %}
+
+{% set unjudged = jobs|selectattr('fit_tier', 'none')|rejectattr('elig', 'equalto', 0)|list %}
+{% if profile_set and unjudged %}
+<form method="post" action="{{ url_for('claude_run') }}" class="fit-run">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="purpose" value="fit">
+  <input type="hidden" name="limit" value="{{ unjudged|length }}">
+  <input type="hidden" name="next" value="{{ request.full_path }}">
+  {% for j in unjudged %}<input type="hidden" name="uid" value="{{ j.uid }}">{% endfor %}
+  <button class="btn secondary" type="submit" {% if not has_key %}disabled title="Add an API key on the Claude page, or use your own Claude app via MCP"{% endif %}>
+    Assess fit for the {{ unjudged|length }} unrated roles on this page
+  </button>
+  <span class="meta">Ineligible and hidden-ghost roles are skipped. Spend is capped on the <a href="{{ url_for('claude_page') }}">Claude</a> page.</span>
+</form>
+{% endif %}
 {% endblock %}
