@@ -29,7 +29,10 @@ ALLOWED_HOSTS = (
     "apply.workable.com",
     "api.smartrecruiters.com",
     "*.recruitee.com",
+    "*.myworkdayjobs.com",
     "api.anthropic.com",
+    "github.com",                  # the shared job index (release files of the [index] repo)
+    "*.githubusercontent.com",     # where GitHub serves those files from
 )
 
 USER_AGENT = f"Lighthouse/{__version__} (personal job aggregator; local)"

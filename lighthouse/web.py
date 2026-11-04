@@ -18,7 +18,7 @@ from markupsafe import Markup
 from werkzeug.utils import secure_filename
 
 from . import boards as boards_mod
-from . import claude_api, config, db, extract, fetch, net, sponsors
+from . import claude_api, config, db, extract, fetch, geo, net, sponsors
 from . import profile as profile_mod
 from .sources import SOURCES
 
@@ -36,8 +36,26 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
     def conn():
         return db.connect(db_path)
 
+    _cfg_cache: dict = {}
+
     def cfg():
-        return config.load(config_path)
+        """Config is re-read only when sources.toml or a board list changes."""
+        base = Path(config_path)
+        files = [base] + sorted((base.parent / config.BOARD_LISTS_DIR).glob("*.csv"))
+        stamp = tuple((str(p), p.stat().st_mtime_ns) for p in files if p.exists())
+        if _cfg_cache.get("stamp") != stamp:
+            _cfg_cache.update(stamp=stamp, cfg=config.load(config_path))
+        return _cfg_cache["cfg"]
+
+    _facets: dict = {}
+
+    def facets(c, hide_at):
+        """Company/source lists and totals change only when data changes: cache per data generation."""
+        key = (db.generation(c), hide_at)
+        if _facets.get("key") != key:
+            _facets.update(key=key, companies=db.companies(c), sources=db.sources_in_use(c),
+                           stats=db.stats(c, hide_at))
+        return _facets
 
     @app.before_request
     def guard():
@@ -59,7 +77,8 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
 
     @app.context_processor
     def globals_():
-        return {"csrf": app.config["CSRF"], "fetch_status": fetch.STATUS, "claude_status": claude_api.STATUS}
+        return {"csrf": app.config["CSRF"], "fetch_status": fetch.STATUS, "claude_status": claude_api.STATUS,
+                "reader": cfg().reader}
 
     @app.template_filter("fromjson")
     def fromjson(value):
@@ -93,7 +112,9 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
         return db.Filters(
             q=args.get("q", "").strip(), company=args.get("company", ""), source=args.get("source", ""),
             location=args.get("location", "").strip(), workplace=args.get("workplace", ""),
-            min_salary=num("min_salary"), max_yoe=num("max_yoe", int), visa=args.get("visa", ""),
+            min_salary=num("min_salary"), yoe_lo=num("yoe_lo", int), yoe_hi=num("yoe_hi", int),
+            max_yoe=num("max_yoe", int), yoe_unknown=args.get("yoe_unknown", "1") == "1", visa=args.get("visa", ""),
+            countries=() if args.get("anywhere") == "1" else tuple(prof.get("countries") or ()),
             eligible_only=args.get("elig", "1" if prof_set else "0") == "1",
             show_ghosts=args.get("ghosts") == "1", view=args.get("view", "all"), tier=args.get("tier", ""),
             sort=args.get("sort", "newest"), ghost_hide_at=settings.ghost_hide_signals,
@@ -104,11 +125,13 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
         now = datetime.now(timezone.utc)
         v = db.get_meta(c, "visit", {}) or {}
         last = v.get("last")
-        if not last or now - datetime.fromisoformat(last) > timedelta(minutes=30):
+        last_dt = datetime.fromisoformat(last) if last else None
+        if not last_dt or now - last_dt > timedelta(minutes=30):
             v = {"prev": last, "last": now.isoformat(timespec="seconds")}
-        else:
+            db.set_meta(c, "visit", v)
+        elif now - last_dt > timedelta(minutes=5):  # don't write on every page view
             v["last"] = now.isoformat(timespec="seconds")
-        db.set_meta(c, "visit", v)
+            db.set_meta(c, "visit", v)
         return v.get("prev")
 
     @app.get("/")
@@ -121,13 +144,15 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
         page = max(1, request.args.get("page", 1, type=int))
         jobs, total = db.list_jobs(c, f, page=page, per_page=PER_PAGE)
         args = {k: v for k, v in request.args.items() if k != "page"}
+        fc = facets(c, s.ghost_hide_signals)
         ctx = dict(jobs=jobs, total=total, f=f, page=page, pages=max(1, -(-total // PER_PAGE)),
                    args=args, qs=lambda **kw: "?" + urlencode({**args, **kw}),
-                   companies=db.companies(c), sources=db.sources_in_use(c),
-                   stats=db.stats(c, s.ghost_hide_signals), marks=db.mark_counts(c),
+                   companies=fc["companies"], sources=fc["sources"], stats=fc["stats"], marks=db.mark_counts(c),
                    profile_set=profile_mod.is_set(prof), settings=s, has_key=bool(claude_api.get_key()),
-                   new_count=db.list_jobs(c, db.Filters(view="new", since=f.since, ghost_hide_at=s.ghost_hide_signals,
-                                                        eligible_only=f.eligible_only), 1, 1)[1] if f.since else 0)
+                   scope=prof.get("countries") or [], scope_names=[dict(geo.CHOICES).get(x, x) for x in prof.get("countries") or []],
+                   new_count=db.count_jobs(c, db.Filters(view="new", since=f.since, ghost_hide_at=s.ghost_hide_signals,
+                                                         eligible_only=f.eligible_only, countries=f.countries))
+                   if f.since else 0)
         c.close()
         return render_template("index.html", **ctx)
 
@@ -170,17 +195,44 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
 
     # ------------------------------------------------------------ sources
 
+    def readers_cant_edit():
+        if cfg().reader:
+            abort(403, "This copy reads the shared job index; boards are managed there. Use 'Suggest a board'.")
+
     @app.get("/sources")
     def sources_page():
         c = conn()
-        db.sync_config_boards(c, cfg().boards)
-        rows = db.list_boards(c)
+        if not cfg().reader:
+            db.sync_config_boards(c, cfg().boards)
+        show, q, ats_f = request.args.get("show", "all"), request.args.get("q", "").strip(), request.args.get("ats", "")
+        rows = db.list_boards(c, show=show, q=q, ats=ats_f)
+        lists = [r[0] for r in c.execute("SELECT DISTINCT list FROM boards WHERE list IS NOT NULL ORDER BY list")]
+        ctx = dict(boards=rows, ats=SOURCES, show=show, q=q, ats_f=ats_f, counts=db.board_counts(c), lists=lists,
+                   db_mb=_db_size_mb(db_path), results=json.loads(request.args.get("r", "[]") or "[]"))
+        from . import snapshot
+        ctx["index"] = snapshot.status(c, cfg())
+        ctx["suggest"] = snapshot.suggest_url(cfg().index.repo) if cfg().reader else None
         c.close()
-        return render_template("sources.html", boards=rows, ats=SOURCES,
-                               results=json.loads(request.args.get("r", "[]") or "[]"))
+        return render_template("sources.html", **ctx)
+
+    @app.post("/sources/bulk")
+    def sources_bulk():
+        readers_cant_edit()
+        c = conn()
+        on = request.form.get("enabled") == "1"
+        where, args = "1=1", []
+        if request.form.get("list"):
+            where += " AND list = ?"; args.append(request.form["list"])
+        if request.form.get("ats"):
+            where += " AND ats = ?"; args.append(request.form["ats"])
+        c.execute(f"UPDATE boards SET enabled=?, fail_count=0 WHERE {where}", [int(on), *args])
+        c.commit()
+        c.close()
+        return back("sources_page")
 
     @app.post("/sources/add")
     def sources_add():
+        readers_cant_edit()
         lines = (request.form.get("urls") or "").splitlines()[:200]
         c = conn()
         results = boards_mod.add_many(c, lines, origin="ui")
@@ -193,10 +245,11 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
 
     @app.post("/sources/toggle")
     def sources_toggle():
+        readers_cant_edit()
         c = conn()
         db.set_board_enabled(c, request.form["ats"], request.form["slug"], request.form.get("enabled") == "1")
         c.close()
-        return redirect(url_for("sources_page"))
+        return back("sources_page")
 
     # ------------------------------------------------------------ profile
 
@@ -204,13 +257,14 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
     def profile_page():
         c = conn()
         prof = profile_mod.load(c)
-        sample = c.execute("SELECT j.uid, j.title, j.company, j.location, c.html AS content_html, j.content_hash "
+        sample = c.execute("SELECT j.uid, j.title, j.company, j.location, unz(c.html) AS content_html, j.content_hash "
                            "FROM jobs j JOIN job_content c ON c.uid = j.uid "
-                           "WHERE j.active=1 AND j.is_canonical=1 AND c.html <> '' "
+                           "WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 "
                            "ORDER BY j.effective_first_seen DESC LIMIT 1").fetchone()
         preview = json.dumps(claude_api.fit_params(cfg(), prof, sample), indent=2, ensure_ascii=False) if sample else ""
         c.close()
-        return render_template("profile.html", p=prof, preview=preview, saved=request.args.get("saved"))
+        return render_template("profile.html", p=prof, preview=preview, saved=request.args.get("saved"),
+                               geo_choices=geo.CHOICES)
 
     @app.post("/profile")
     def profile_save():
@@ -231,6 +285,7 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
             "locations": [l.strip() for l in form.get("locations", "").replace(";", ",").split(",") if l.strip()],
             "workplaces": form.getlist("workplaces") or ["remote", "hybrid", "onsite"],
             "min_salary": int_or_none(form.get("min_salary")),
+            "countries": [c for c in form.getlist("countries") if c in dict(geo.CHOICES)],
         }
         c = conn()
         profile_mod.save(c, p)
@@ -329,3 +384,12 @@ def _keyring_ok() -> bool:
         return not type(keyring.get_keyring()).__name__.lower().startswith(("fail", "null"))
     except Exception:
         return False
+
+
+def _db_size_mb(path) -> float:
+    total = 0
+    for suffix in ("", "-wal"):
+        p = Path(str(path) + suffix)
+        if p.exists():
+            total += p.stat().st_size
+    return round(total / 1e6, 1)

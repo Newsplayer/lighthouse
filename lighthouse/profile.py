@@ -29,6 +29,7 @@ DEFAULT = {
     "locations": [],             # e.g. ["Austin", "New York", "Remote"]
     "workplaces": ["remote", "hybrid", "onsite"],
     "min_salary": None,          # annual, posting currency
+    "countries": [],             # only keep/process jobs located here, e.g. ["US"]; empty = everywhere
 }
 
 ELIG_KEYS = ("years_experience", "degree", "needs_sponsorship", "us_citizen", "clearance",
@@ -90,7 +91,8 @@ def check(row, p: dict, yoe_slack: int = 2) -> list[str]:
             more = f" (+{len(places) - 1} more)" if len(places) > 1 else ""
             reasons.append(f"Located in {places[0]}{more}; not one of your locations")
     yoe, have = row["yoe_min"], p.get("years_experience")
-    if yoe is not None and have is not None and yoe > have + yoe_slack:
+    stated = (row["yoe_source"] if "yoe_source" in row.keys() else "stated") == "stated"
+    if stated and yoe is not None and have is not None and yoe > have + yoe_slack:
         reasons.append(f"Asks for {yoe}+ years of experience; you have {have}")
     floor = p.get("min_salary")
     if floor and row["pay_max_annual"] and row["pay_max_annual"] < floor:
@@ -108,7 +110,7 @@ def recompute(conn, company_keys=None, yoe_slack: int = 2, force: bool = False) 
         conn.commit()
         return 0
     version = elig_version(p, yoe_slack)
-    sql = ("SELECT uid, visa, citizenship, clearance, workplace_eff, cluster_locations, location, yoe_min, "
+    sql = ("SELECT uid, visa, citizenship, clearance, workplace_eff, cluster_locations, location, yoe_min, yoe_source, "
            "pay_max_annual, degree, derived_of, elig_version FROM jobs WHERE active=1")
     args: list = []
     if company_keys is not None:

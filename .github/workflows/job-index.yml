@@ -1,0 +1,92 @@
+# Builds the shared job index and publishes it on this repo's "job-index" release.
+# This is the only thing that writes job data; every user's Lighthouse just downloads it.
+# Setup and upkeep: MAINTAINING.md.
+name: Job index
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"          # every 6 hours (UTC)
+  workflow_dispatch:                # "Run workflow" button on the Actions tab
+    inputs:
+      full:
+        description: "Publish a new full base file (instead of only the changes)"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ["config/**"]            # board list edited -> rebuild soon
+
+permissions:
+  contents: write                   # publish the release; nothing else
+
+concurrency:
+  group: job-index
+  cancel-in-progress: false         # never two builds at once; a push waits for the scheduled run
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The builder's working database, kept between runs, so each run only processes what changed.
+      - name: Restore builder database
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-${{ github.run_id }}
+          restore-keys: lighthouse-builder-
+
+      - name: Get the currently published manifest
+        run: gh release download job-index --pattern manifest.json --dir prev 2>/dev/null || echo "Nothing published yet"
+
+      # Cache expired (unused 7+ days) but an index exists: start from it instead of from scratch.
+      - name: Seed from the published index
+        if: steps.cache.outputs.cache-matched-key == ''
+        run: |
+          mkdir -p data
+          if [ -f prev/manifest.json ] && gh release download job-index --pattern base.db.xz --dir prev; then
+            xz -dc prev/base.db.xz > data/builder.db
+            echo "Seeded from the published base"
+          else
+            echo "First build: fetching everything (about 30-60 minutes)"
+          fi
+
+      - name: Build
+        run: >
+          python -m lighthouse index build --out dist --published prev/manifest.json
+          --detail-calls 400 --countries "${{ vars.LIGHTHOUSE_COUNTRIES }}"
+          ${{ inputs.full && '--full' || '' }}
+
+      - name: Publish
+        run: |
+          gh release view job-index >/dev/null 2>&1 || gh release create job-index --latest=false \
+            --title "Job index" --notes "Built automatically by .github/workflows/job-index.yml. Public job postings only; read by Lighthouse."
+          # Data files first, manifest last: readers never see a manifest pointing at a file that isn't there yet.
+          for f in dist/*.db.xz; do [ -e "$f" ] && gh release upload job-index "$f" --clobber; done
+          gh release upload job-index dist/manifest.json --clobber
+          python - <<'PY'
+          import json; m = json.load(open("dist/manifest.json"))
+          d = m["delta"]
+          print(f"{m['jobs']} open roles from {m['boards']} boards; "
+                + (f"delta {d['rows']} rows, {d['bytes']/1e6:.1f} MB" if d else f"new base {m['base']['bytes']/1e6:.1f} MB"))
+          PY
+
+      # Saved only after a successful publish, so the cache always matches what readers have.
+      - name: Save builder database
+        uses: actions/cache/save@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-${{ github.run_id }}

@@ -31,6 +31,7 @@ class Job:
     salary_interval: str | None = None    # "year" | "month" | "hour" ...
     locations: list[str] = field(default_factory=list)   # all locations, if the ATS lists several
     detail_marker: str = ""   # changes when the source's copy changes (used to skip detail calls)
+    partial: bool = False     # summary-only listing (detail not fetched this run): keep stored date/locations
 
     @property
     def uid(self) -> str:

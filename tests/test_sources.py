@@ -10,8 +10,8 @@ from lighthouse.sources.workable import WorkableSource
 from conftest import FakeClient, FakeResp
 
 
-def test_registry_has_six_ats():
-    assert set(SOURCES) == {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee"}
+def test_registry_has_seven_ats():
+    assert set(SOURCES) == {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"}
 
 
 def test_parse_greenhouse(gh):

@@ -20,12 +20,24 @@ class AshbySource(Source):
     )
 
     def fetch(self, slug, known=None):
-        data = self._get_json(API.format(slug=slug))
-        company = self.company_name(slug)
-        return [self.parse(slug, raw, company) for raw in data.get("jobs", []) if raw.get("isListed", True)]
+        self.known = known or self.known
+        data = self._get_json(API.format(slug=slug), board=True)
+        company, out = self.company_name(slug), []
+        for raw in data.get("jobs", []):
+            if not raw.get("isListed", True):
+                continue
+            uid = f"ashby:{slug}:{raw['id']}"
+            locs = [raw.get("location")] + [s.get("location") for s in raw.get("secondaryLocations") or []]
+            if not self.keep(uid, raw.get("title"), locs):
+                continue
+            same, marker = self.unchanged(uid, raw.get("descriptionHtml"))
+            job = self.parse(slug, raw, company, skip_body=same)
+            job.detail_marker = marker
+            out.append(job)
+        return out
 
     @staticmethod
-    def parse(slug: str, raw: dict, company: str) -> Job:
+    def parse(slug: str, raw: dict, company: str, skip_body: bool = False) -> Job:
         comp = raw.get("compensation") or {}
         salary = None
         for tier in comp.get("compensationTiers") or []:
@@ -46,7 +58,7 @@ class AshbySource(Source):
             company=company,
             location=(raw.get("location") or "").strip(),
             url=raw.get("jobUrl") or raw.get("applyUrl") or "",
-            content_html=sanitize_html(raw.get("descriptionHtml") or ""),
+            content_html="" if skip_body else sanitize_html(raw.get("descriptionHtml") or ""),
             departments=[d for d in (raw.get("department"), raw.get("team")) if d],
             posted_at=parse_dt(raw.get("publishedAt")),
             workplace=wp,

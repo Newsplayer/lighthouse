@@ -10,6 +10,7 @@ class FakeResp:
     def __init__(self, data, status=200, text=None, url=""):
         self._data, self.status_code, self.url = data, status, url
         self.text = text if text is not None else json.dumps(data)
+        self.content = self.text.encode()
 
     def json(self):
         return self._data

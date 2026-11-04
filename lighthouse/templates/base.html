@@ -22,14 +22,14 @@
     <form method="post" action="{{ url_for('refresh') }}">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="hidden" name="next" value="{{ request.full_path }}">
-      <button class="btn ghost" type="submit" title="Pull all enabled boards now" {% if fetch_status.running %}disabled{% endif %}>
-        {% if fetch_status.running %}Fetching {{ fetch_status.done }}/{{ fetch_status.total }}…{% else %}Refresh boards{% endif %}
+      <button class="btn ghost" type="submit" title="{{ 'Check for a newer job index now' if reader else 'Pull all enabled boards now' }}" {% if fetch_status.running %}disabled{% endif %}>
+        {% if fetch_status.running %}{% if reader %}Updating…{% else %}Fetching {{ fetch_status.done }}/{{ fetch_status.total }}…{% endif %}{% else %}{{ 'Check for new jobs' if reader else 'Refresh boards' }}{% endif %}
       </button>
     </form>
   </header>
   {% if fetch_status.running or claude_status.running or claude_status.message %}
   <div class="status" id="status" data-running="{{ 1 if fetch_status.running or claude_status.running else 0 }}">
-    {% if fetch_status.running %}<span>Fetching boards ({{ fetch_status.done }}/{{ fetch_status.total }}). The list updates when it finishes.</span>{% endif %}
+    {% if fetch_status.running %}<span>{% if reader %}Updating the job index. The list updates when it finishes.{% else %}Fetching boards ({{ fetch_status.done }}/{{ fetch_status.total }}). The list updates when it finishes.{% endif %}</span>{% endif %}
     {% if claude_status.message %}<span>Claude: {{ claude_status.message }}</span>{% endif %}
   </div>
   {% endif %}

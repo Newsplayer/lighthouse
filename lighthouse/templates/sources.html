@@ -2,14 +2,35 @@
 {% block title %}Sources · Lighthouse{% endblock %}
 {% block content %}
 <h1>Sources</h1>
+<p class="meta">{% if reader %}{{ counts.enabled }} boards in the index{% else %}{{ counts.enabled }} of {{ counts.total }} boards on{% endif %}
+  {% if not reader and counts.errors %}· <a href="?show=errors">{{ counts.errors }} with errors</a>{% endif %}
+  {% if not reader and counts.auto_off %}· {{ counts.auto_off }} switched off automatically (board gone){% endif %}
+  {% if not reader and counts.never %}· {{ counts.never }} not fetched yet{% endif %}
+  · database {{ db_mb }} MB</p>
+{% if reader %}
+<section class="panel">
+  <h2>Job index</h2>
+  <p>Jobs come from the shared index published by <a href="https://github.com/{{ index.repo }}" target="_blank" rel="noopener noreferrer"><code>{{ index.repo }}</code></a>,
+    rebuilt every 6 hours from the boards below. This copy only reads it; your profile, marks and Claude results stay on this computer.</p>
+  <p class="meta">
+    {% if index.built_at %}Jobs as of {{ index.built_at[:16].replace('T', ' ') }} UTC · {{ index.jobs }} open roles from {{ index.boards }} boards{% if index.countries %} in {{ index.countries|join(', ') }}{% endif %}{% else %}Not downloaded yet.{% endif %}
+    {% if index.checked_at %}· last checked {{ index.checked_at[:16].replace('T', ' ') }} UTC{% endif %}</p>
+  {% if index.error %}<p class="bad">Last update failed: {{ index.error }}{% if index.built_at %} The jobs you already have are still shown.{% endif %}</p>
+  {% elif index.stale %}<p class="bad">The index hasn't been rebuilt for a while; jobs may be out of date.</p>{% endif %}
+  <p><a class="btn secondary" href="{{ suggest }}" target="_blank" rel="noopener noreferrer">Suggest a board ↗</a>
+    <span class="meta">Opens a pre-filled GitHub issue. Boards are added to the index for everyone.</span></p>
+</section>
+{% endif %}
+
+{% if not reader %}
 <section class="panel">
   <h2>Add boards</h2>
-  <p class="meta">Paste one per line: a job-board link (<code>jobs.lever.co/palantir</code>, <code>jobs.ashbyhq.com/ramp</code>),
-    a company careers page (Lighthouse looks for an embedded board), or <code>ats:slug</code>.
-    Supported: {% for k, c in ats.items() %}{{ c.label }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+  <p class="meta">Paste one per line: a job-board link (<code>jobs.lever.co/palantir</code>, <code>jobs.ashbyhq.com/ramp</code>,
+    <code>nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite</code>), a company careers page (Lighthouse looks for an
+    embedded board), or <code>ats:slug</code>. Supported: {% for k, c in ats.items() %}{{ c.label }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
   <form method="post" action="{{ url_for('sources_add') }}">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <textarea name="urls" rows="5" placeholder="https://jobs.lever.co/palantir&#10;https://jobs.ashbyhq.com/ramp&#10;smartrecruiters:BoschGroup"></textarea>
+    <textarea name="urls" rows="4" placeholder="https://jobs.lever.co/palantir&#10;https://jobs.ashbyhq.com/ramp&#10;smartrecruiters:BoschGroup"></textarea>
     <button class="btn" type="submit">Check and add</button>
   </form>
   {% if results %}
@@ -21,28 +42,49 @@
   </ul>
   {% endif %}
 </section>
+{% endif %}
 
 <section class="panel">
-  <h2>Boards ({{ boards|length }})</h2>
+  <h2>Boards</h2>
+  <form method="get" class="inline">
+    <input type="search" name="q" value="{{ q }}" placeholder="Company or slug" aria-label="Search boards">
+    <select name="ats" aria-label="ATS"><option value="">All systems</option>
+      {% for k, c in ats.items() %}<option value="{{ k }}" {% if k == ats_f %}selected{% endif %}>{{ c.label }}</option>{% endfor %}</select>
+    <select name="show" aria-label="Show">
+      {% for v, l in [('all', 'All'), ('on', 'On'), ('off', 'Off'), ('errors', 'With errors')] %}<option value="{{ v }}" {% if v == show %}selected{% endif %}>{{ l }}</option>{% endfor %}</select>
+    <button class="btn secondary" type="submit">Show</button>
+  </form>
+  {% for l in ([] if reader else lists) %}
+  <form method="post" action="{{ url_for('sources_bulk') }}" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="list" value="{{ l }}">
+    <input type="hidden" name="ats" value="{{ ats_f }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+    <span class="meta">List <code>{{ l }}</code>{% if ats_f %} ({{ ats[ats_f].label }} only){% endif %}:</span>
+    <button class="link" name="enabled" value="1">turn all on</button>
+    <button class="link" name="enabled" value="0">turn all off</button>
+  </form>
+  {% endfor %}
   <table class="grid">
-    <tr><th>ATS</th><th>Board</th><th>Postings</th><th>Last fetch</th><th>Status</th><th></th></tr>
+    <tr><th>Company</th><th>ATS</th><th>Board</th><th>Postings</th><th>Last fetch</th><th>Status</th>{% if not reader %}<th></th>{% endif %}</tr>
     {% for b in boards %}
     <tr class="{% if not b.enabled %}dim{% endif %}">
+      <td>{{ b.company or '—' }}</td>
       <td>{{ ats[b.ats].label if b.ats in ats else b.ats }}</td>
-      <td>{{ b.slug }}{% if b.company %} <span class="meta">({{ b.company }})</span>{% endif %}</td>
+      <td><code>{{ b.slug }}</code></td>
       <td>{{ b.job_count if b.job_count is not none else '—' }}</td>
       <td>{{ (b.last_fetch or '')[:16].replace('T', ' ') }}</td>
-      <td>{% if b.last_error %}<span class="bad" title="{{ b.last_error }}">error</span>{% elif b.last_ok %}<span class="ok">ok</span>{% else %}—{% endif %}</td>
-      <td>
+      <td>{% if b.last_error %}<span class="bad" title="{{ b.last_error }}">{{ 'switched off' if b.last_error.startswith('Switched off') else 'error' }}</span>{% elif b.last_ok %}<span class="ok">ok</span>{% else %}—{% endif %}</td>
+      {% if not reader %}<td>
         <form method="post" action="{{ url_for('sources_toggle') }}">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="next" value="{{ request.full_path }}">
           <input type="hidden" name="ats" value="{{ b.ats }}"><input type="hidden" name="slug" value="{{ b.slug }}">
-          <button class="link" name="enabled" value="{{ 0 if b.enabled else 1 }}">{{ 'Disable' if b.enabled else 'Enable' }}</button>
+          <button class="link" name="enabled" value="{{ 0 if b.enabled else 1 }}">{{ 'Turn off' if b.enabled else 'Turn on' }}</button>
         </form>
-      </td>
+      </td>{% endif %}
     </tr>
     {% endfor %}
   </table>
-  <p class="meta">Boards in <code>config/sources.toml</code> are added automatically; disabling one here keeps it off.</p>
+  {% if reader %}<p class="meta">Boards in the shared index. Fetch times and status are from the index's last build.</p>
+  {% else %}<p class="meta">Boards come from <code>config/sources.toml</code>, the lists in <code>config/boards/</code>, and what you add here.
+    A board that reports “not found” two runs in a row is switched off automatically; turn it back on any time.</p>{% endif %}
 </section>
 {% endblock %}

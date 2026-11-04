@@ -90,6 +90,8 @@ textarea { width: 100%; resize: vertical; }
 .filters input[type=search] { flex: 1 1 260px; }
 .short { flex: 0 1 180px; }
 .tiny { width: 120px; }
+.nano { width: 56px; }
+.yoe { display: inline-flex; gap: 4px; align-items: center; }
 .check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
 
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 6px 0 8px; overflow-x: auto; }
@@ -156,13 +158,16 @@ textarea { width: 100%; resize: vertical; }
 .grid th, .grid td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .grid tr.dim { opacity: .55; }
 .grid form { margin: 0; }
+.grid .link { white-space: nowrap; }
+.grid code { font-size: 12px; overflow-wrap: anywhere; }
 .detail .body { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; overflow-wrap: anywhere; }
 .detail .body a { color: var(--accent); }
 
 .form { display: grid; gap: 12px; }
 .form label { display: grid; gap: 4px; font-size: 14px; }
 .form label.check { display: inline-flex; margin-right: 12px; }
-.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; align-items: start; }
+.grid2 .wide { grid-column: 1 / -1; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0; }
 legend { font-size: 13px; color: var(--muted); }
 .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }

@@ -28,7 +28,8 @@ def tick(db_path=db.DEFAULT_DB, config_path=config.DEFAULT_CONFIG) -> None:
     cfg = config.load(config_path)
     conn = db.connect(db_path)
     try:
-        if _due(db.get_meta(conn, "last_fetch"), cfg.settings.fetch_interval_hours):
+        every = cfg.index.check_every_hours if cfg.reader else cfg.settings.fetch_interval_hours
+        if _due(db.get_meta(conn, "last_fetch"), every):
             conn.close()
             fetch.run(config_path, db_path, wait=False)
             conn = db.connect(db_path)

@@ -25,6 +25,10 @@
       <label class="check"><input type="checkbox" name="needs_sponsorship" value="1" {% if p.needs_sponsorship %}checked{% endif %}> I need visa sponsorship</label>
       <label class="check"><input type="checkbox" name="us_citizen" value="1" {% if p.us_citizen %}checked{% endif %}> I'm a U.S. citizen</label>
     </fieldset>
+    <fieldset class="wide"><legend>Countries (leave all unticked for everywhere)</legend>
+      {% for code, name in geo_choices %}<label class="check"><input type="checkbox" name="countries" value="{{ code }}" {% if code in p.countries %}checked{% endif %}> {{ name }}</label>{% endfor %}
+      <p class="meta">Jobs located only in other countries are hidden{% if not reader %}, and from the next refresh they aren't downloaded or processed at all, which is the biggest speed-up for global employers{% endif %}. Remote roles with no stated country are kept.</p>
+    </fieldset>
     <label>Security clearance held
       <select name="clearance">{% for v, l in [('none', 'None'), ('public_trust', 'Public Trust'), ('secret', 'Secret'), ('ts', 'Top Secret'), ('ts_sci', 'TS/SCI')] %}
         <option value="{{ v }}" {% if p.clearance == v %}selected{% endif %}>{{ l }}</option>{% endfor %}</select></label>

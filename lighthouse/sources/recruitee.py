@@ -16,12 +16,23 @@ class RecruiteeSource(Source):
     reserved_slugs = Source.reserved_slugs | {"www", "app", "support", "blog"}
 
     def fetch(self, slug, known=None):
-        data = self._get_json(API.format(slug=slug))
-        return [self.parse(slug, raw, self.company) for raw in data.get("offers", [])
-                if raw.get("status", "published") == "published"]
+        self.known = known or self.known
+        data = self._get_json(API.format(slug=slug), board=True)
+        out = []
+        for raw in data.get("offers", []):
+            if raw.get("status", "published") != "published":
+                continue
+            uid = f"recruitee:{slug}:{raw['id']}"
+            if not self.keep(uid, raw.get("title"), [raw.get("location")]):
+                continue
+            same, marker = self.unchanged(uid, raw.get("description"), raw.get("requirements"))
+            job = self.parse(slug, raw, self.company, skip_body=same)
+            job.detail_marker = marker
+            out.append(job)
+        return out
 
     @staticmethod
-    def parse(slug: str, raw: dict, company: str | None = None) -> Job:
+    def parse(slug: str, raw: dict, company: str | None = None, skip_body: bool = False) -> Job:
         sal = raw.get("salary") or {}
         locs = [", ".join(x for x in (l.get("city") or l.get("name"), l.get("state"), l.get("country")) if x)
                 for l in raw.get("locations") or []]
@@ -43,7 +54,7 @@ class RecruiteeSource(Source):
             company=company or raw.get("company_name") or slug.title(),
             location=(raw.get("location") or "").strip(),
             url=raw.get("careers_url") or "",
-            content_html=sanitize_html(body),
+            content_html="" if skip_body else sanitize_html(body),
             departments=[raw["department"]] if raw.get("department") else [],
             posted_at=parse_dt(raw.get("published_at") or raw.get("created_at")),
             updated_at=parse_dt(raw.get("updated_at")),

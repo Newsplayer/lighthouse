@@ -81,7 +81,7 @@ def test_dedupe_across_boards_and_closing(tmp_path, gh):
     rows, total = db.list_jobs(conn, db.Filters(show_ghosts=True))
     assert total == 2 and all(r["cluster_count"] == 2 for r in rows)
     counts = db.upsert_board(conn, "greenhouse", "acme", a[:1])
-    assert (counts["new"], counts["updated"], counts["closed"]) == (0, 1, 1)
+    assert (counts["new"], counts["updated"], counts["unchanged"], counts["closed"]) == (0, 0, 1, 1)
     assert db.get_job(conn, "greenhouse:acme:1002")["active"] == 0
 
 

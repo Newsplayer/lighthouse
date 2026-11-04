@@ -278,10 +278,10 @@ def _store_fit(conn, content_hash, profile_hash, out, method, model) -> None:
 # ---------------------------------------------------------------- selecting work
 
 def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
-    sql = """SELECT j.uid, j.content_hash, c.html AS content_html, j.title, j.company, j.location FROM jobs j
+    sql = """SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
              JOIN job_content c ON c.uid = j.uid
              LEFT JOIN extractions e ON e.content_hash = j.content_hash
-             WHERE j.active=1 AND j.is_canonical=1 AND c.html <> '' AND (e.method IS NULL OR e.method <> 'claude')"""
+             WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 AND (e.method IS NULL OR e.method <> 'claude')"""
     args: list = []
     if uids is not None:
         if not uids:
@@ -293,10 +293,10 @@ def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
 
 
 def fit_candidates(conn, profile_hash: str, uids: list[str] | None, limit: int, ghost_hide_at: int) -> list:
-    sql = """SELECT j.uid, j.content_hash, c.html AS content_html, j.title, j.company, j.location FROM jobs j
+    sql = """SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
              JOIN job_content c ON c.uid = j.uid
              LEFT JOIN fit f ON f.content_hash = j.content_hash AND f.profile_hash = ?
-             WHERE j.active=1 AND j.is_canonical=1 AND c.html <> '' AND f.tier IS NULL
+             WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 AND f.tier IS NULL
                AND (j.elig IS NULL OR j.elig = 1) AND j.ghost_score < ?"""
     args: list = [profile_hash, ghost_hide_at]
     if uids is not None:

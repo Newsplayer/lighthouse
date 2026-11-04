@@ -18,19 +18,36 @@ class LeverSource(Source):
     )
 
     def fetch(self, slug, known=None):
-        data = self._get_json(API.format(slug=slug))
+        self.known = known or self.known
+        data = self._get_json(API.format(slug=slug), board=True)
         if isinstance(data, dict):  # {"ok": false, "error": "Document not found"}
             from .base import BoardNotFound
             raise BoardNotFound(data.get("error") or "Lever: board not found")
-        return [self.parse(slug, raw, self.company_name(slug)) for raw in data]
+        company, out = self.company_name(slug), []
+        for raw in data:
+            uid = f"lever:{slug}:{raw['id']}"
+            cats = raw.get("categories") or {}
+            if not self.keep(uid, raw.get("text"), cats.get("allLocations") or [cats.get("location")]):
+                continue
+            parts = self._parts(raw)
+            same, marker = self.unchanged(uid, *parts)
+            job = self.parse(slug, raw, company, skip_body=same)
+            job.detail_marker = marker
+            out.append(job)
+        return out
 
     @staticmethod
-    def parse(slug: str, raw: dict, company: str) -> Job:
-        cats = raw.get("categories") or {}
+    def _parts(raw: dict) -> list[str]:
         parts = [raw.get("description") or ""]
         for lst in raw.get("lists") or []:
             parts.append(f"<h3>{lst.get('text') or ''}</h3><ul>{lst.get('content') or ''}</ul>")
         parts.append(raw.get("additional") or "")
+        return parts
+
+    @staticmethod
+    def parse(slug: str, raw: dict, company: str, skip_body: bool = False) -> Job:
+        cats = raw.get("categories") or {}
+        parts = LeverSource._parts(raw)
         sal = raw.get("salaryRange") or {}
         all_locs = cats.get("allLocations") or ([cats["location"]] if cats.get("location") else [])
         return Job(
@@ -41,7 +58,7 @@ class LeverSource(Source):
             company=company,
             location=(cats.get("location") or "").strip(),
             url=raw.get("hostedUrl") or raw.get("applyUrl") or "",
-            content_html=sanitize_html("".join(parts)),
+            content_html="" if skip_body else sanitize_html("".join(parts)),
             departments=[d for d in (cats.get("department"), cats.get("team")) if d],
             posted_at=parse_dt(raw.get("createdAt")),
             workplace=workplace(text=raw.get("workplaceType")),

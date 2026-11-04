@@ -47,6 +47,10 @@ def test_mark_and_profile_flow(tmp_path, gh, cfg_path):
 
     client.post("/profile", data={"csrf": tok, "about": "Analytics roles", "years_experience": "1",
                                   "locations": "Denver", "workplaces": ["onsite", "hybrid"]})
+    client.post("/profile", data={"csrf": tok, "about": "Analytics roles", "years_experience": "1",
+                                  "locations": "Denver", "workplaces": ["onsite", "hybrid"], "countries": ["US", "CA"]})
+    listing = client.get("/?yoe_lo=1&yoe_hi=6&sort=yoe").get_data(as_text=True)
+    assert "in United States, Canada" in listing and "Years asked" in listing
     page = client.get("/?view=hidden&elig=0").get_data(as_text=True)
     assert "not one of your locations" in page
     prof = client.get("/profile").get_data(as_text=True)

@@ -10,6 +10,10 @@
     python -m lighthouse claude poll        # collect finished batches
     python -m lighthouse key set|clear      # store / remove your Anthropic API key in the OS keychain
     python -m lighthouse mcp                # MCP server (stdio) for your own Claude app
+    python -m lighthouse index status       # shared job index: when it was built, what it covers
+    python -m lighthouse index import [FILE] # update now (or merge a local base.db.xz to test a build)
+    python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
+                                            # what the GitHub Action runs (maintainers only)
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ def _serve(host: str, port: int, open_browser: bool) -> None:
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("Lighthouse only serves on this computer (127.0.0.1).")
     conn = db.connect()
-    if fetch.needs_reprocess(conn):
+    if not config.load().reader and fetch.needs_reprocess(conn):
         print("Upgrading your job database (one time, takes a moment)...")
         fetch.postprocess(conn)
     conn.close()
@@ -54,6 +58,34 @@ def _serve(host: str, port: int, open_browser: bool) -> None:
     if open_browser:
         threading.Timer(1.0, webbrowser.open, args=[url]).start()
     create_app().run(host=host, port=port, debug=False, threaded=True)
+
+
+def _index(args) -> None:
+    import json
+    from . import snapshot
+    cfg = config.load()
+    if args.action == "build":
+        m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
+                           db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
+                           published=args.published, full=args.full)
+        print(json.dumps(m, indent=2))
+        return
+    conn = db.connect()
+    if args.action == "status":
+        for k, v in snapshot.status(conn, cfg).items():
+            print(f"  {k:14} {v}")
+        return
+    if args.file:
+        print(snapshot.import_file(conn, cfg, args.file))
+        return
+    if not cfg.reader:
+        raise SystemExit('Set [index] repo = "owner/name" in config/sources.toml first.')
+    from .net import default_client
+    r = snapshot.sync(conn, cfg, default_client())
+    if r["error"]:
+        raise SystemExit(f"Job index not updated: {r['error']}")
+    st = snapshot.status(conn, cfg)
+    print(f"Job index from {st['built_at']}: {st['jobs']} open roles from {st['boards']} boards. {r['updated'] or 'Already up to date.'}")
 
 
 def main() -> None:
@@ -81,6 +113,16 @@ def main() -> None:
     p = sub.add_parser("key", help="manage your Anthropic API key")
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
+    p = sub.add_parser("index", help="the shared job index")
+    p.add_argument("action", choices=["status", "import", "build"])
+    p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
+    p.add_argument("--out", default="dist", help="build: output folder")
+    p.add_argument("--db", default=None, help="build: builder database (default data/builder.db)")
+    p.add_argument("--countries", default="", help="build: comma-separated country codes to keep (default: all)")
+    p.add_argument("--detail-calls", type=int, default=None,
+                   help="build: description calls per SmartRecruiters/Workday board per run")
+    p.add_argument("--published", default=None, help="build: the manifest.json currently published")
+    p.add_argument("--full", action="store_true", help="build: write a new base file even if a delta would do")
     args = parser.parse_args()
 
     if args.cmd == "mcp":  # stdout is the protocol channel: log to stderr only
@@ -96,15 +138,25 @@ def main() -> None:
     elif args.cmd == "serve":
         _serve(args.host, args.port, open_browser=not args.no_browser)
     elif args.cmd == "start":
+        cfg = config.load()
         conn = db.connect()
-        db.sync_config_boards(conn, config.load().boards)
+        if not cfg.reader:
+            db.sync_config_boards(conn, cfg.boards)
         empty = not db.stats(conn)["total"]
         conn.close()
         if empty:
-            print("First run: pulling jobs from your boards (this takes a few seconds)...")
-            fetch.run()
+            print("First run: downloading the job index (a minute or two)..." if cfg.reader else
+                  "First run: pulling jobs from your boards (this takes a few seconds)...")
+            for r in fetch.run() or []:
+                if r.get("error"):
+                    print(f"  Couldn't download the job index: {r['error']}")
         _serve(args.host, _free_port(args.host, args.port), open_browser=not args.no_browser)
     elif args.cmd == "add":
+        cfg = config.load()
+        if cfg.reader:
+            from .snapshot import suggest_url
+            raise SystemExit("This copy reads the shared job index, so boards are added there. Suggest one at:\n  "
+                             + suggest_url(cfg.index.repo))
         from .boards import add_many
         lines = []
         for item in args.items:
@@ -122,7 +174,8 @@ def main() -> None:
             fetch.run(only=added)
     elif args.cmd == "boards":
         conn = db.connect()
-        db.sync_config_boards(conn, config.load().boards)
+        if not config.load().reader:
+            db.sync_config_boards(conn, config.load().boards)
         for b in db.list_boards(conn):
             state = "off" if not b["enabled"] else ("error: " + b["last_error"][:60]) if b["last_error"] else "ok"
             print(f"  {b['ats']:16} {b['slug']:30} {b['job_count'] or 0:>6}  {state}")
@@ -157,6 +210,8 @@ def main() -> None:
         print(claude_api.run(conn, cfg, args.action, rows))
         if args.action == "extract":
             fetch.refresh_derived(conn, cfg)
+    elif args.cmd == "index":
+        _index(args)
     elif args.cmd == "key":
         from . import claude_api
         if args.action == "set":

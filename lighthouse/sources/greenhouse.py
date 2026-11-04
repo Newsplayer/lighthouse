@@ -20,13 +20,23 @@ class GreenhouseSource(Source):
     )
 
     def fetch(self, slug, known=None):
-        data = self._get_json(API.format(slug=slug))
-        return [self.parse(slug, raw, self.company) for raw in data.get("jobs", [])]
+        self.known = known or self.known
+        data = self._get_json(API.format(slug=slug), board=True)
+        out = []
+        for raw in data.get("jobs", []):
+            uid = f"greenhouse:{slug}:{raw['id']}"
+            if not self.keep(uid, raw.get("title"), [(raw.get("location") or {}).get("name")]):
+                continue
+            same, marker = self.unchanged(uid, raw.get("content"))
+            job = self.parse(slug, raw, self.company, skip_body=same)
+            job.detail_marker = marker
+            out.append(job)
+        return out
 
     @staticmethod
-    def parse(slug: str, raw: dict, company: str | None = None) -> Job:
+    def parse(slug: str, raw: dict, company: str | None = None, skip_body: bool = False) -> Job:
         # Greenhouse returns `content` HTML-escaped (&lt;p&gt;...), so unescape before sanitizing.
-        body = sanitize_html(html.unescape(raw.get("content") or ""))
+        body = "" if skip_body else sanitize_html(html.unescape(raw.get("content") or ""))
         return Job(
             source="greenhouse",
             source_board=slug,

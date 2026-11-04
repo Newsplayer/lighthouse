@@ -32,8 +32,17 @@ _CUR = {"$": "USD", "US$": "USD", "USD": "USD", "CA$": "CAD", "C$": "CAD", "CAD"
 _HOURLY = re.compile(r"(per hour|an hour|/\s?hr|/\s?hour|hourly)", re.I)
 _MONTHLY = re.compile(r"(per month|a month|/\s?mo(nth)?\b|monthly)", re.I)
 
-_YOE = re.compile(r"(\d{1,2})\s*\+?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?(?:years?|yrs?)\b(?:\s+of)?(?:\s+[\w/&,-]+){0,5}?\s+"
-                  r"(?:experience|exp\b|work(?:ing)?\b|industry)", re.I)
+_NUMWORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+             "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "a": 1}
+_N = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen)"
+# "5+ years of (relevant, hands-on...) experience", "4+ years’ experience", "3-5 yrs of industry experience"
+_YOE = re.compile(_N + r"\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?"
+                  r"(?:(?:total|full|professional|relevant|combined|overall)\s+)?(?:years?|yrs?)\b['’]?(?:\s+of)?"
+                  r"(?:\s+[\w/&,.'’()-]+){0,8}?\s+(?:experience|exp\b|work(?:ing)?\b|industry|background)", re.I)
+# "minimum 2-5 years", "at least one year", "minimum of 3 years"
+_YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)\s+(?:of\s+)?" + _N +
+                      r"(?:\s*(?:-|–|to)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b", re.I)
+_HEADING_PREF = re.compile(r"\b(preferred|nice to have|nice-to-have|bonus|plus|desired|ideally)\b", re.I)
 _CLEARANCE = [
     ("ts_sci", re.compile(r"\bTS\s*/\s*SCI\b|top secret\s*/\s*sci", re.I)),
     ("ts", re.compile(r"\btop secret\b", re.I)),
@@ -81,6 +90,85 @@ def _clause(text: str, start: int, end: int) -> str:
     return text[a: min(bs) if bs else len(text)]
 
 
+_AFTER_PREF = re.compile(r"^\W{0,3}(is |are )?(strongly )?(preferred|a plus|nice to have|nice-to-have|desired|a bonus|bonus)\b", re.I)
+
+
+def _spans(text: str, low: str, keys, before: int, after: int, whole_line: bool = False) -> list[tuple[int, int]]:
+    """Merged windows around keyword hits. Regexes then run only inside them
+    (re.finditer(text, pos, endpos) keeps absolute positions), so a 5,000-word posting
+    costs a few short scans instead of one full scan per pattern."""
+    if len(low) != len(text):  # rare Unicode case-folding length change: scan everything
+        return [(0, len(text))]
+    spans = []
+    for k in keys:
+        i = low.find(k)
+        while i != -1:
+            if whole_line:
+                a = text.rfind("\n", 0, i) + 1
+                b = text.find("\n", i)
+                spans.append((a, len(text) if b == -1 else b))
+            else:
+                spans.append((max(0, i - before), min(len(text), i + len(k) + after)))
+            i = low.find(k, i + 1)
+    spans.sort()
+    merged: list[list[int]] = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [tuple(m) for m in merged]
+
+
+def _iter(pat, text: str, spans):
+    for a, b in spans:
+        yield from pat.finditer(text, a, b)
+
+
+def _first(pat, text: str, spans):
+    return next(_iter(pat, text, spans), None)
+
+
+_PIPELINE_KEYS = ("talent", "future", "currently", "actively", "no current", "no immediate", "always", "evergreen",
+                  "on file", "become available", "pipeline")
+
+
+def _is_preferred(text: str, start: int, end: int) -> bool:
+    """Preferred when the clause says so before the number ("Preferred: 5+ years", "Bonus if 3 years"),
+    right after it ("2+ years of experience preferred"), or the item sits under a
+    'Preferred / Nice to have / Bonus' heading. "…experience, ideally in fintech" is still required:
+    'ideally' there qualifies the domain, not the years."""
+    a = max(text.rfind(d, 0, start) for d in ".;\n") + 1
+    nl = text.find("\n", end)
+    after = text[end: min(end + 30, nl if nl != -1 else len(text))]
+    if _PREFERRED.search(text[a:start]) or _AFTER_PREF.search(after):
+        return True
+    for line in reversed(text[:a].splitlines()[-25:]):  # nearest heading above
+        line = line.strip()
+        if line and not line.startswith("- ") and len(line) <= 70:
+            return bool(_HEADING_PREF.search(line))
+    return False
+
+
+# Title-level fallback when a posting states no number (clearly labelled "from title" in the UI,
+# never used to rule anyone out).
+_TITLE_LEVELS = [
+    (0, re.compile(r"\b(intern|internship|co-?op|new grad|new graduate|entry[- ]level|junior|jr\.?|early career|"
+                   r"graduate (program|scheme|engineer|analyst)|apprentice)\b", re.I)),
+    (10, re.compile(r"\b(principal|distinguished|fellow|director|head of|vice president|vp)\b", re.I)),
+    (8, re.compile(r"\bstaff\+?\s+(software|engineer|research|scientist|data|ml|machine|product|designer|security|"
+                   r"infrastructure|backend|frontend|full[- ]stack|platform|applied|site|systems)", re.I)),
+    (5, re.compile(r"\b(senior|sr\.?)\b", re.I)),
+]
+
+
+def yoe_from_title(title: str) -> int | None:
+    for years, pat in _TITLE_LEVELS:
+        if pat.search(title or ""):
+            return years
+    return None
+
+
 def _f(value=None, evidence=None):
     return {"value": value, "evidence": evidence}
 
@@ -115,37 +203,49 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
                 out["workplace"] = _f(value, _line(text, mm.start(), mm.end()))
                 break
 
-    best = None
-    for mm in (_YOE.finditer(text) if ("year" in low or "yr" in low) else ()):
-        line = _line(text, mm.start(), mm.end())
-        n = int(mm.group(1))
-        if 0 < n <= 20 and not _PREFERRED.search(_clause(text, mm.start(), mm.end())) and (best is None or n > best[0]):
-            best = (n, line)
+    best, pref = None, None   # required wins; a preferred-only number is kept, labelled
+    if "year" in low or "yr" in low:
+        yspans = _spans(text, low, ("year", "yr"), 60, 170)
+        for pat in (_YOE, _YOE_MIN):
+            for mm in _iter(pat, text, yspans):
+                n = _NUMWORDS.get(mm.group(1).lower()) or (int(mm.group(1)) if mm.group(1).isdigit() else 0)
+                if not 0 < n <= 20:
+                    continue
+                hit = (n, _line(text, mm.start(), mm.end()))
+                if _is_preferred(text, mm.start(), mm.end()):
+                    if pref is None or n > pref[0]:
+                        pref = hit
+                elif best is None or n > best[0]:
+                    best = hit
     if best:
         out["yoe_min"] = _f(best[0], best[1])
+    elif pref:
+        out["yoe_min"] = {"value": pref[0], "evidence": pref[1], "preferred": True}
 
-    for level, pat in (_CLEARANCE if ("clearance" in low or "secret" in low or "public trust" in low) else ()):
-        mm = pat.search(text)
+    cspans = _spans(text, low, ("clearance", "secret", "public trust", "ts/sci", "ts /"), 60, 60)
+    for level, pat in (_CLEARANCE if cspans else ()):
+        mm = _first(pat, text, cspans)
         if mm:
             out["clearance"] = _f(level, _line(text, mm.start(), mm.end()))
             break
 
-    mm = _CITIZEN.search(text) if "citizen" in low else None
+    mm = _first(_CITIZEN, text, _spans(text, low, ("citizen",), 70, 40))
     if mm:
         out["citizenship"] = _f(True, _line(text, mm.start(), mm.end()))
 
     # "We sponsor, but can't for every role" is a caveat, not a refusal.
-    has_sp = "sponsor" in low
-    no = next((m for m in _VISA_NO.finditer(text)
-               if not _CAVEAT.search(_clause(text, m.start(), m.end()) + text[m.end(): m.end() + 60])), None) if has_sp else None
-    yes = _VISA_YES.search(text) if has_sp or "visa support" in low else None
+    vspans = _spans(text, low, ("sponsor", "visa support"), 110, 70)
+    no = next((m for m in _iter(_VISA_NO, text, vspans)
+               if not _CAVEAT.search(_clause(text, m.start(), m.end()) + text[m.end(): m.end() + 60])), None)
+    yes = _first(_VISA_YES, text, vspans)
     if no:
         out["visa"] = _f("no", _line(text, no.start(), no.end()))
     elif yes:
         out["visa"] = _f("yes", _line(text, yes.start(), yes.end()))
 
-    for level, pat in (_DEGREES if "degree" in low else ()):  # lowest required level wins
-        for mm in pat.finditer(text):
+    dspans = _spans(text, low, ("degree",), 0, 0, whole_line=True)  # the check below needs "degree" on the line
+    for level, pat in (_DEGREES if dspans else ()):  # lowest required level wins
+        for mm in _iter(pat, text, dspans):
             line = _line(text, mm.start(), mm.end())
             clause = _clause(text, mm.start(), mm.end())
             if "degree" in line.lower() and not _PREFERRED.search(clause):
@@ -155,7 +255,7 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
             break
 
     from .ghost import PIPELINE_LANGUAGE
-    mm = PIPELINE_LANGUAGE.search(text)
+    mm = _first(PIPELINE_LANGUAGE, text, _spans(text, low, _PIPELINE_KEYS, 50, 70))
     if mm:
         out["pipeline"] = _f(mm.group(0), _line(text, mm.start(), mm.end()))
     return out
@@ -166,16 +266,18 @@ def ensure_rules(conn, company_keys) -> int:
     n = 0
     for ck in company_keys:
         rows = conn.execute(
-            """SELECT j.content_hash, c.html AS content_html, j.title, j.location FROM jobs j
+            """SELECT j.content_hash, unz(c.html) AS content_html, j.title, j.location FROM jobs j
                JOIN job_content c ON c.uid = j.uid
                LEFT JOIN extractions e ON e.content_hash = j.content_hash
-               WHERE j.company_key=? AND j.active=1 AND e.content_hash IS NULL AND c.html <> ''
+               WHERE j.company_key=? AND j.active=1 AND e.content_hash IS NULL AND length(c.html) > 0
                GROUP BY j.content_hash""", (ck,)).fetchall()
         with conn:
             for r in rows:
                 data = rules(html_to_text(r["content_html"]), r["title"], r["location"] or "")
-                conn.execute("INSERT OR IGNORE INTO extractions(content_hash, method, data, at) VALUES (?, 'rules', ?, ?)",
-                             (r["content_hash"], json.dumps(data, ensure_ascii=False), utcnow()))
+                from .workers import RULES_VERSION
+                conn.execute("INSERT OR IGNORE INTO extractions(content_hash, method, data, model, at) "
+                             "VALUES (?, 'rules', ?, ?, ?)",
+                             (r["content_hash"], json.dumps(data, ensure_ascii=False), RULES_VERSION, utcnow()))
                 n += 1
     return n
 
@@ -188,16 +290,19 @@ def _annual(v, per):
 
 
 def derive(conn, company_keys) -> None:
-    """Combine ATS structure + extraction into the indexed filter columns on jobs."""
+    """Combine ATS structure + extraction (+ title level, + location countries) into the indexed
+    filter columns on jobs. Pure lookups and string checks: no description parsing here."""
+    from . import geo
     for ck in company_keys:
         rows = conn.execute(
-            """SELECT j.uid, j.workplace, j.salary_min, j.salary_max, j.salary_currency, j.salary_interval,
-                      j.content_hash, j.derived_of, e.data, e.method
+            """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency, j.salary_interval,
+                      j.content_hash, j.derived_of, j.cluster_locations, j.location, e.data, e.method
                FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
                WHERE j.company_key=? AND j.active=1""", (ck,)).fetchall()
         with conn:
             for r in rows:
-                key = f"{r['content_hash']}:{r['method']}:{r['workplace']}:{r['salary_min']}:{r['salary_max']}:{r['salary_interval']}"
+                key = (f"{r['content_hash']}:{r['method']}:{r['workplace']}:{r['salary_min']}:{r['salary_max']}:"
+                       f"{r['salary_interval']}:{r['title']}:{r['cluster_locations']}")
                 if key == r["derived_of"]:
                     continue
                 d = json.loads(r["data"]) if r["data"] else {}
@@ -213,11 +318,19 @@ def derive(conn, company_keys) -> None:
                 if smax is not None and smax < 10000:  # implausible as annual pay: treat as unknown
                     smin = smax = cur = None
                 cit = val("citizenship")
+                yoe = val("yoe_min")
+                ysrc = "preferred" if (d.get("yoe_min") or {}).get("preferred") else "stated"
+                if yoe is None:
+                    yoe = yoe_from_title(r["title"])
+                    ysrc = "title" if yoe is not None else None
+                locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
                 conn.execute(
                     """UPDATE jobs SET workplace_eff=?, pay_min_annual=?, pay_max_annual=?, pay_currency=?,
-                           yoe_min=?, visa=?, clearance=?, citizenship=?, degree=?, derived_of=? WHERE uid=?""",
-                    (r["workplace"] or val("workplace"), smin, smax, cur, val("yoe_min"), val("visa"),
-                     val("clearance"), None if cit is None else int(bool(cit)), val("degree"), key, r["uid"]))
+                           yoe_min=?, yoe_source=?, visa=?, clearance=?, citizenship=?, degree=?, countries=?,
+                           derived_of=? WHERE uid=?""",
+                    (r["workplace"] or val("workplace"), smin, smax, cur, yoe, ysrc, val("visa"), val("clearance"),
+                     None if cit is None else int(bool(cit)), val("degree"), geo.encode(geo.countries_of(locs)),
+                     key, r["uid"]))
 
 
 def get(conn, content_hash: str) -> tuple[dict, str | None]:

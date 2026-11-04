@@ -9,7 +9,11 @@
 #   workable         apply.workable.com/<slug>
 #   smartrecruiters  jobs.smartrecruiters.com/<CompanyId>   (case-sensitive)
 #   recruitee        <slug>.recruitee.com
+#   workday          <tenant>.wd<N>.myworkdayjobs.com/<Site>   ->  slug = "<tenant>.wd<N>/<Site>"
 # Optional per board: company = "Display Name", sponsor_name = "Legal name used in DOL/USCIS filings"
+#
+# Board lists: every CSV in config/boards/ is loaded too. top-companies.csv ships ~900 checked
+# employer boards (~500 switched on). Turn boards on/off on the website's Sources page.
 
 [settings]
 ghost_age_days = 60              # open longer than this = one ghost signal
@@ -18,9 +22,11 @@ ghost_hide_signals = 3           # hide likely ghosts by default at this many (o
 repost_gap_days = 7              # near-identical posting this much later = a repost
 request_timeout_seconds = 20
 per_host_requests_per_second = 4 # politeness limit per ATS host, shared by all workers
-fetch_workers = 8                # boards fetched in parallel
+fetch_workers = 16               # boards fetched in parallel
 fetch_interval_hours = 6         # automatic refresh while the site is open (0 = off)
-max_detail_calls_per_board = 400 # SmartRecruiters: description calls per run; the rest fill in next run
+max_detail_calls_per_board = 150 # SmartRecruiters/Workday: description calls per board per run; the rest fill in later
+disable_after_failures = 2       # switch off a board that reports "not found" this many runs in a row
+skip_hourly_titles = true        # skip clearly hourly/frontline titles (warehouse, cashier, driver...)
 inactive_content_retention_days = 180
 yoe_slack_years = 2              # "asks 5+ years" still counts as eligible with 3
 
@@ -29,6 +35,14 @@ extract_model = "claude-haiku-5-5"
 fit_model = "claude-sonnet-5-5"
 monthly_cap_usd = 5.0
 batch_threshold = 20             # this many requests or more use the Batch API (half price)
+
+# The shared job index. With repo set, this copy downloads the index that repo's GitHub Action
+# publishes (every 6 hours) and never fetches job boards itself. Leave it empty only on the
+# machine that builds the index. Maintainers: see MAINTAINING.md.
+[index]
+repo = "Newsplayer/lighthouse"   # the public repo whose GitHub Action publishes the index
+check_every_hours = 1            # look for a newer index this often while the app is open
+stale_after_hours = 30           # warn on the Sources page when the index is older than this
 
 [[boards]]
 ats = "greenhouse"

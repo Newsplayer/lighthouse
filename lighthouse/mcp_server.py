@@ -30,6 +30,8 @@ TOOLS = [
          "workplace": {"type": "string", "enum": ["remote", "hybrid", "onsite"]},
          "eligible_only": {"type": "boolean", "default": True},
          "include_ghosts": {"type": "boolean", "default": False},
+         "min_years_asked": {"type": "integer"}, "max_years_asked": {"type": "integer"},
+         "include_unstated_years": {"type": "boolean", "default": True},
          "unjudged_only": {"type": "boolean", "default": False,
                            "description": "Only roles without a fit verdict for the current profile"},
          "limit": {"type": "integer", "default": 20}, "offset": {"type": "integer", "default": 0}}}},
@@ -64,6 +66,7 @@ def _row(r) -> dict:
             "pay_annual": [r["pay_min_annual"], r["pay_max_annual"]] if r["pay_max_annual"] else None,
             "pay_currency": r["pay_currency"], "first_seen": r["effective_first_seen"],
             "ghost_reasons": json.loads(r["ghost_reasons"] or "[]"),
+            "years_asked": r["yoe_min"], "years_asked_source": r["yoe_source"],
             "ineligible_because": json.loads(r["elig_reasons"] or "[]"), "fit_tier": r["fit_tier"], "url": r["url"]}
 
 
@@ -73,6 +76,9 @@ def call(conn, cfg, name: str, args: dict):
     if name == "search_jobs":
         f = db.Filters(q=args.get("query", ""), company=args.get("company", ""), workplace=args.get("workplace", ""),
                        eligible_only=args.get("eligible_only", True), show_ghosts=args.get("include_ghosts", False),
+                       yoe_lo=args.get("min_years_asked"), yoe_hi=args.get("max_years_asked"),
+                       yoe_unknown=args.get("include_unstated_years", True),
+                       countries=tuple(prof.get("countries") or ()),
                        ghost_hide_at=cfg.settings.ghost_hide_signals, profile_hash=ph)
         limit = max(1, min(int(args.get("limit", 20)), 100))
         rows, total = db.list_jobs(conn, f, page=1 + int(args.get("offset", 0)) // limit, per_page=limit)

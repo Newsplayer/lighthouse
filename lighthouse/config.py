@@ -1,17 +1,36 @@
 """Settings from config/sources.toml, with defaults for everything.
 
-Boards: `[[boards]] ats = "lever" slug = "palantir"`. The older `[[greenhouse]] token = ...`
-form still works. Boards added from the website or CLI live in the database (boards table),
-so the config file never has to be rewritten.
+Boards come from three places, all merged into the database `boards` table:
+  - `[[boards]] ats = "lever" slug = "palantir"` in sources.toml (older `[[greenhouse]] token = ...` works too)
+  - board lists: every CSV in config/boards/ (columns ats, slug, company, enabled) — e.g. the
+    bundled top-companies.csv with ~900 checked employer boards
+  - the Sources page / `python -m lighthouse add`
+A board's on/off state is set once from its list; after that the Sources page owns it.
 """
 
 from __future__ import annotations
 
+import csv
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config" / "sources.toml"
+BOARD_LISTS_DIR = "boards"  # relative to the config file's folder
+
+# Titles that are almost always hourly / frontline work. Postings matching these are skipped at
+# ingest when skip_hourly_titles is on, which keeps big employers' Workday sites focused on
+# professional roles (and the database small). Set skip_hourly_titles = false to keep everything.
+HOURLY_TITLE_PATTERNS = (
+    r"\bwarehouse (associate|worker|operator|clerk|team member|picker|packer|loader)\b", r"\bcashier\b", r"\bcdl\b",
+    r"\bforklift\b", r"\b(delivery|truck|route|bus|van|shuttle|class a|class b) driver\b", r"^driver\b", r"\bcourier\b",
+    r"\bstore (associate|team member|manager|clerk)\b", r"\bcrew member\b", r"\bbarista\b", r"\bcustodial\b",
+    r"^custodian\b", r"\bjanitor", r"\bhousekeep", r"\b(line|prep) cook\b", r"^cook\b", r"\bdishwasher\b",
+    r"\border (picker|selector)\b", r"^(picker|packer)\b", r"\bmaterial handler\b", r"\bassembler\b",
+    r"\bmachine operator\b", r"\bproduction (associate|operator|worker)\b", r"\bretail (sales )?associate\b",
+    r"\bstocker\b", r"^servers?\s*($|[-–(,/])", r"\b(banquet|restaurant|food|cocktail) server\b", r"\bsecurity guard\b",
+    r"\bmerchandiser\b", r"\bcaregiver\b", r"\bgeneral labor", r"^mover\b", r"\bdock worker\b",
+)
 
 
 @dataclass
@@ -24,10 +43,12 @@ class Settings:
     # fetching
     request_timeout_seconds: float = 20
     per_host_requests_per_second: float = 4
-    fetch_workers: int = 8
+    fetch_workers: int = 16          # boards in parallel (the per-host limit still applies to each ATS)
     fetch_interval_hours: float = 6  # 0 = no scheduled fetch while the site is running
-    max_detail_calls_per_board: int = 400
+    max_detail_calls_per_board: int = 150   # SmartRecruiters/Workday description calls per board per run
+    disable_after_failures: int = 2   # a board that reports "not found" this many runs in a row is switched off
     inactive_content_retention_days: int = 180
+    skip_hourly_titles: bool = True
     # eligibility
     yoe_slack_years: int = 2
 
@@ -47,10 +68,25 @@ class ClaudeSettings:
 
 
 @dataclass
+class IndexSettings:
+    """The shared job index. When repo is set, this copy of Lighthouse is a reader: it downloads the
+    index that repo's GitHub Action publishes and never fetches boards or changes job data itself."""
+    repo: str = ""                   # "owner/name" of the public repo that publishes the index
+    check_every_hours: float = 1     # how often to look for a newer index while the app is open
+    stale_after_hours: float = 30    # warn when the newest index is older than this
+
+
+@dataclass
 class Config:
     settings: Settings
     claude: ClaudeSettings
     boards: list[dict]
+    index: IndexSettings = field(default_factory=IndexSettings)
+
+    @property
+    def reader(self) -> bool:
+        """True when job data comes from the shared index (users' normal setup)."""
+        return bool(self.index.repo.strip())
 
 
 def _pick(cls, data: dict):
@@ -76,7 +112,27 @@ def load(path: Path | str = DEFAULT_CONFIG) -> Config:
             slug = b.get("token") or b.get("slug")
             if slug:
                 boards.append({"ats": ats, "slug": str(slug), "company": b.get("company"), "options": None})
+    boards += load_board_lists(path.parent / BOARD_LISTS_DIR)
     claude = _pick(ClaudeSettings, raw.get("claude", {}))
     if "prices" in raw.get("claude", {}):
         claude.prices = {**ClaudeSettings().prices, **raw["claude"]["prices"]}
-    return Config(settings=_pick(Settings, raw.get("settings", {})), claude=claude, boards=boards)
+    return Config(settings=_pick(Settings, raw.get("settings", {})), claude=claude, boards=boards,
+                  index=_pick(IndexSettings, raw.get("index") or {}))
+
+
+def load_board_lists(folder: Path) -> list[dict]:
+    """Read every CSV board list in config/boards/. Lines starting with # are comments."""
+    out = []
+    if not folder.is_dir():
+        return out
+    from .sources import SOURCES
+    for path in sorted(folder.glob("*.csv")):
+        with open(path, encoding="utf-8", newline="") as f:
+            lines = [ln for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+        for row in csv.DictReader(lines):
+            ats, slug = (row.get("ats") or "").strip().lower(), (row.get("slug") or "").strip()
+            if ats in SOURCES and slug:
+                out.append({"ats": ats, "slug": slug, "company": (row.get("company") or "").strip() or None,
+                            "options": None, "list": path.stem,
+                            "enabled": (row.get("enabled") or "yes").strip().lower() not in ("no", "false", "0", "off")})
+    return out

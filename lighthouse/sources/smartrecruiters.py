@@ -41,6 +41,7 @@ class SmartRecruitersSource(Source):
             raise BoardNotFound("SmartRecruiters: no public postings for this company id "
                                 "(ids are case-sensitive, e.g. BoschGroup)")
         jobs = [self.parse_summary(slug, raw) for raw in items]
+        jobs = [j for j in jobs if self.wanted(j)]
         todo = [j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)]
         todo = todo[: self.max_detail_calls]
         with ThreadPoolExecutor(max_workers=4) as pool:  # per-host throttle still applies
