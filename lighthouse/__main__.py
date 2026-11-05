@@ -176,7 +176,7 @@ def main() -> None:
         empty = not db.stats(conn)["total"]
         conn.close()
         if empty:
-            print("First run: downloading the job index (a minute or two)..." if cfg.reader else
+            print("First run: downloading the job index (a few hundred MB; a few minutes)..." if cfg.reader else
                   "First run: pulling jobs from your boards (this takes a few seconds)...")
             for r in fetch.run() or []:
                 if r.get("error"):

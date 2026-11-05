@@ -20,7 +20,7 @@ Needs Python 3.11+ ([python.org](https://www.python.org/downloads/)). Download t
 | macOS | Double-click `start-mac.command` (first time: right-click → Open) |
 | Linux | `./start.sh` |
 
-The first start sets everything up and downloads the job index (a minute or two). After that,
+The first start sets everything up and downloads the job index (a few hundred MB: a few minutes). After that,
 startup takes a couple of seconds and only the changes are downloaded (usually a few MB).
 Your browser opens to the site; close the terminal window to stop it.
 
