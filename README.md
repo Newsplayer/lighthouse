@@ -143,12 +143,13 @@ judged yet and save a verdict for each". Tools: `search_jobs`, `get_posting`, `g
 No Lighthouse server, no telemetry. Outbound requests are limited in code to the job index's release
 files on `github.com` (served from `*.githubusercontent.com`) and, if you use Claude with a key,
 `api.anthropic.com`; see the **Network** page. Your copy never contacts job boards. Nothing is
-uploaded anywhere: your profile, marks and verdicts live only in `data/lighthouse.db`. The site only answers on 127.0.0.1, rejects foreign
-Host headers, and requires a per-session token on every form.
+uploaded anywhere: your profile, marks and verdicts live only in `data/user.db`. The site only
+answers on 127.0.0.1, rejects foreign Host headers, and requires a per-session token on every form.
 
 ## Speed: doing less work, not just faster work
 
-On your computer the work is a download, a merge and fast local queries. The rest of this table
+On your computer the work is a download and fast local queries: the index arrives ready to
+search, and eligibility is worked out inside each query, only for the rows you're looking at. The rest of this table
 is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.md](MAINTAINING.md)).
 
 | What | How |
@@ -157,7 +158,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Unchanged postings | Each raw description is hashed; only new/edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
 | Countries | The index can be limited to some countries (`LIGHTHOUSE_COUNTRIES`); postings located only elsewhere are skipped before any detail download. Your Profile countries filter the list on top |
 | Hourly roles | Skipped before any per-posting call |
-| Shared index | The fetching and analysis run once, on GitHub, for everyone. Your computer downloads a full file weekly (~1 KB per posting, compressed as a whole: 3× smaller than per-description compression) and a small change file after that |
+| Shared index | The fetching, analysis and search indexing run once, on GitHub, for everyone. Your computer downloads a ready-to-use file weekly and opens it as is (a few seconds), then applies a small change file every few hours |
+| Descriptions on disk | Each is compressed against one shared dictionary of common posting text: about 3× smaller than plain text, and a page still reads only the one it shows |
 | Analysis | Runs on every CPU core; field extraction only scans short windows around keywords ("year", "sponsor"…): 5× faster with identical results |
 | Search | The job list reads one table through partial indexes (marks and filter fields are stored on each row), counts stop at 5,000, dropdown lists are cached until data changes; page loads at 52k postings 17–145 ms (were 240–330 ms) |
 
@@ -170,7 +172,7 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | ~900 boards | Board lists in `config/boards/*.csv`; 16 parallel workers with a per-host limit; dead boards switched off automatically |
 | Duplicates | One-pass MinHash per description + LSH banding per company, so cost grows with postings, not pairs |
 | Re-runs | Only companies whose postings changed are re-clustered and re-extracted; signatures and extractions are cached by description hash |
-| The list | Cluster/filter fields are precomputed and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
+| The list | Cluster/filter fields (function, seniority, skills, pay...) are precomputed by the builder and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
 | Claude spend | Eligibility and ghost filters run first; Batch API; prompt caching; cache by (description, profile); monthly cap |
 | Storage | Descriptions stored zlib-compressed in their own table; search indexes the first 4,000 characters; descriptions of roles closed 180+ days are dropped (history kept); sponsorship data aggregated per employer-year |
 | Schema | Versioned migrations (`PRAGMA user_version`) |
@@ -180,13 +182,14 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 
 | Piece | File |
 |---|---|
+| Company list → job boards | `config/companies.csv`, `lighthouse/discover.py` |
 | ATS adapters | `lighthouse/sources/` |
 | HTTP allowlist + throttle | `lighthouse/net.py` |
 | Storage, migrations, list query | `lighthouse/db.py` |
 | Fetch + post-processing | `lighthouse/fetch.py` |
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
-| Field extraction | `lighthouse/extract.py` |
+| Field extraction; function, seniority, skills | `lighthouse/extract.py`, `lighthouse/classify.py` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |
