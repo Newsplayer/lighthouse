@@ -1,5 +1,7 @@
 # Builds the shared job index and publishes it on this repo's "job-index" release.
 # This is the only thing that writes job data; every user's Lighthouse just downloads it.
+# Each run: find job boards for config/companies.csv (careers pages, re-checked when due), fetch every
+# board, clean/de-duplicate/analyse, then publish a ready-to-use database (or a small delta).
 # Setup and upkeep: MAINTAINING.md.
 name: Job index
 
@@ -14,7 +16,7 @@ on:
         default: false
   push:
     branches: [main]
-    paths: ["config/**"]            # board list edited -> rebuild soon
+    paths: ["config/**"]            # board or companies list edited -> rebuild soon
 
 permissions:
   contents: write                   # publish the release; nothing else
@@ -26,7 +28,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 340             # GitHub's limit is 360
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -57,11 +59,12 @@ jobs:
         if: steps.cache.outputs.cache-matched-key == ''
         run: |
           mkdir -p data
-          if [ -f prev/manifest.json ] && gh release download job-index --pattern base.db.xz --dir prev; then
-            xz -dc prev/base.db.xz > data/builder.db
+          if [ -f prev/manifest.json ] && gh release download job-index --pattern base.db.xz --dir prev \
+             && python -m lighthouse index seed prev/base.db.xz; then
             echo "Seeded from the published base"
           else
-            echo "First build: fetching everything (about 30-60 minutes)"
+            rm -f data/builder.db
+            echo "First build: finding careers pages and fetching everything (about 1-3 hours)"
           fi
 
       - name: Build
@@ -82,6 +85,7 @@ jobs:
           d = m["delta"]
           print(f"{m['jobs']} open roles from {m['boards']} boards; "
                 + (f"delta {d['rows']} rows, {d['bytes']/1e6:.1f} MB" if d else f"new base {m['base']['bytes']/1e6:.1f} MB"))
+          print("Companies list coverage:", m.get("coverage"))
           PY
 
       # Saved only after a successful publish, so the cache always matches what readers have.

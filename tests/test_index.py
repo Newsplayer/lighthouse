@@ -19,7 +19,8 @@ REPO = "maintainer/lighthouse"
 
 def job(eid, title="Data Analyst", board="acme", company="Acme", body=None):
     words = " ".join(f"topic{eid}x{k}" for k in range(80))   # distinct text: no accidental clustering
-    body = body if body is not None else f"<p>Build dashboards with SQL. 3+ years of experience. {words}</p>"
+    body = body if body is not None else (f"<p>Build dashboards with SQL. 3+ years of experience. {words}</p>"
+                                          "<p>Acme is an equal opportunity employer and values a diverse workforce.</p>")
     return Job("greenhouse", board, str(eid), title, company, f"Austin {eid}, TX", f"https://x/{eid}", sanitize_html(body),
                posted_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
 
@@ -91,7 +92,8 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
     assert not cols & {"minhash", "minhash_of", "elig", "elig_reasons"}
     assert c.execute("SELECT COUNT(*) FROM jobs WHERE mark IS NOT NULL").fetchone()[0] == 0
-    assert all(isinstance(r[0], str) for r in c.execute("SELECT html FROM job_content"))   # plain text, compressed as a whole
+    assert all(isinstance(r[0], bytes) for r in c.execute("SELECT html FROM job_content"))   # compressed per row...
+    assert c.execute("SELECT COUNT(*) FROM zdict").fetchone()[0] == 1                       # ...against one dictionary
     # ready to use: search index and list indexes are already in the file
     assert "jobs_fts" in tables and c.execute("SELECT COUNT(*) FROM jobs WHERE fts_rowid IS NOT NULL").fetchone()[0] == 2
     assert c.execute("SELECT COUNT(*) FROM jobs_fts WHERE jobs_fts MATCH '\"dashboards\"*'").fetchone()[0] == 2
@@ -157,7 +159,7 @@ def test_tampered_index_is_harmless_when_shown(tmp_path):
     b.export()
     path = unpacked(b.dist / snapshot.BASE, tmp_path)
     c = sqlite3.connect(path)
-    c.execute("UPDATE job_content SET html = '<p>Hi</p><script>steal()</script><img src=x onerror=alert(1)>'")
+    c.execute("UPDATE job_content SET html = ?", (db.pack('<p>Hi</p><script>steal()</script><img src=x onerror=alert(1)>'),))
     c.execute("UPDATE jobs SET url = 'javascript:alert(1)'")
     c.commit()
     c.close()
@@ -334,3 +336,19 @@ def test_sources_page_is_read_only_for_readers(tmp_path):
     assert "Suggest a board" in html and f"github.com/{REPO}/issues/new" in html and "Add boards" not in html
     assert "Check for new jobs" in html
     assert client.post("/sources/add", data={"csrf": app.config["CSRF"], "urls": "https://jobs.lever.co/x"}).status_code == 403
+
+
+def test_builder_can_restart_from_the_published_base(tmp_path):
+    b = Builder(tmp_path)
+    b.ingest("acme", [job(1), job(2, "Accountant")])
+    b.export()
+    fresh = tmp_path / "fresh.db"
+    assert snapshot.seed_builder(b.dist / snapshot.BASE, fresh) == 2
+    conn = db.connect(fresh)
+    assert db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")   # stored compressed again
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 2
+    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, "Accountant"), job(3, "Controller")])
+    fetch.postprocess(conn, b.cfg)
+    conn.close()
+    m = snapshot.export(fresh, tmp_path / "again", full=True)
+    assert m["base"]["rows"] == 3

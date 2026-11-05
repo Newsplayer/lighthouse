@@ -12,6 +12,7 @@
     python -m lighthouse mcp                # MCP server (stdio) for your own Claude app
     python -m lighthouse index status       # shared job index: when it was built, what it covers
     python -m lighthouse index import [FILE] # update now (or merge a local base.db.xz to test a build)
+    python -m lighthouse index seed base.db.xz  # builder: start from the published index (cache expired)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
                                             # what the GitHub Action runs (maintainers only)
     python -m lighthouse discover [--only NAME] [--out FILE]
@@ -66,6 +67,11 @@ def _index(args) -> None:
     import json
     from . import snapshot
     cfg = config.load()
+    if args.action == "seed":   # builder: start from the published base when the Action's cache is gone
+        if not args.file:
+            raise SystemExit("usage: python -m lighthouse index seed base.db.xz [--db data/builder.db]")
+        print(f"Seeded {snapshot.seed_builder(args.file, args.db or snapshot.BUILDER_DB)} postings.")
+        return
     if args.action == "build":
         m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
                            db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
@@ -135,7 +141,7 @@ def main() -> None:
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     p = sub.add_parser("index", help="the shared job index")
-    p.add_argument("action", choices=["status", "import", "build"])
+    p.add_argument("action", choices=["status", "import", "build", "seed"])
     p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
     p.add_argument("--out", default="dist", help="build: output folder")
     p.add_argument("--db", default=None, help="build: builder database (default data/builder.db)")

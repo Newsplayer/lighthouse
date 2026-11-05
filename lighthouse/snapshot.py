@@ -205,6 +205,41 @@ def apply_board_list(conn, cfg_or_boards, retry_switched_off: bool = False) -> s
     return keys
 
 
+def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
+    """Start a builder database from a published base (when the Action's cache has expired), so the
+    next build only fetches what changed instead of everything. Returns postings seeded."""
+    index_file = Path(index_file)
+    tmp = None
+    if index_file.suffix == ".xz":
+        fd, tmp = tempfile.mkstemp(suffix=".db", dir=Path(db_path).parent)
+        with os.fdopen(fd, "wb") as fout, lzma.open(index_file, "rb") as fin:
+            shutil.copyfileobj(fin, fout, 1 << 20)
+        index_file = Path(tmp)
+    try:
+        _check_index_file(index_file, "seed")
+        conn = db.connect(db_path)
+        conn.execute("ATTACH DATABASE ? AS s", (str(index_file),))
+        db.load_zdicts(conn, "s")
+        cols = [c for c in _cols(conn, "jobs", "s") if c in set(_cols(conn, "jobs")) and c not in ("mark", "fts_rowid")]
+        bcols = [c for c in _cols(conn, "boards", "s") if c in set(_cols(conn, "boards"))]
+        ccols = [c for c in _cols(conn, "companies", "s") if c in set(_cols(conn, "companies"))]
+        with conn:
+            conn.execute(f"INSERT OR REPLACE INTO jobs ({', '.join(cols)}) SELECT {', '.join(cols)} FROM s.jobs")
+            conn.execute("INSERT OR REPLACE INTO job_content (uid, html) SELECT uid, zpack(unz(html)) FROM s.job_content")
+            conn.execute("INSERT OR REPLACE INTO extractions SELECT content_hash, method, data, model, at FROM s.extractions")
+            conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY id")
+            conn.execute(f"INSERT OR REPLACE INTO boards ({', '.join(bcols)}) SELECT {', '.join(bcols)} FROM s.boards")
+            conn.execute(f"INSERT OR REPLACE INTO companies ({', '.join(ccols)}) SELECT {', '.join(ccols)} FROM s.companies")
+            conn.execute("UPDATE jobs SET minhash = NULL, minhash_of = NULL")   # recomputed by the next build
+        n = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        conn.execute("DETACH DATABASE s")
+        conn.close()
+        return n
+    finally:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+
+
 def _job_columns(conn, schema: str = "main") -> list[tuple[str, str]]:
     """(name, type) of the job columns a published index carries."""
     return [(r[1], r[2]) for r in conn.execute(f"PRAGMA {schema}.table_info(jobs)")
@@ -269,19 +304,39 @@ def _finish(c, plain: Path, out_path: Path) -> dict:
             "rows": rows, "active": active}
 
 
-def _open_writer(src_path: Path, plain: Path):
+def _open_writer(src_path: Path, plain: Path, zdict: bytes):
     from .sanitize import html_to_text
     c = sqlite3.connect(plain)
     c.execute("PRAGMA journal_mode=OFF")
     c.execute("PRAGMA synchronous=OFF")
     c.create_function("unz", 1, db.unpack, deterministic=True)
-    c.create_function("fts_text", 1, lambda h: html_to_text(h or "")[:db.FTS_BODY_CHARS], deterministic=True)
+    c.create_function("zd", 1, lambda h: db.pack_with(db.unpack(h), zdict), deterministic=True)
+    c.create_function("fts_text", 1, lambda h: html_to_text(db.unpack(h))[:db.FTS_BODY_CHARS], deterministic=True)
     c.execute("ATTACH DATABASE ? AS src", (str(src_path),))
     return c
 
 
+def _zdict(src_path: Path, new: bool) -> bytes:
+    """The description dictionary: trained afresh for each base, reused by its deltas."""
+    conn = db.connect(src_path)
+    try:
+        saved = db.get_meta(conn, "index_zdict")
+        if saved and not new:
+            d = bytes.fromhex(saved)
+        else:
+            sample = [db.unpack(r[0]) for r in conn.execute(
+                "SELECT html FROM job_content WHERE uid IN (SELECT uid FROM jobs WHERE active = 1) "
+                "ORDER BY random() LIMIT 30000")]
+            d = db.train_zdict(sample) if sample else b""
+            db.set_meta(conn, "index_zdict", d.hex())
+        db.register_zdict(d)
+        return d
+    finally:
+        conn.close()
+
+
 def _copy_shared(c, uid_filter: str, args=()) -> None:
-    """Tables both files carry: extractions, events, boards, companies."""
+    """Tables both files carry: extractions, events, boards, companies (+ the description dictionary)."""
     c.execute("INSERT INTO main.extractions (content_hash, method, data, model, at) "
               "SELECT content_hash, method, data, model, at FROM src.extractions "
               "WHERE content_hash IN (SELECT content_hash FROM main.jobs)")
@@ -293,20 +348,28 @@ def _copy_shared(c, uid_filter: str, args=()) -> None:
     c.execute(f"INSERT INTO main.companies ({ccols}) SELECT {ccols} FROM src.companies")
 
 
+def _put_zdict(c, zdict: bytes) -> None:
+    if zdict:
+        c.execute("INSERT INTO main.zdict (data) VALUES (?)", (zdict,))
+
+
 def _write_base(src_path: Path, out_path: Path, meta: dict) -> dict:
-    """The whole index, ready to open: every posting, descriptions as plain HTML (xz compresses a
-    whole file ~3x better than per-row zlib), and a contentless search index over open postings."""
+    """The whole index, ready to open: every posting, each description compressed against a shared
+    dictionary (readable one row at a time, ~3x smaller on disk), and a contentless search index
+    over open postings."""
     plain = _plain_db(out_path)
-    c = _open_writer(src_path, plain)
+    zdict = _zdict(src_path, new=True)
+    c = _open_writer(src_path, plain, zdict)
     cols = _job_columns(c, "src")
     db.create_index_tables(c, cols, fts=True, indexes=False)   # indexes after the bulk insert: faster
     names = [n for n, _ in cols]
     sel = ", ".join("NULL" if n in ("mark", "fts_rowid") else n for n in names)
     with c:
         c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs ORDER BY uid")
-        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, unz(html) FROM src.job_content "
+        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, zd(html) FROM src.job_content "
                   "WHERE uid IN (SELECT uid FROM main.jobs)")
         _copy_shared(c, "SELECT uid FROM main.jobs")
+        _put_zdict(c, zdict)
         c.execute("""INSERT INTO main.jobs_fts (rowid, title, company, location, body)
                      SELECT j.rowid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html)
                      FROM main.jobs j LEFT JOIN main.job_content c ON c.uid = j.uid WHERE j.active = 1""")
@@ -323,7 +386,8 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
     """Postings changed after the base: full job rows; descriptions only where they changed; the
     search text of rows whose title/company/location/description changed or that reopened."""
     plain = _plain_db(out_path)
-    c = _open_writer(src_path, plain)
+    zdict = _zdict(src_path, new=False)
+    c = _open_writer(src_path, plain, zdict)
     cols = _job_columns(c, "src")
     db.create_index_tables(c, cols, fts=False, indexes=False)
     c.execute("CREATE TABLE fts_rows (uid TEXT PRIMARY KEY, title TEXT, company TEXT, location TEXT, body TEXT)")
@@ -336,11 +400,12 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
         c.execute("CREATE UNIQUE INDEX temp.pick_uid ON pick(uid)")
         c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs "
                   "WHERE uid IN (SELECT uid FROM pick)")
-        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, unz(html) FROM src.job_content "
+        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, zd(html) FROM src.job_content "
                   "WHERE uid IN (SELECT uid FROM pick WHERE content)")
         _copy_shared(c, "SELECT uid FROM pick")
+        _put_zdict(c, zdict)
         c.execute("""INSERT INTO main.fts_rows (uid, title, company, location, body)
-                     SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(unz(c.html))
+                     SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html)
                      FROM src.jobs j LEFT JOIN src.job_content c ON c.uid = j.uid
                      WHERE j.active = 1 AND j.uid IN (SELECT uid FROM pick WHERE fts)""")
         c.executemany("INSERT INTO main.index_meta(key, value) VALUES (?, ?)",
@@ -559,6 +624,7 @@ def apply_delta(conn, path: Path) -> dict:
     conn.commit()
     conn.execute("ATTACH DATABASE ? AS d", (str(path),))
     try:
+        db.load_zdicts(conn, "d")
         cols = [c for c in _cols(conn, "jobs", "d") if c in set(_cols(conn, "jobs", "idx")) and c not in ("mark", "fts_rowid")]
         safe_url = "CASE WHEN url LIKE 'https://%' OR url LIKE 'http://%' THEN url ELSE '' END"
         select = ", ".join(safe_url if c == "url" else c for c in cols)
@@ -582,6 +648,7 @@ def apply_delta(conn, path: Path) -> dict:
             conn.execute("DELETE FROM idx.companies")
             conn.execute(f"INSERT INTO idx.companies ({ccols}) SELECT {ccols} FROM d.companies")
             conn.execute("INSERT OR REPLACE INTO idx.index_meta (key, value) SELECT key, value FROM d.index_meta")
+            conn.execute("INSERT INTO idx.zdict (data) SELECT data FROM d.zdict WHERE data NOT IN (SELECT data FROM idx.zdict)")
             # Search text: new rows get fresh search-index rowids (the old entries simply stop matching any job).
             start = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM idx.jobs_fts").fetchone()[0]
             conn.execute("CREATE TEMP TABLE fts_new AS SELECT ? + row_number() OVER (ORDER BY uid) AS rid, uid, title, "

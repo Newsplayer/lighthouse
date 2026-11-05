@@ -17,6 +17,7 @@ jobs:
         with: {python-version: "3.12", cache: pip}
       - run: pip install -r requirements.txt
       - name: Discover
+        if: hashFiles('probe/skip-discover') == ''
         run: python -m lighthouse discover --out census.jsonl --workers 24
       - name: Extra probes
         if: hashFiles('probe/run.py') != ''

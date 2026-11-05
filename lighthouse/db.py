@@ -338,12 +338,56 @@ def pack(html: str) -> bytes:
     return zlib.compress((html or "").encode("utf-8"), 6)
 
 
+# A published index compresses each description against one shared dictionary of common posting
+# boilerplate (EEO statements, benefits blurbs...): ~3.1x instead of ~2.4x, and still one row at a
+# time, so the file is used as downloaded. Dictionaries are registered by their zlib id (adler32).
+_ZDICTS: dict[int, bytes] = {}
+
+
+def register_zdict(data: bytes | None) -> None:
+    if data:
+        _ZDICTS[zlib.adler32(data)] = bytes(data)
+
+
+def pack_with(html: str, zdict: bytes) -> bytes:
+    if not zdict:
+        return pack(html)
+    co = zlib.compressobj(9, zlib.DEFLATED, 15, 9, zlib.Z_DEFAULT_STRATEGY, zdict)
+    return co.compress((html or "").encode("utf-8")) + co.flush()
+
+
 def unpack(value) -> str:
     if value is None:
         return ""
     if isinstance(value, (bytes, memoryview)):
-        return zlib.decompress(bytes(value)).decode("utf-8")
+        b = bytes(value)
+        if len(b) > 6 and b[1] & 0x20:   # compressed against a dictionary (FDICT bit)
+            d = _ZDICTS.get(int.from_bytes(b[2:6], "big"))
+            if d is None:
+                raise ValueError("description needs a dictionary that isn't loaded")
+            return zlib.decompressobj(zdict=d).decompress(b).decode("utf-8")
+        return zlib.decompress(b).decode("utf-8")
     return value  # plain text from an older v0.2 database
+
+
+def train_zdict(samples, size: int = 32768) -> bytes:
+    """The most repeated lines across sample descriptions, most common last (zlib reaches the end of
+    a dictionary most cheaply)."""
+    from collections import Counter
+    cnt: Counter = Counter()
+    samples = list(samples)
+    min_count = 2 if len(samples) < 500 else 5
+    for h in samples:
+        for seg in set((h or "").replace("</p>", "</p>\n").replace("</li>", "</li>\n").split("\n")):
+            if 40 <= len(seg) <= 600:
+                cnt[seg] += 1
+    picked, total = [], 0
+    for seg, n in cnt.most_common():
+        if n < min_count or total > size:
+            break
+        picked.append(seg)
+        total += len(seg.encode("utf-8")) + 1
+    return "\n".join(reversed(picked)).encode("utf-8")[-size:]
 
 
 FTS_BODY_CHARS = 4000  # index the start of each description: plenty for search, keeps the index small
@@ -363,6 +407,7 @@ def connect(path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.create_function("unz", 1, unpack, deterministic=True)
+    conn.create_function("zpack", 1, pack, deterministic=True)
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA temp_store=MEMORY")
     _tune(conn)
@@ -530,6 +575,15 @@ def attach_index(conn, folder: Path) -> None:
         set_meta(conn, "index_file", str(path.relative_to(folder)).replace("\\", "/"))
     conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
     _tune(conn, "idx")
+    load_zdicts(conn, "idx")
+
+
+def load_zdicts(conn, schema: str) -> None:
+    try:
+        for (data,) in conn.execute(f"SELECT data FROM {schema}.zdict"):
+            register_zdict(data)
+    except sqlite3.OperationalError:
+        pass   # an index without dictionaries (empty, or older)
 
 
 def create_empty_index(path: Path) -> None:
@@ -566,6 +620,7 @@ CREATE TABLE IF NOT EXISTS extractions (
     content_hash TEXT PRIMARY KEY, method TEXT NOT NULL, data TEXT NOT NULL, model TEXT, at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS zdict (id INTEGER PRIMARY KEY, data BLOB NOT NULL);   -- description dictionary
 """ + COMPANIES
 
 INDEX_INDEXES = """
