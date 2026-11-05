@@ -338,9 +338,10 @@ def pack(html: str) -> bytes:
     return zlib.compress((html or "").encode("utf-8"), 6)
 
 
-# A published index compresses each description against one shared dictionary of common posting
-# boilerplate (EEO statements, benefits blurbs...): ~3.1x instead of ~2.4x, and still one row at a
-# time, so the file is used as downloaded. Dictionaries are registered by their zlib id (adler32).
+# A published index compresses each description against a dictionary of its board's common text
+# (the company's "About us", benefits, EEO statement...; one shared dictionary for small boards):
+# ~4.9x instead of ~2.4x on real postings, and still one row at a time, so the file is used as
+# downloaded. Dictionaries are registered by their zlib id (adler32), which is also their row id.
 _ZDICTS: dict[int, bytes] = {}
 
 
@@ -610,11 +611,16 @@ def index_base_built_at(conn) -> str | None:
 
 
 def load_zdicts(conn, schema: str) -> None:
+    """Register the index's dictionaries (each is read once per process; later connections only
+    list their ids)."""
     try:
-        for (data,) in conn.execute(f"SELECT data FROM {schema}.zdict"):
-            register_zdict(data)
+        ids = [r[0] for r in conn.execute(f"SELECT id FROM {schema}.zdict")]
     except sqlite3.OperationalError:
-        pass   # an index without dictionaries (empty, or older)
+        return   # an index without dictionaries (empty, or older)
+    for i in ids:
+        if i not in _ZDICTS:
+            row = conn.execute(f"SELECT data FROM {schema}.zdict WHERE id = ?", (i,)).fetchone()
+            register_zdict(row[0] if row else None)
 
 
 def create_empty_index(path: Path) -> None:
@@ -651,7 +657,7 @@ CREATE TABLE IF NOT EXISTS extractions (
     content_hash TEXT PRIMARY KEY, method TEXT NOT NULL, data TEXT NOT NULL, model TEXT, at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS zdict (id INTEGER PRIMARY KEY, data BLOB NOT NULL);   -- description dictionary
+CREATE TABLE IF NOT EXISTS zdict (id INTEGER PRIMARY KEY, data BLOB NOT NULL);   -- description dictionaries; id = adler32(data)
 """ + COMPANIES
 
 INDEX_INDEXES = """

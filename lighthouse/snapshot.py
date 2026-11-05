@@ -6,7 +6,7 @@ fetches every board, de-duplicates and analyses the postings, and publishes the 
 
     manifest.json        what's current, with each file's name and SHA-256
     base-<time>.db.xz    a ready-to-use job index (every posting + its search index); rebuilt weekly
-    delta-<time>.db.xz   only what changed since that base; rebuilt every run
+    delta-<time>.db.xz   what changed in one build; the manifest lists the chain since the base
 
 Readers ([index] repo set) use the base as it comes: it is unpacked into data/index/ and opened
 directly, with nothing re-parsed, re-cleaned or re-indexed. Each delta is applied with a few SQL
@@ -31,6 +31,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -45,12 +46,17 @@ TAG = "job-index"
 MANIFEST = "manifest.json"
 BUILDER_DB = db.DEFAULT_DB.parent / "builder.db"   # the Action's working database (kept in its cache)
 BASE_EVERY_DAYS = 7
+MAX_DELTAS = 40                    # a longer chain since the base: write a new base instead
 MAX_BYTES = 1_900_000_000          # GitHub's per-file release limit is 2 GiB
 REDISCOVER_OK_DAYS = 14            # re-check a company whose board works this often
 REDISCOVER_BAD_DAYS = 3            # ... and one whose board couldn't be found this often
+FETCH_DETAIL_MINUTES = 120         # builder: boards started later than this skip description calls this run
 
 # Changes on every run for every open posting, or not shown to readers: not a reason to re-send a row.
 VOLATILE_JOB_COLUMNS = {"last_seen", "updated_at", "row_sig", "detail_marker"}
+# Shipped empty: per-reader (mark), assigned on arrival (fts_rowid), or builder bookkeeping a reader
+# never reads (derived_of: ~190 bytes a row; row_sig). A builder seeded from a base recomputes them.
+BLANK_JOB_COLUMNS = {"mark", "fts_rowid", "derived_of", "row_sig"}
 
 
 class IndexProblem(Exception):
@@ -106,7 +112,9 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
         boards += discover_boards(conn, config_path.parent, client, full=full)
     retired = apply_board_list(conn, boards, retry_switched_off=full)
     conn.close()
-    overrides = {"max_detail_calls_per_board": detail_calls} if detail_calls else None
+    # Description calls stop being started after FETCH_DETAIL_MINUTES, so even a first build of the whole
+    # list (hundreds of thousands of postings) finishes and publishes; later runs fill in the rest.
+    overrides = {"detail_minutes": FETCH_DETAIL_MINUTES, **({"max_detail_calls_per_board": detail_calls} if detail_calls else {})}
     results = fetch.run(config_path, db_path, use_snapshot=False, overrides=overrides)
     failed = sum(1 for r in results or [] if "error" in r)
     log.info("fetched %d boards (%d failed)", len(results or []), failed)
@@ -256,7 +264,7 @@ def _update_signatures(conn, now: str) -> int:
     for col in ("fts_sig", "fts_changed_at", "content_sig", "content_changed_at"):
         if col not in have:
             conn.execute(f"ALTER TABLE export_sig ADD COLUMN {col} TEXT")
-    cols = [n for n, _ in _job_columns(conn) if n not in VOLATILE_JOB_COLUMNS | {"mark", "fts_rowid"}]
+    cols = [n for n, _ in _job_columns(conn) if n not in VOLATILE_JOB_COLUMNS | BLANK_JOB_COLUMNS]
     old = {r[0]: r[1:] for r in conn.execute("SELECT uid, sig, fts_sig, content_sig FROM export_sig")}
     sel = ", ".join(f"j.{c}" for c in cols)
     changed, n = [], 0
@@ -305,33 +313,80 @@ def _finish(c, plain: Path, out_path: Path) -> dict:
             "rows": rows, "active": active}
 
 
-def _open_writer(src_path: Path, plain: Path, zdict: bytes):
+def _open_writer(src_path: Path, plain: Path, dicts: dict[str, bytes]):
     from .sanitize import html_to_text
     c = sqlite3.connect(plain)
     c.execute("PRAGMA journal_mode=OFF")
     c.execute("PRAGMA synchronous=OFF")
     c.create_function("unz", 1, db.unpack, deterministic=True)
-    c.create_function("zd", 1, lambda h: db.pack_with(db.unpack(h), zdict), deterministic=True)
+    c.create_function("compact", 1, _compact_extraction, deterministic=True)
+    shared = dicts.get("", b"")
+    c.create_function("zd", 2, lambda board, h: db.pack_with(db.unpack(h), dicts.get(board) or shared),
+                      deterministic=True)
     c.create_function("fts_text", 1, lambda h: html_to_text(db.unpack(h))[:db.FTS_BODY_CHARS], deterministic=True)
     c.execute("ATTACH DATABASE ? AS src", (str(src_path),))
     return c
 
 
-def _zdict(src_path: Path, new: bool) -> bytes:
-    """The description dictionary: trained afresh for each base, reused by its deltas."""
+BOARD_DICT_MIN = 30        # a board with this many descriptions gets a dictionary of its own
+BOARD_DICT_SAMPLE = 1500
+
+
+def _board_expr(alias: str = "j") -> str:
+    return f"{alias}.source || ':' || {alias}.source_board"
+
+
+def _compact_extraction(data: str | None) -> str | None:
+    """Rule extractions without their empty fields (readers treat a missing field as unknown):
+    most postings mention only a few of them, so this is ~4x smaller."""
+    try:
+        d = json.loads(data)
+    except (TypeError, ValueError):
+        return data
+    if not isinstance(d, dict):
+        return data
+    keep = {k: v for k, v in d.items() if not (isinstance(v, dict) and v.get("value") in (None, [], "")
+                                               and not v.get("evidence"))}
+    return json.dumps(keep, separators=(",", ":"), ensure_ascii=False)
+
+
+def _zdicts(src_path: Path, new: bool) -> dict[str, bytes]:
+    """Description dictionaries, {board: dict} plus "" for the shared one: trained afresh for each
+    base (kept in the builder's database), reused by its deltas."""
+    import random
+    from collections import defaultdict
     conn = db.connect(src_path)
     try:
-        saved = db.get_meta(conn, "index_zdict")
-        if saved and not new:
-            d = bytes.fromhex(saved)
-        else:
-            sample = [db.unpack(r[0]) for r in conn.execute(
-                "SELECT html FROM job_content WHERE uid IN (SELECT uid FROM jobs WHERE active = 1) "
-                "ORDER BY random() LIMIT 30000")]
-            d = db.train_zdict(sample) if sample else b""
-            db.set_meta(conn, "index_zdict", d.hex())
-        db.register_zdict(d)
-        return d
+        conn.execute("CREATE TABLE IF NOT EXISTS index_zdicts (board TEXT PRIMARY KEY, data BLOB NOT NULL)")
+        dicts = {b: bytes(d) for b, d in conn.execute("SELECT board, data FROM index_zdicts")}
+        if new or "" not in dicts:
+            by = defaultdict(list)
+            for board, uid in conn.execute(f"SELECT {_board_expr()}, j.uid FROM jobs j WHERE j.active = 1 AND "
+                                           "EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid)"):
+                by[board].append(uid)
+            rng = random.Random(7)
+
+            def sample(uids, n):
+                return [db.unpack(r[0]) for u in rng.sample(uids, min(n, len(uids)))
+                        for r in conn.execute("SELECT html FROM job_content WHERE uid = ?", (u,))]
+            everyone = [u for us in by.values() for u in us]
+            shared = db.train_zdict(sample(everyone, 30000)) if everyone else b""
+            dicts, seen = {"": shared}, {zlib.adler32(shared)}
+            for board, uids in by.items():
+                if len(uids) < BOARD_DICT_MIN:
+                    continue
+                d = db.train_zdict(sample(uids, BOARD_DICT_SAMPLE))
+                if len(d) < 16000 and shared:       # little of its own: fill up with common text
+                    d = (shared[-(32768 - len(d) - 1):] + b"\n" + d)[-32768:]
+                if d and zlib.adler32(d) not in seen:
+                    dicts[board] = d
+                    seen.add(zlib.adler32(d))
+            with conn:
+                conn.execute("DELETE FROM index_zdicts")
+                conn.executemany("INSERT INTO index_zdicts (board, data) VALUES (?, ?)", dicts.items())
+        for d in dicts.values():
+            db.register_zdict(d)
+        return dicts
     finally:
         conn.close()
 
@@ -339,7 +394,7 @@ def _zdict(src_path: Path, new: bool) -> bytes:
 def _copy_shared(c, uid_filter: str, args=()) -> None:
     """Tables both files carry: extractions, events, boards, companies (+ the description dictionary)."""
     c.execute("INSERT INTO main.extractions (content_hash, method, data, model, at) "
-              "SELECT content_hash, method, data, model, at FROM src.extractions "
+              "SELECT content_hash, method, compact(data), model, at FROM src.extractions "
               "WHERE content_hash IN (SELECT content_hash FROM main.jobs)")
     c.execute(f"INSERT INTO main.events (uid, kind, at) SELECT uid, kind, at FROM src.events "
               f"WHERE uid IN ({uid_filter}) ORDER BY id", args)
@@ -349,28 +404,28 @@ def _copy_shared(c, uid_filter: str, args=()) -> None:
     c.execute(f"INSERT INTO main.companies ({ccols}) SELECT {ccols} FROM src.companies")
 
 
-def _put_zdict(c, zdict: bytes) -> None:
-    if zdict:
-        c.execute("INSERT INTO main.zdict (data) VALUES (?)", (zdict,))
+def _put_zdicts(c, dicts: dict[str, bytes]) -> None:
+    c.executemany("INSERT OR IGNORE INTO main.zdict (id, data) VALUES (?, ?)",
+                  [(zlib.adler32(d), d) for d in dicts.values() if d])
 
 
 def _write_base(src_path: Path, out_path: Path, meta: dict) -> dict:
-    """The whole index, ready to open: every posting, each description compressed against a shared
-    dictionary (readable one row at a time, ~3x smaller on disk), and a contentless search index
-    over open postings."""
+    """The whole index, ready to open: every posting, each description compressed against its
+    board's dictionary (readable one row at a time, ~5x smaller than plain text), and a contentless
+    search index over open postings."""
     plain = _plain_db(out_path)
-    zdict = _zdict(src_path, new=True)
-    c = _open_writer(src_path, plain, zdict)
+    dicts = _zdicts(src_path, new=True)
+    c = _open_writer(src_path, plain, dicts)
     cols = _job_columns(c, "src")
     db.create_index_tables(c, cols, fts=True, indexes=False)   # indexes after the bulk insert: faster
     names = [n for n, _ in cols]
-    sel = ", ".join("NULL" if n in ("mark", "fts_rowid") else n for n in names)
+    sel = ", ".join("NULL" if n in BLANK_JOB_COLUMNS else n for n in names)
     with c:
         c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs ORDER BY uid")
-        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, zd(html) FROM src.job_content "
-                  "WHERE uid IN (SELECT uid FROM main.jobs)")
+        c.execute(f"INSERT INTO main.job_content (uid, html) SELECT c.uid, zd({_board_expr()}, c.html) "
+                  "FROM src.job_content c JOIN src.jobs j ON j.uid = c.uid")
         _copy_shared(c, "SELECT uid FROM main.jobs")
-        _put_zdict(c, zdict)
+        _put_zdicts(c, dicts)
         c.execute("""INSERT INTO main.jobs_fts (rowid, title, company, location, body)
                      SELECT j.rowid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html)
                      FROM main.jobs j LEFT JOIN main.job_content c ON c.uid = j.uid WHERE j.active = 1""")
@@ -384,17 +439,18 @@ def _write_base(src_path: Path, out_path: Path, meta: dict) -> dict:
 
 
 def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict:
-    """Postings changed after the base: full job rows; descriptions only where they changed; the
-    search text of rows whose title/company/location/description changed or that reopened."""
+    """Postings changed after `since` (the previous build): full job rows; descriptions only where
+    they changed; the search text of rows whose title/company/location/description changed or that
+    reopened. Descriptions use the base's dictionaries (a board new since the base: the shared one)."""
     plain = _plain_db(out_path)
-    zdict = _zdict(src_path, new=False)
-    c = _open_writer(src_path, plain, zdict)
+    dicts = _zdicts(src_path, new=False)
+    c = _open_writer(src_path, plain, dicts)
     cols = _job_columns(c, "src")
     db.create_index_tables(c, cols, fts=False, indexes=False)
     c.execute("CREATE TABLE fts_rows (uid TEXT PRIMARY KEY, title TEXT, company TEXT, location TEXT, body TEXT, "
               "changed_at TEXT)")
     names = [n for n, _ in cols]
-    sel = ", ".join("NULL" if n in ("mark", "fts_rowid") else n for n in names)
+    sel = ", ".join("NULL" if n in BLANK_JOB_COLUMNS else n for n in names)
     with c:
         c.execute("CREATE TEMP TABLE pick AS SELECT uid, fts_changed_at > ? AS fts, content_changed_at > ? AS content, "
                   "fts_changed_at "
@@ -403,10 +459,9 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
         c.execute("CREATE UNIQUE INDEX temp.pick_uid ON pick(uid)")
         c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs "
                   "WHERE uid IN (SELECT uid FROM pick)")
-        c.execute("INSERT INTO main.job_content (uid, html) SELECT uid, zd(html) FROM src.job_content "
-                  "WHERE uid IN (SELECT uid FROM pick WHERE content)")
+        c.execute(f"INSERT INTO main.job_content (uid, html) SELECT c.uid, zd({_board_expr()}, c.html) "
+                  "FROM src.job_content c JOIN src.jobs j ON j.uid = c.uid WHERE c.uid IN (SELECT uid FROM pick WHERE content)")
         _copy_shared(c, "SELECT uid FROM pick")
-        _put_zdict(c, zdict)
         c.execute("""INSERT INTO main.fts_rows (uid, title, company, location, body, changed_at)
                      SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html), p.fts_changed_at
                      FROM src.jobs j JOIN temp.pick p ON p.uid = j.uid LEFT JOIN src.job_content c ON c.uid = j.uid
@@ -417,8 +472,10 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
 
 
 def export(db_path: Path | str, out_dir: Path | str, countries=(), published=None, full: bool = False) -> dict:
-    """Write dist/manifest.json plus a new base-<time>.db.xz or delta-<time>.db.xz (the manifest
-    names the current ones). Only files that changed are written, so the workflow uploads only those."""
+    """Write dist/manifest.json plus either a new base-<time>.db.xz, or a delta-<time>.db.xz holding
+    what changed since the previous build. The manifest lists the base and the chain of deltas since
+    it, so a reader downloads only the builds it hasn't applied. Only new files are written, so the
+    workflow uploads only those."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for f in [*out.glob("base*.db.xz"), *out.glob("delta*.db.xz"), out / MANIFEST]:
@@ -435,30 +492,35 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
     pending = conn.execute("SELECT COUNT(*) FROM export_sig WHERE changed_at > ?", (since or "",)).fetchone()[0]
     coverage = _coverage(conn)
     conn.close()
+    chain = [d for d in (pub or {}).get("deltas") or [] if d.get("base_built_at") == since]
     reason = ("asked for" if full else "first build" if not since
               else "published index differs from this builder's" if not pub or (pub.get("base") or {}).get("built_at") != since
               or pub.get("format") != FORMAT or pub.get("index_schema") != db.INDEX_SCHEMA
               or pub.get("rules_version") != workers.RULES_VERSION
               else "weekly rebuild" if _age_hours(since) > BASE_EVERY_DAYS * 24
-              else "changes outgrew half the base" if pending > total / 2 else None)
+              else "changes outgrew half the base" if pending > total / 2
+              else "long chain of deltas" if len(chain) >= MAX_DELTAS else None)
     meta = {"built_at": now, "rules_version": workers.RULES_VERSION, "lighthouse": __version__,
             "countries": list(countries)}
     if reason:
         log.info("writing a new base: %s", reason)
         base = {**_write_base(Path(db_path), out / f"base-{stamp}.db.xz", {**meta, "base_built_at": now}), "built_at": now}
-        delta = None
+        chain = []
         conn = db.connect(db_path)
         db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
         conn.close()
     else:
         base = pub["base"]
-        delta = {**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", since, {**meta, "base_built_at": since}),
-                 "built_at": now, "base_built_at": since}
+        prev = chain[-1]["built_at"] if chain else since       # the last build readers can have
+        if changed:
+            chain = chain + [{**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", prev,
+                                             {**meta, "base_built_at": since, "since": prev}),
+                              "built_at": now, "since": prev, "base_built_at": since}]
     manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
                 "countries": list(countries), "jobs": _active_total(db_path), "boards": _board_total(db_path),
                 "changed_this_run": changed, "switched_off": _switched_off(db_path), "coverage": coverage,
-                "base": base, "delta": delta}
+                "base": base, "deltas": chain}
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -664,7 +726,7 @@ def apply_delta(conn, path: Path, since: str | None = None) -> dict:
             conn.execute("DELETE FROM idx.companies")
             conn.execute(f"INSERT INTO idx.companies ({ccols}) SELECT {ccols} FROM d.companies")
             conn.execute("INSERT OR REPLACE INTO idx.index_meta (key, value) SELECT key, value FROM d.index_meta")
-            conn.execute("INSERT INTO idx.zdict (data) SELECT data FROM d.zdict WHERE data NOT IN (SELECT data FROM idx.zdict)")
+            conn.execute("INSERT OR IGNORE INTO idx.zdict (id, data) SELECT id, data FROM d.zdict")
             # Search text: new rows get fresh search-index rowids (the old entries simply stop matching any job).
             start = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM idx.jobs_fts").fetchone()[0]
             conn.execute("CREATE TEMP TABLE fts_new AS SELECT ? + row_number() OVER (ORDER BY uid) AS rid, uid, title, "
@@ -733,21 +795,30 @@ def sync(conn, cfg, client, folder: Path | None = None) -> dict:
         why = compatible(m, repo)
         if why:
             raise IndexProblem(why)
-        base, delta = m["base"], m.get("delta")
-        if info.get("base_built_at") != base["built_at"] or db.index_base_built_at(conn) != base["built_at"]:
+        base = m["base"]
+        have = info.get("built_at") or ""
+        todo = sorted((d for d in m.get("deltas") or [] if d.get("base_built_at") == base["built_at"]
+                       and d["built_at"] > have), key=lambda d: d["built_at"])
+        stale = (info.get("base_built_at") != base["built_at"] or db.index_base_built_at(conn) != base["built_at"]
+                 or (todo and todo[0].get("since", "") > have)                          # a gap in the chain
+                 or sum(int(d.get("bytes") or 0) for d in todo) > int(base.get("bytes") or 0))
+        if stale:
             stamp = base["built_at"].replace(":", "").replace("+", "")[:22]
             path = download(client, repo, base, folder / "index", name=f"index-{stamp}.db")
             install_base(conn, path)
             info.update(base_built_at=base["built_at"], built_at=base["built_at"])
             db.set_meta(conn, "index", info)   # a failed delta below won't redo the base
             did.append({"file": "base", "postings": base.get("rows")})
-        if delta and delta.get("base_built_at") == base["built_at"] and delta["built_at"] > (info.get("built_at") or ""):
+            todo = sorted((d for d in m.get("deltas") or [] if d.get("base_built_at") == base["built_at"]),
+                          key=lambda d: d["built_at"])
+        for delta in todo:
             path = download(client, repo, delta, folder / "index")
             try:
                 stats = apply_delta(conn, path, since=info.get("built_at"))
             finally:
                 _unlink_db(path)
             info["built_at"] = delta["built_at"]
+            db.set_meta(conn, "index", info)   # applied: a failure further down the chain won't redo it
             did.append({"file": "delta", **stats})
         if did:
             _personal_refresh(conn)

@@ -1,6 +1,7 @@
 """Edge cases found in review: a lost index file, search-index growth, ambiguous job links, boards of
 other companies, slow responses, and conversion of an old database."""
 import io
+import json
 import sqlite3
 
 import pytest
@@ -168,3 +169,79 @@ def test_whole_response_is_bounded(monkeypatch):
     monkeypatch.setattr(sess, "request", lambda *a, **k: trickle(10))
     with pytest.raises(net.ResponseLimit):                 # slower than its deadline
         c.get("https://slow.example.com/", deadline=300)
+
+
+def test_workday_sites_share_one_adaptive_budget(monkeypatch):
+    t = net._HostThrottle(0.25)
+    assert t.key("acme.wd5.myworkdayjobs.com") == t.key("other.wd1.myworkdayjobs.com") == ("myworkdayjobs.com", 1 / 8)
+    assert t.key("api.lever.co") == ("api.lever.co", 0.25)
+    t.slow_down("acme.wd5.myworkdayjobs.com", pause=0)
+    t.slow_down("other.wd1.myworkdayjobs.com", pause=0)
+    assert t._interval["myworkdayjobs.com"] == 0.5                     # every Workday site slows down together
+    for _ in range(50):
+        t.ok("acme.wd5.myworkdayjobs.com")
+    assert t._interval["myworkdayjobs.com"] == pytest.approx(0.4)     # and eases back as answers come in
+
+    c = net.open_network(net.Client(timeout=5, per_host_rps=0))
+    answers = iter([429, 429, 200])
+    pauses = []
+
+    def send(method, url, host, kw):
+        r = requests.Response()
+        r.status_code, r.headers["Retry-After"] = next(answers), "3"
+        r._content, r.raw = b"{}", io.BytesIO()
+        return r
+    monkeypatch.setattr(c, "_send", send)
+    monkeypatch.setattr(c.throttle, "slow_down", lambda host, pause: pauses.append(pause))
+    assert c.get("https://acme.wd5.myworkdayjobs.com/wday/cxs/acme/Ext/jobs").status_code == 200
+    assert pauses == [3.0, 3.0]                                        # Retry-After honoured
+
+
+def test_rate_limited_board_is_tried_again(monkeypatch):
+    from lighthouse import fetch
+
+    class Flaky:
+        calls = 0
+
+        def __init__(self, **kw):
+            self.dropped = set()
+
+        def fetch(self, slug, known=None):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise requests.HTTPError("Max retries exceeded (Caused by ResponseError('too many 429 error responses'))")
+            return []
+    monkeypatch.setitem(fetch.SOURCES, "flaky", Flaky)
+    monkeypatch.setattr(fetch, "BOARD_RETRY_PAUSES", (0, 0))
+    jobs, _ = fetch._fetch_board({"ats": "flaky", "slug": "x"}, {}, None, 5)
+    assert jobs == [] and Flaky.calls == 2
+
+
+def test_reader_catches_up_through_the_chain(tmp_path):
+    from test_index import kinds
+    b = Builder(tmp_path)
+    jobs = [job(i) for i in range(1, 81)]
+    b.ingest("acme", jobs)
+    b.export()
+    gh = GitHubFake([b.dist])
+    conn, cfg = reader(tmp_path)
+    snapshot.sync(conn, cfg, gh)
+    for n in (81, 82, 83):                                    # three builds while this copy was off
+        jobs.append(job(n, f"Role {n}"))
+        b.ingest("acme", jobs)
+        b.export()
+        gh.publish(b.dist)
+    gh.calls.clear()
+    snapshot.sync(conn, cfg, gh)
+    assert kinds(gh) == ["delta", "delta", "delta"]       # each small file once, oldest first
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active = 1").fetchone()[0] == 83
+    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["deltas"][-1]["built_at"]
+    m = json.loads(gh.files["manifest.json"])
+    m["deltas"] = m["deltas"][1:]                          # the first delta is gone: a gap
+    gh.files["manifest.json"] = json.dumps(m).encode()
+    info = db.get_meta(conn, "index")
+    info["built_at"] = m["base"]["built_at"]
+    db.set_meta(conn, "index", info)
+    gh.calls.clear()
+    snapshot.sync(conn, cfg, gh)
+    assert kinds(gh)[0] == "base"                          # can't bridge a gap: start from the base

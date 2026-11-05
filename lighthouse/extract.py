@@ -371,4 +371,9 @@ def get(conn, content_hash: str) -> tuple[dict, str | None]:
     r = conn.execute("SELECT data, 'claude' AS method FROM claude_extractions WHERE content_hash=?",
                      (content_hash,)).fetchone()
     r = r or conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
-    return (json.loads(r["data"]), r["method"]) if r else ({}, None)
+    if not r:
+        return {}, None
+    data = json.loads(r["data"]) or {}
+    for f in FIELDS:                 # the published index leaves out fields a posting doesn't mention
+        data.setdefault(f, {"value": None, "evidence": None})
+    return data, r["method"]

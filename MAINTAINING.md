@@ -200,14 +200,16 @@ once a week, or when the changes add up to half the base.
    ghost scoring.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
-   - **new base** (first build, weekly, `full`, a new rules version, or changes > half the base):
+   - **new base** (first build, weekly, `full`, a new rules version, changes > half the base, or 40 deltas):
      a ready-to-use database → `base-<time>.db.xz`. Every posting, a search index (index only, no second
-     copy of the text), the list indexes, and each description compressed against one shared
-     dictionary of common posting text (~3x smaller on users' disks, still readable one row at a
-     time).
-   - **otherwise:** postings changed since the base → `delta-<time>.db.xz`. Cumulative, so a user who
-     missed a few builds still needs only the latest one. Descriptions and search text are included
-     only where they changed.
+     copy of the text), the list indexes, and each description compressed against a dictionary of its
+     board's common text: the company's "About us", benefits and EEO text (~5x smaller than plain
+     text, still readable one row at a time).
+   - **otherwise:** postings changed since the previous build → `delta-<time>.db.xz`, added to the
+     chain of deltas the manifest lists. A user downloads only the deltas they haven't applied, in
+     order. If they missed so many that the deltas would outweigh the base, they get the base
+     instead. Descriptions and search text are included only where they changed. If nothing
+     changed, no file is written.
 
    The files are written by whitelist (jobs, boards, rule extractions, history, coverage), so nothing
    personal can be in them. Ghost reasons are stored as dates ("open since 2026-08-26"), not day

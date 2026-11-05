@@ -148,16 +148,37 @@ _GENERIC_WORDS = {"inc", "corp", "corporation", "company", "companies", "co", "g
                   "united", "national", "us", "usa", "llc", "plc", "ltd", "stores", "foods", "insurance", "trust"}
 
 
-def board_key(ats: str, slug: str) -> str:
-    """The part of a board's id that names its owner: a Workday tenant, an ATS board slug, a host."""
+def board_keys(ats: str, slug: str) -> list[str]:
+    """The parts of a board's id that can name its owner: a Workday tenant and site name, an Oracle
+    site name, an ATS board slug, a careers host."""
     s = (slug or "").lower()
+    keys = []
     if ats == "workday":
-        s = s.split(".")[0]
+        tenant, _, site = s.partition("/")
+        keys = [tenant.split(".")[0], site]
     elif ats in ("oracle", "successfactors", "jibe", "phenom", "eightfold", "jsonld"):
         host = urlsplit(s if "://" in s else "https://" + s).hostname or s
         labels = [x for x in host.split(".") if x not in ("www", "careers", "jobs", "career", "job", "com", "net", "org")]
-        s = labels[0] if labels else host
-    return re.sub(r"[^a-z0-9]", "", s)
+        keys = [labels[0] if labels else host]
+        if ats == "oracle" and "/" in s:
+            keys.append(s.split("/", 1)[1])                  # e.g. 'BNY-Careers', 'UberCareers'
+    else:
+        keys = [s]
+    out = []
+    for k in keys:
+        k = re.sub(r"(?:external|careers?|jobs?|site|search|global|cx\d*)", "", re.sub(r"[^a-z0-9]", "", k))
+        if len(k) >= 2:
+            out.append(k)
+    return out
+
+
+def board_key(ats: str, slug: str) -> str:
+    keys = board_keys(ats, slug)
+    return keys[0] if keys else ""
+
+
+def belongs(company: str, domain: str, ats: str, slug: str) -> bool:
+    return any(name_matches(company, domain, k) for k in board_keys(ats, slug))
 
 
 def name_matches(company: str, domain: str, key: str) -> bool:
@@ -405,7 +426,7 @@ class Discoverer:
             special = None if hit else self._special(r, found_platforms)
             cand = hit or special
             if cand and self._confirm(cand, res):
-                own = (name_matches(res.company, res.domain, board_key(*cand))
+                own = (belongs(res.company, res.domain, *cand)
                        # read off the company's own careers site (Oracle, SuccessFactors, Phenom... front ends)
                        or (special is not None and _site(urlsplit(r.url).hostname or "") in home_sites)
                        # one of the company's own start pages redirected straight to the board
@@ -450,7 +471,8 @@ class Discoverer:
             hit = self._jsonld(host, res)        # the company's own job pages beat a board under another name
             if hit:
                 res.ats, res.slug = hit
-        if not res.ats and len(others) == 1:
+        lone = len(others) == 1 and others[0][0] not in _SMALL_BOARDS
+        if not res.ats and lone:
             res.ats, res.slug = others[0]
             res.detail = (f"the only board found is named {others[0][0]}:{others[0][1]}, not after the company: "
                           "pin the right one in companies.csv if it isn't theirs")
@@ -478,6 +500,10 @@ def discovery_client(per_host_rps: float = 4.0):
     from .net import Client, open_network
     return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1, deadline=45, max_bytes=60_000_000))
 
+
+# Systems where a careers page's link often goes to a partner's or portfolio company's board: a
+# board there under another name is never taken as the company's own without pinning it.
+_SMALL_BOARDS = {"greenhouse", "lever", "ashby", "smartrecruiters", "workable", "recruitee"}
 
 # Careers systems whose boards are inferred from a page: confirmed with one cheap request first.
 _CONFIRM = {"oracle", "successfactors", "phenom", "jibe", "eightfold", "amazon", "jsonld"}

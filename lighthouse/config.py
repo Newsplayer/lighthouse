@@ -46,6 +46,8 @@ class Settings:
     fetch_workers: int = 16          # boards in parallel (the per-host limit still applies to each ATS)
     fetch_interval_hours: float = 6  # 0 = no scheduled fetch while the site is running
     max_detail_calls_per_board: int = 150   # SmartRecruiters/Workday description calls per board per run
+    detail_minutes: float = 0        # boards started after this many minutes make no description calls this
+                                     # run (0 = no limit); keeps a first build of a big list inside the time limit
     disable_after_failures: int = 2   # a board that reports "not found" this many runs in a row is switched off
     inactive_content_retention_days: int = 180
     skip_hourly_titles: bool = True

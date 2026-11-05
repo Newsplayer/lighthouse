@@ -4,6 +4,9 @@
   BlockedHost, unless the user explicitly asked for that one URL (careers-page probe).
 - Per-host politeness: a minimum gap between requests to the same host, shared by
   all worker threads, so fetching many boards in parallel never hammers one API.
+- Hosts that share a rate limit (every company's Workday site sits behind one) share one budget.
+  A 429 slows that host or group down for every thread (and honours Retry-After); it speeds back
+  up gradually as requests succeed.
 - Retries with backoff on 429/5xx.
 - A per-host counter feeds the Network page.
 """
@@ -50,24 +53,66 @@ def host_allowed(host: str) -> bool:
     return any(fnmatch.fnmatch(host, pat) for pat in ALLOWED_HOSTS)
 
 
+# Host suffixes whose sites share one rate limit, and the requests per second they share.
+SHARED_LIMITS = (("myworkdayjobs.com", 8.0), ("myworkdaysite.com", 8.0))
+MAX_INTERVAL = 4.0          # slowest pace after repeated 429s: one request per 4 s
+RATE_LIMIT_TRIES = 6
+
+
 class _HostThrottle:
-    """Minimum interval between request starts per host, across threads."""
+    """Minimum interval between request starts per host (or per shared group), across threads.
+    Adaptive: slow_down() on a 429 doubles the interval and pauses the group; ok() eases it back."""
 
     def __init__(self, min_interval: float):
         self.min_interval = min_interval
         self._next: dict[str, float] = {}
+        self._interval: dict[str, float] = {}
+        self._ok: Counter = Counter()
         self._lock = threading.Lock()
 
+    def key(self, host: str) -> tuple[str, float]:
+        for suffix, rps in SHARED_LIMITS:
+            if host == suffix or host.endswith("." + suffix):
+                return suffix, 1.0 / rps
+        return host, self.min_interval
+
     def wait(self, host: str) -> None:
-        if self.min_interval <= 0:
-            return
+        key, base = self.key(host)
         with self._lock:
+            interval = self._interval.get(key, base)
             now = time.monotonic()
-            start = max(now, self._next.get(host, 0.0))
-            self._next[host] = start + self.min_interval
+            start = max(now, self._next.get(key, 0.0))
+            if interval <= 0 and start <= now:
+                return
+            self._next[key] = start + max(interval, 0)
         delay = start - now
         if delay > 0:
             time.sleep(delay)
+
+    def slow_down(self, host: str, pause: float) -> None:
+        key, base = self.key(host)
+        with self._lock:
+            cur = self._interval.get(key, base) or 0.05
+            self._interval[key] = min(max(cur * 2, base), MAX_INTERVAL)
+            self._next[key] = max(self._next.get(key, 0.0), time.monotonic() + pause)
+            self._ok[key] = 0
+
+    def ok(self, host: str) -> None:
+        key, base = self.key(host)
+        if self._interval.get(key, base) <= base:
+            return
+        with self._lock:
+            self._ok[key] += 1
+            if self._ok[key] >= 50:          # 50 good answers in a row: 20% faster, never past the base
+                self._interval[key] = max(base, self._interval[key] * 0.8)
+                self._ok[key] = 0
+
+
+def _retry_after(r) -> float | None:
+    try:
+        return min(float(r.headers.get("Retry-After", "")), 120.0)
+    except (TypeError, ValueError):
+        return None
 
 
 class ResponseLimit(requests.RequestException):
@@ -99,7 +144,7 @@ class Client:
         s = getattr(self._local, "s", None)
         if s is None:
             s = requests.Session()
-            retry = Retry(total=self.retries, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504),
+            retry = Retry(total=self.retries, backoff_factor=1.0, status_forcelist=(500, 502, 503, 504),
                           allowed_methods=("GET", "POST"), respect_retry_after_header=True)
             s.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=8))
             s.headers["User-Agent"] = self.agent
@@ -113,10 +158,22 @@ class Client:
             with self._count_lock:
                 self.blocked[host] += 1
             raise BlockedHost(f"{host} is not on Lighthouse's network allowlist")
-        self.throttle.wait(host)
-        with self._count_lock:
-            self.counts[host] += 1
         kw.setdefault("timeout", self.timeout)
+        for attempt in range(RATE_LIMIT_TRIES):
+            self.throttle.wait(host)
+            with self._count_lock:
+                self.counts[host] += 1
+            r = self._send(method, url, host, dict(kw))
+            if r.status_code != 429:
+                self.throttle.ok(host)
+                return r
+            # Rate limited: slow this host (or its group) down for every thread, then try again.
+            self.throttle.slow_down(host, _retry_after(r) or min(60.0, 5.0 * 2 ** attempt))
+            if attempt < RATE_LIMIT_TRIES - 1:
+                r.close()
+        return r
+
+    def _send(self, method: str, url: str, host: str, kw: dict) -> requests.Response:
         deadline, max_bytes = kw.pop("deadline", self.deadline), kw.pop("max_bytes", self.max_bytes)
         if kw.get("stream") or not (deadline or max_bytes):
             return self._session().request(method, url, **kw)

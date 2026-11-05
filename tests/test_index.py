@@ -88,7 +88,7 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     conn.commit()
     conn.close()
     m = b.export()
-    assert m["base"]["rows"] == 2 and m["delta"] is None and (base_file(b)).exists()
+    assert m["base"]["rows"] == 2 and m["deltas"] == [] and (base_file(b)).exists()
     path = unpacked(base_file(b), tmp_path)
     assert b"jane@example.com" not in path.read_bytes()
     c = sqlite3.connect(path)
@@ -106,7 +106,7 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     assert c.execute("PRAGMA application_id").fetchone()[0] == db.INDEX_APP_ID
 
 
-def test_base_then_cumulative_deltas(tmp_path):
+def test_base_then_a_chain_of_deltas(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(i) for i in range(1, 6)])
     m1 = b.export()
@@ -114,13 +114,17 @@ def test_base_then_cumulative_deltas(tmp_path):
     b.ingest("acme", [job(i) for i in range(1, 5)] + [job(6, "Controller")])     # 5 closed, 6 new
     m2 = b.export()
     assert not (base_file(b)).exists(), "base must not be re-uploaded"
-    assert m2["base"] == m1["base"] and m2["delta"]["base_built_at"] == m1["base"]["built_at"]
-    assert m2["delta"]["rows"] == 2
-    m3 = b.export()   # nothing changed: the delta still carries every change since the base
-    assert m3["delta"]["rows"] == 2
+    d1 = m2["deltas"][0]
+    assert m2["base"] == m1["base"] and d1["base_built_at"] == d1["since"] == m1["base"]["built_at"]
+    assert d1["rows"] == 2
+    m3 = b.export()   # nothing changed: no new file, the chain stays as it was
+    assert m3["deltas"] == [d1] and not list(b.dist.glob("delta-*.db.xz"))
+    b.ingest("acme", [job(i) for i in range(1, 5)] + [job(6, "Controller"), job(7, "Auditor")])
+    m4 = b.export()   # each delta holds only what changed since the build before it
+    assert [d["rows"] for d in m4["deltas"]] == [2, 1] and m4["deltas"][1]["since"] == d1["built_at"]
     b.published = tmp_path / "missing.json"   # published index doesn't match the builder: start over
-    assert b.export()["delta"] is None and (base_file(b)).exists()
-    assert b.export(full=True)["delta"] is None
+    assert b.export()["deltas"] == [] and (base_file(b)).exists()
+    assert b.export(full=True)["deltas"] == []
 
 
 def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
@@ -283,7 +287,7 @@ def test_sync_downloads_base_once_then_only_deltas(tmp_path):
     assert kinds(gh) == ["delta"]
     active = {r[0] for r in conn.execute("SELECT external_id FROM jobs WHERE active=1")}
     assert active == {str(i) for i in range(2, 13)}
-    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["delta"]["built_at"]
+    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["deltas"][-1]["built_at"]
     assert not list((data / "index").glob("download-*"))   # temp files cleaned up
     assert db.list_jobs(conn, db.Filters(q="Auditor"))[1] == 1
 

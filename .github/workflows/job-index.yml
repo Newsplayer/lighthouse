@@ -83,16 +83,17 @@ jobs:
           for f in dist/*.db.xz; do [ -e "$f" ] && gh release upload job-index "$f" --clobber; done
           gh release upload job-index dist/manifest.json --clobber
           # Then remove files the new manifest no longer names.
-          keep=$(python -c "import json; m = json.load(open('dist/manifest.json')); print(' '.join(f['file'] for f in (m['base'], m['delta']) if f))")
+          keep=$(python -c "import json; m = json.load(open('dist/manifest.json')); print(' '.join(f['file'] for f in [m['base'], *m['deltas']]))")
           gh api "repos/${{ github.repository }}/releases/tags/job-index" --jq '.assets[] | "\(.id) \(.name)"' |
           while read -r id name; do
             case " $keep manifest.json " in *" $name "*) ;; *) gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$id" && echo "removed $name" ;; esac
           done
           python - <<'PY'
           import json; m = json.load(open("dist/manifest.json"))
-          d = m["delta"]
+          new = [f for f in [m["base"], *m["deltas"]] if f["built_at"] == m["built_at"]]
           print(f"{m['jobs']} open roles from {m['boards']} boards; "
-                + (f"delta {d['rows']} rows, {d['bytes']/1e6:.1f} MB" if d else f"new base {m['base']['bytes']/1e6:.1f} MB"))
+                + (f"new {new[0]['file']}: {new[0]['rows']} rows, {new[0]['bytes']/1e6:.1f} MB" if new else "nothing changed")
+                + f"; {len(m['deltas'])} deltas since the base")
           print("Companies list coverage:", m.get("coverage"))
           PY
 
