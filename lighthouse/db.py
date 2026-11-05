@@ -519,10 +519,13 @@ def app_db(cfg=None, data_dir: Path | None = None) -> Path:
         return folder / DEFAULT_DB.name
     user = folder / USER_DB.name
     if not user.exists():
-        init_user(user)
         legacy = folder / DEFAULT_DB.name
+        part = folder / (USER_DB.name + ".part")
+        part.unlink(missing_ok=True)
+        init_user(part)
         if legacy.exists():
-            _convert_legacy(legacy, user)
+            _convert_legacy(legacy, part)   # if this fails, user.db isn't created and it's tried again next start
+        part.replace(user)
     return user
 
 
@@ -565,17 +568,45 @@ def index_path(conn, folder: Path | str | None = None) -> Path | None:
 
 
 def attach_index(conn, folder: Path) -> None:
-    """Attach the current job index as "idx" (an empty one until the first download)."""
+    """Attach the current job index as "idx" (an empty one until the first download).
+
+    If the recorded file is gone (a new index was installed between reading the setting and opening
+    the file, or the file was deleted), the newest index file present is used, else an empty one.
+    That stand-in is never recorded, so the next sync sees the index is missing and downloads it."""
     rel = get_meta(conn, "index_file")
     path = Path(folder) / rel if rel else None
     if path is None or not path.exists():
-        path = Path(folder) / "index" / "index-empty.db"
+        rel = get_meta(conn, "index_file")          # re-read: a new index may have just been installed
+        path = Path(folder) / rel if rel else None
+    if path is None or not path.exists():
+        found = sorted((p for p in (Path(folder) / "index").glob("index-*.db") if p.name != "index-empty.db"),
+                       key=lambda p: p.name, reverse=True)
+        path = found[0] if found else Path(folder) / "index" / "index-empty.db"
         if not path.exists():
             create_empty_index(path)
-        set_meta(conn, "index_file", str(path.relative_to(folder)).replace("\\", "/"))
     conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
     _tune(conn, "idx")
     load_zdicts(conn, "idx")
+
+
+def attached_index(conn) -> Path | None:
+    """The index file this connection actually has open."""
+    for _, name, file in conn.execute("PRAGMA database_list"):
+        if name == "idx" and file:
+            return Path(file)
+    return None
+
+
+def index_base_built_at(conn) -> str | None:
+    """When the base of the attached index was built (None for the empty stand-in)."""
+    try:
+        row = conn.execute("SELECT value FROM idx.index_meta WHERE key = 'base_built_at'").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return row[0]
 
 
 def load_zdicts(conn, schema: str) -> None:

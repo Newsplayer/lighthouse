@@ -58,6 +58,11 @@ class Builder:
         return m
 
 
+def base_file(b):
+    found = list(b.dist.glob("base-*.db.xz"))
+    return found[0] if found else b.dist / "base-missing.db.xz"
+
+
 def unpacked(path, tmp_path):
     out = tmp_path / (path.name + ".db")
     with lzma.open(path) as f, open(out, "wb") as o:
@@ -83,8 +88,8 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     conn.commit()
     conn.close()
     m = b.export()
-    assert m["base"]["rows"] == 2 and m["delta"] is None and (b.dist / snapshot.BASE).exists()
-    path = unpacked(b.dist / snapshot.BASE, tmp_path)
+    assert m["base"]["rows"] == 2 and m["delta"] is None and (base_file(b)).exists()
+    path = unpacked(base_file(b), tmp_path)
     assert b"jane@example.com" not in path.read_bytes()
     c = sqlite3.connect(path)
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -108,13 +113,13 @@ def test_base_then_cumulative_deltas(tmp_path):
     assert m1["base"]["rows"] == 5
     b.ingest("acme", [job(i) for i in range(1, 5)] + [job(6, "Controller")])     # 5 closed, 6 new
     m2 = b.export()
-    assert not (b.dist / snapshot.BASE).exists(), "base must not be re-uploaded"
+    assert not (base_file(b)).exists(), "base must not be re-uploaded"
     assert m2["base"] == m1["base"] and m2["delta"]["base_built_at"] == m1["base"]["built_at"]
     assert m2["delta"]["rows"] == 2
     m3 = b.export()   # nothing changed: the delta still carries every change since the base
     assert m3["delta"]["rows"] == 2
     b.published = tmp_path / "missing.json"   # published index doesn't match the builder: start over
-    assert b.export()["delta"] is None and (b.dist / snapshot.BASE).exists()
+    assert b.export()["delta"] is None and (base_file(b)).exists()
     assert b.export(full=True)["delta"] is None
 
 
@@ -122,7 +127,7 @@ def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1), job(2, "Accountant"), job(3, "Data Engineer")])
     m1 = b.export()
-    base = b.dist / snapshot.BASE
+    base = base_file(b)
     conn, cfg = reader(tmp_path)
     assert snapshot.import_file(conn, cfg, base, full=True)["postings"] == 3
     assert db.list_jobs(conn, db.Filters(q="dashboards"))[1] == 3       # search index came with the file
@@ -137,7 +142,7 @@ def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     assert conn.execute("SELECT name FROM pragma_database_list WHERE name='idx'").fetchone()   # two files
     b.ingest("acme", [job(1), job(2, "Accountant"), job(4, "Controller")])
     m2 = b.export()
-    stats = snapshot.import_file(conn, cfg, b.dist / snapshot.DELTA, full=False)
+    stats = snapshot.import_file(conn, cfg, next(b.dist.glob('delta-*.db.xz')), full=False)
     assert stats["postings"] == 2 and stats["new"] == 1
     assert conn.execute("SELECT active FROM jobs WHERE title='Data Engineer'").fetchone()[0] == 0
     assert conn.execute("SELECT mark FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == db.MARK_RANK["saved"]
@@ -157,7 +162,7 @@ def test_tampered_index_is_harmless_when_shown(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1)])
     b.export()
-    path = unpacked(b.dist / snapshot.BASE, tmp_path)
+    path = unpacked(base_file(b), tmp_path)
     c = sqlite3.connect(path)
     c.execute("UPDATE job_content SET html = ?", (db.pack('<p>Hi</p><script>steal()</script><img src=x onerror=alert(1)>'),))
     c.execute("UPDATE jobs SET url = 'javascript:alert(1)'")
@@ -181,7 +186,7 @@ def test_new_base_removes_dropped_boards(tmp_path):
     b.ingest("beta", [job(7, board="beta", company="Beta")])
     b.export()
     conn, cfg = reader(tmp_path)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE)
+    snapshot.import_file(conn, cfg, base_file(b))
     assert conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0] == 2
     bc = db.connect(b.path)   # maintainer removes the beta board
     bc.execute("DELETE FROM boards WHERE slug='beta'")
@@ -189,7 +194,7 @@ def test_new_base_removes_dropped_boards(tmp_path):
     bc.commit()
     bc.close()
     b.export(full=True)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE, full=True)
+    snapshot.import_file(conn, cfg, base_file(b), full=True)
     assert [r[0] for r in conn.execute("SELECT slug FROM boards")] == ["acme"]
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE source_board='beta'").fetchone()[0] == 0
 
@@ -245,6 +250,10 @@ class GitHubFake:
         return r
 
 
+def kinds(gh):
+    return [n.split("-")[0] for n in downloads(gh)]
+
+
 def downloads(gh):
     return [u.rsplit("/", 1)[1] for u in gh.calls if "githubusercontent" in u and not u.endswith(".json")]
 
@@ -261,7 +270,7 @@ def test_sync_downloads_base_once_then_only_deltas(tmp_path):
     conn, cfg = reader(tmp_path)
     data = tmp_path / "data"
     r = snapshot.sync(conn, cfg, gh)
-    assert r["error"] is None and downloads(gh) == ["base.db.xz", "delta.db.xz"]
+    assert r["error"] is None and kinds(gh) == ["base", "delta"]
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active=1").fetchone()[0] == 11
     gh.calls.clear()
     snapshot.sync(conn, cfg, gh)       # nothing new: only the manifest is read
@@ -271,7 +280,7 @@ def test_sync_downloads_base_once_then_only_deltas(tmp_path):
     gh.publish(b.dist)
     gh.calls.clear()
     snapshot.sync(conn, cfg, gh)
-    assert downloads(gh) == ["delta.db.xz"]
+    assert kinds(gh) == ["delta"]
     active = {r[0] for r in conn.execute("SELECT external_id FROM jobs WHERE active=1")}
     assert active == {str(i) for i in range(2, 13)}
     assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["delta"]["built_at"]
@@ -285,7 +294,7 @@ def test_sync_failure_keeps_existing_jobs(tmp_path, problem):
     b.ingest("acme", [job(1)])
     b.export()
     conn, cfg = reader(tmp_path)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE)
+    snapshot.import_file(conn, cfg, base_file(b))
     gh = GitHubFake([b.dist], file_host="evil.example.com" if problem == "evil_redirect" else
                     "release-assets.githubusercontent.com")
     m = json.loads(gh.files["manifest.json"])
@@ -343,7 +352,7 @@ def test_builder_can_restart_from_the_published_base(tmp_path):
     b.ingest("acme", [job(1), job(2, "Accountant")])
     b.export()
     fresh = tmp_path / "fresh.db"
-    assert snapshot.seed_builder(b.dist / snapshot.BASE, fresh) == 2
+    assert snapshot.seed_builder(base_file(b), fresh) == 2
     conn = db.connect(fresh)
     assert db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")   # stored compressed again
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 2

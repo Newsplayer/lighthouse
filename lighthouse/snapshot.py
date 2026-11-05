@@ -4,11 +4,11 @@ One public repo runs a scheduled Action that finds each listed company's job boa
 fetches every board, de-duplicates and analyses the postings, and publishes the result on its
 `job-index` release:
 
-    manifest.json   what's current, with each file's SHA-256
-    base.db.xz      a ready-to-use job index (every posting + its search index); rebuilt weekly
-    delta.db.xz     only what changed since base.db.xz; rebuilt every run
+    manifest.json        what's current, with each file's name and SHA-256
+    base-<time>.db.xz    a ready-to-use job index (every posting + its search index); rebuilt weekly
+    delta-<time>.db.xz   only what changed since that base; rebuilt every run
 
-Readers ([index] repo set) use base.db.xz as it comes: it is unpacked into data/index/ and opened
+Readers ([index] repo set) use the base as it comes: it is unpacked into data/index/ and opened
 directly, with nothing re-parsed, re-cleaned or re-indexed. Each delta is applied with a few SQL
 statements. Everything personal (profile, marks, Claude verdicts, sponsorship imports) lives in
 data/user.db, which attaches the index; a new index never touches it.
@@ -27,6 +27,7 @@ import json
 import logging
 import lzma
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -41,7 +42,7 @@ log = logging.getLogger("lighthouse.index")
 
 FORMAT = 3                          # 3: ready-to-use index (user data apart, search index included)
 TAG = "job-index"
-BASE, DELTA, MANIFEST = "base.db.xz", "delta.db.xz", "manifest.json"
+MANIFEST = "manifest.json"
 BUILDER_DB = db.DEFAULT_DB.parent / "builder.db"   # the Action's working database (kept in its cache)
 BASE_EVERY_DAYS = 7
 MAX_BYTES = 1_900_000_000          # GitHub's per-file release limit is 2 GiB
@@ -390,11 +391,13 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
     c = _open_writer(src_path, plain, zdict)
     cols = _job_columns(c, "src")
     db.create_index_tables(c, cols, fts=False, indexes=False)
-    c.execute("CREATE TABLE fts_rows (uid TEXT PRIMARY KEY, title TEXT, company TEXT, location TEXT, body TEXT)")
+    c.execute("CREATE TABLE fts_rows (uid TEXT PRIMARY KEY, title TEXT, company TEXT, location TEXT, body TEXT, "
+              "changed_at TEXT)")
     names = [n for n, _ in cols]
     sel = ", ".join("NULL" if n in ("mark", "fts_rowid") else n for n in names)
     with c:
-        c.execute("CREATE TEMP TABLE pick AS SELECT uid, fts_changed_at > ? AS fts, content_changed_at > ? AS content "
+        c.execute("CREATE TEMP TABLE pick AS SELECT uid, fts_changed_at > ? AS fts, content_changed_at > ? AS content, "
+                  "fts_changed_at "
                   "FROM src.export_sig WHERE changed_at > ? OR fts_changed_at > ? OR content_changed_at > ?",
                   (since,) * 5)
         c.execute("CREATE UNIQUE INDEX temp.pick_uid ON pick(uid)")
@@ -404,23 +407,25 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
                   "WHERE uid IN (SELECT uid FROM pick WHERE content)")
         _copy_shared(c, "SELECT uid FROM pick")
         _put_zdict(c, zdict)
-        c.execute("""INSERT INTO main.fts_rows (uid, title, company, location, body)
-                     SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html)
-                     FROM src.jobs j LEFT JOIN src.job_content c ON c.uid = j.uid
-                     WHERE j.active = 1 AND j.uid IN (SELECT uid FROM pick WHERE fts)""")
+        c.execute("""INSERT INTO main.fts_rows (uid, title, company, location, body, changed_at)
+                     SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html), p.fts_changed_at
+                     FROM src.jobs j JOIN temp.pick p ON p.uid = j.uid LEFT JOIN src.job_content c ON c.uid = j.uid
+                     WHERE j.active = 1 AND p.fts""")
         c.executemany("INSERT INTO main.index_meta(key, value) VALUES (?, ?)",
                       [(k, json.dumps(v)) for k, v in meta.items()])
     return _finish(c, plain, out_path)
 
 
 def export(db_path: Path | str, out_dir: Path | str, countries=(), published=None, full: bool = False) -> dict:
-    """Write dist/manifest.json plus a new base.db.xz or delta.db.xz. Only files that changed are
-    written, so the workflow uploads only those."""
+    """Write dist/manifest.json plus a new base-<time>.db.xz or delta-<time>.db.xz (the manifest
+    names the current ones). Only files that changed are written, so the workflow uploads only those."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for name in (BASE, DELTA, MANIFEST):
-        (out / name).unlink(missing_ok=True)
+    for f in [*out.glob("base*.db.xz"), *out.glob("delta*.db.xz"), out / MANIFEST]:
+        f.unlink(missing_ok=True)
     now = _now()
+    stamp = re.sub(r"[^0-9T]", "", now)[:21]     # every build's files get their own names, so an upload never
+                                                 # replaces a file the published manifest still points at
     conn = db.connect(db_path)
     changed = _update_signatures(conn, now)
     state = db.get_meta(conn, "index_base") or {}
@@ -440,14 +445,14 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
             "countries": list(countries)}
     if reason:
         log.info("writing a new base: %s", reason)
-        base = {**_write_base(Path(db_path), out / BASE, {**meta, "base_built_at": now}), "built_at": now}
+        base = {**_write_base(Path(db_path), out / f"base-{stamp}.db.xz", {**meta, "base_built_at": now}), "built_at": now}
         delta = None
         conn = db.connect(db_path)
         db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
         conn.close()
     else:
         base = pub["base"]
-        delta = {**_write_delta(Path(db_path), out / DELTA, since, {**meta, "base_built_at": since}),
+        delta = {**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", since, {**meta, "base_built_at": since}),
                  "built_at": now, "base_built_at": since}
     manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
@@ -588,6 +593,7 @@ def install_base(conn, path: Path) -> None:
     db.set_meta(conn, "index_file", str(Path(path).resolve().relative_to(folder.resolve())).replace("\\", "/"))
     conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
     db._tune(conn, "idx")
+    db.load_zdicts(conn, "idx")
     cleanup(conn, keep=Path(path))
     if old and old.name != "index-empty.db" and old.resolve() != Path(path).resolve():
         _unlink_db(old)
@@ -606,20 +612,30 @@ def cleanup(conn, keep: Path | None = None) -> None:
     real index has been installed (it held a full copy of the jobs: often 1 GB+)."""
     folder = _data_dir(conn)
     cur = (keep or db.index_path(conn, folder) or Path()).resolve()
+    keep_files = {cur, (db.attached_index(conn) or Path()).resolve()}
     for p in (folder / "index").glob("index-*.db"):
-        if p.resolve() != cur and p.name != "index-empty.db":
+        if p.resolve() not in keep_files and p.name != "index-empty.db":
             _unlink_db(p)
     for p in (folder / "index").glob("download-*"):
         _unlink_db(p)
     legacy = db.get_meta(conn, "legacy_db")
-    if legacy and cur.name != "index-empty.db":
+    if legacy and db.index_base_built_at(conn) and not _marked_missing(conn):
         _unlink_db(folder / legacy)
         if not (folder / legacy).exists():
             db.set_meta(conn, "legacy_db", None)
 
 
-def apply_delta(conn, path: Path) -> dict:
-    """Bring a delta into the current index with a handful of SQL statements."""
+def _marked_missing(conn) -> int:
+    """Saved/applied jobs the index doesn't have (e.g. from boards you used to fetch yourself): while
+    there are any, the pre-0.6 database that still holds them is kept."""
+    return conn.execute("SELECT COUNT(*) FROM main.marks m WHERE m.status IN ('saved', 'applied') "
+                        "AND NOT EXISTS (SELECT 1 FROM idx.jobs j WHERE j.uid = m.uid)").fetchone()[0]
+
+
+def apply_delta(conn, path: Path, since: str | None = None) -> dict:
+    """Bring a delta into the current index with a handful of SQL statements. `since`: when the last
+    file this index took in (base or delta) was built. Deltas are cumulative, so search text that
+    changed before then is already in the index and isn't added again."""
     _check_index_file(path, "delta")
     conn.commit()
     conn.execute("ATTACH DATABASE ? AS d", (str(path),))
@@ -652,12 +668,15 @@ def apply_delta(conn, path: Path) -> dict:
             # Search text: new rows get fresh search-index rowids (the old entries simply stop matching any job).
             start = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM idx.jobs_fts").fetchone()[0]
             conn.execute("CREATE TEMP TABLE fts_new AS SELECT ? + row_number() OVER (ORDER BY uid) AS rid, uid, title, "
-                         "company, location, body FROM d.fts_rows", (start,))
+                         "company, location, body FROM d.fts_rows WHERE ? IS NULL OR changed_at > ?",
+                         (start, since, since))
             conn.execute("INSERT INTO idx.jobs_fts (rowid, title, company, location, body) "
                          "SELECT rid, title, company, location, body FROM temp.fts_new")
             conn.execute("UPDATE idx.jobs SET fts_rowid = (SELECT rid FROM temp.fts_new f WHERE f.uid = jobs.uid) "
                          "WHERE uid IN (SELECT uid FROM temp.fts_new)")
             conn.execute("DROP TABLE temp.fts_new")
+            conn.execute("UPDATE idx.jobs SET fts_rowid = NULL WHERE active = 0 AND fts_rowid IS NOT NULL "
+                         "AND uid IN (SELECT uid FROM d.jobs)")
             changed = conn.execute("SELECT COUNT(*) FROM d.jobs").fetchone()[0]
     finally:
         conn.execute("DETACH DATABASE d")
@@ -715,7 +734,7 @@ def sync(conn, cfg, client, folder: Path | None = None) -> dict:
         if why:
             raise IndexProblem(why)
         base, delta = m["base"], m.get("delta")
-        if info.get("base_built_at") != base["built_at"] or not db.has_table(conn, "jobs_fts"):
+        if info.get("base_built_at") != base["built_at"] or db.index_base_built_at(conn) != base["built_at"]:
             stamp = base["built_at"].replace(":", "").replace("+", "")[:22]
             path = download(client, repo, base, folder / "index", name=f"index-{stamp}.db")
             install_base(conn, path)
@@ -725,7 +744,7 @@ def sync(conn, cfg, client, folder: Path | None = None) -> dict:
         if delta and delta.get("base_built_at") == base["built_at"] and delta["built_at"] > (info.get("built_at") or ""):
             path = download(client, repo, delta, folder / "index")
             try:
-                stats = apply_delta(conn, path)
+                stats = apply_delta(conn, path, since=info.get("built_at"))
             finally:
                 _unlink_db(path)
             info["built_at"] = delta["built_at"]

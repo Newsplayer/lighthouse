@@ -210,7 +210,7 @@ python -m lighthouse claude extract|fit|poll [--limit N]
 python -m lighthouse key set|clear
 python -m lighthouse mcp
 python -m lighthouse index status                 # when the job index was built, what it covers
-python -m lighthouse index import [base.db.xz]    # update now, or merge a local index file
+python -m lighthouse index import [FILE.db.xz]   # update now, or merge a local index file
 python -m lighthouse index build --out dist       # what the GitHub Action runs (MAINTAINING.md)
 ```
 

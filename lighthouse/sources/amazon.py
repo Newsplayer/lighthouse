@@ -6,6 +6,8 @@ The search returns the 10,000 most recent openings with descriptions and qualifi
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source
@@ -20,7 +22,8 @@ class AmazonSource(Source):
 
     @classmethod
     def detect(cls, url: str) -> str | None:
-        return "amazon.jobs" if "amazon.jobs" in (url or "").lower() else None
+        host = (urlsplit(url or "").hostname or "").lower()
+        return "amazon.jobs" if host in ("amazon.jobs", "www.amazon.jobs") else None
 
     def peek(self, slug):
         r = self.client.get("https://www.amazon.jobs/en/search.json?result_limit=1&offset=0", headers={"Accept": "application/json"})

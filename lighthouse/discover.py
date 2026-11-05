@@ -141,6 +141,48 @@ def _site(host: str) -> str:
     return ".".join(parts[-3:]) if len(parts) > 2 and len(parts[-1]) == 2 and len(parts[-2]) <= 3 else ".".join(parts[-2:])
 
 
+_GENERIC_WORDS = {"inc", "corp", "corporation", "company", "companies", "co", "group", "holdings", "holding", "the",
+                  "of", "and", "international", "global", "financial", "services", "service", "technologies",
+                  "technology", "systems", "brands", "industries", "enterprises", "partners", "resources", "energy",
+                  "health", "healthcare", "bank", "capital", "management", "solutions", "america", "american",
+                  "united", "national", "us", "usa", "llc", "plc", "ltd", "stores", "foods", "insurance", "trust"}
+
+
+def board_key(ats: str, slug: str) -> str:
+    """The part of a board's id that names its owner: a Workday tenant, an ATS board slug, a host."""
+    s = (slug or "").lower()
+    if ats == "workday":
+        s = s.split(".")[0]
+    elif ats in ("oracle", "successfactors", "jibe", "phenom", "eightfold", "jsonld"):
+        host = urlsplit(s if "://" in s else "https://" + s).hostname or s
+        labels = [x for x in host.split(".") if x not in ("www", "careers", "jobs", "career", "job", "com", "net", "org")]
+        s = labels[0] if labels else host
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def name_matches(company: str, domain: str, key: str) -> bool:
+    """Does a board id look like it belongs to this company? ('jpmc' / JPMorgan Chase: yes;
+    'geico' / Berkshire Hathaway: no). Used to keep a careers page's links to subsidiaries',
+    portfolio companies' or partners' boards from being taken as the company's own."""
+    k = re.sub(r"[^a-z0-9]", "", (key or "").lower())
+    if len(k) < 2:
+        return False
+    words = re.findall(r"[a-z0-9]+", (company or "").lower().replace("&", " and ").replace("'", ""))
+    label = re.sub(r"[^a-z0-9]", "", (domain or "").lower().split(".")[0])
+    names = {"".join(words), label} | {w for w in words if len(w) >= 3 and w not in _GENERIC_WORDS}
+    for n in names:
+        if n == k or (len(n) >= 3 and (n in k or (len(k) >= 3 and k in n))):
+            return True
+    initials = "".join(w[0] for w in words if w not in ("the", "of", "and"))
+    if len(initials) >= 2 and k.startswith(initials):
+        return True
+    full = "".join(words)
+    if 3 <= len(k) <= 6 and full[:1] == k[0]:      # an abbreviation: 'jpmc', 'uhg', 'mpc'
+        it = iter(full)
+        return all(ch in it for ch in k)
+    return False
+
+
 # A cheap substring that every match of the platform's pattern contains: the regex runs only when
 # it's present (pages can be megabytes, and dozens of patterns per page add up across 700 sites).
 _GATES = {"workday": "myworkday", "oracle": "oraclecloud", "successfactors": "sap", "eightfold": "eightfold",
@@ -182,7 +224,8 @@ class Robots:
         if not have:
             rp = None
             try:
-                r = self.client.get(host + "/robots.txt", timeout=10, allow_redirects=True)
+                r = self.client.get(host + "/robots.txt", timeout=10, allow_redirects=True, deadline=20,
+                                    max_bytes=2_000_000)
                 if r.status_code == 200 and "text/html" not in r.headers.get("content-type", ""):
                     rp = RobotFileParser()
                     rp.parse(r.text.splitlines())
@@ -230,7 +273,7 @@ class Discoverer:
             res.pages.append([url, "robots"])
             return None
         try:
-            r = self.client.get(url, allow_redirects=True,
+            r = self.client.get(url, allow_redirects=True, deadline=30, max_bytes=MAX_BYTES,
                                 headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         except Exception as exc:
             res.pages.append([url, type(exc).__name__])
@@ -321,6 +364,7 @@ class Discoverer:
         starts = [u for u in (res.careers_url, f"https://careers.{dom}" if dom else "", f"https://jobs.{dom}" if dom else "",
                               f"https://www.{dom}/careers" if dom else "", f"https://www.{dom}" if dom else "") if u]
         seen_urls: set[str] = set()
+        others: list[tuple[str, str]] = []       # working boards under another name (subsidiaries, partners...)
         queue: list[tuple[int, int, str]] = []   # (priority, depth, url)
         found_platforms: list[str] = []
         home_sites = {_site(urlsplit(u).hostname or "") for u in starts}
@@ -357,10 +401,20 @@ class Discoverer:
                 continue
             res.final_url = res.final_url or r.url
             home_sites.add(_site(urlsplit(r.url).hostname or ""))
-            hit = look(r) or self._special(r, found_platforms)
-            if hit and self._confirm(hit, res):
-                res.ats, res.slug = hit
-                break
+            hit = look(r)
+            special = None if hit else self._special(r, found_platforms)
+            cand = hit or special
+            if cand and self._confirm(cand, res):
+                own = (name_matches(res.company, res.domain, board_key(*cand))
+                       # read off the company's own careers site (Oracle, SuccessFactors, Phenom... front ends)
+                       or (special is not None and _site(urlsplit(r.url).hostname or "") in home_sites)
+                       # one of the company's own start pages redirected straight to the board
+                       or (depth == 0 and r.url != url and detect(r.url) == cand))
+                if own:
+                    res.ats, res.slug = cand
+                    break
+                if cand not in others:
+                    others.append(cand)
             if depth >= 2:
                 continue
             p = _Links()
@@ -393,14 +447,23 @@ class Discoverer:
         host = urlsplit(res.final_url).netloc
         res.sitemaps = self.robots.sitemaps.get(f"https://{host}", [])[:5] if host else []
         if not res.ats and host:
-            hit = self._jsonld(host, res)
+            hit = self._jsonld(host, res)        # the company's own job pages beat a board under another name
             if hit:
                 res.ats, res.slug = hit
+        if not res.ats and len(others) == 1:
+            res.ats, res.slug = others[0]
+            res.detail = (f"the only board found is named {others[0][0]}:{others[0][1]}, not after the company: "
+                          "pin the right one in companies.csv if it isn't theirs")
+        elif not res.ats and others:
+            res.detail = ("links to boards under other names (" + ", ".join(f"{a}:{s}" for a, s in others[:4])
+                          + "), e.g. subsidiaries: pin the right one in companies.csv")
         if res.ats:
             res.status = "ok"
         elif not res.pages or all(not isinstance(p[1], int) or p[1] >= 400 for p in res.pages):
             res.status = "blocked" if any(p[1] == "robots" for p in res.pages) else "error"
             res.detail = "careers page didn't open: " + ", ".join(f"{p[0]} → {p[1]}" for p in res.pages[:3])
+        elif others:
+            res.status = "not_found"      # several boards under other names: res.detail lists them
         elif found_platforms:
             res.status = "unsupported"
             res.detail = f"uses {found_platforms[0]}"
@@ -413,7 +476,7 @@ class Discoverer:
 def discovery_client(per_host_rps: float = 4.0):
     """Careers sites vary: a short timeout and one retry keep a dead site from costing minutes."""
     from .net import Client, open_network
-    return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1))
+    return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1, deadline=45, max_bytes=60_000_000))
 
 
 # Careers systems whose boards are inferred from a page: confirmed with one cheap request first.

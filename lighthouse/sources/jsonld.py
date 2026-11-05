@@ -18,6 +18,7 @@ import hashlib
 import html
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
@@ -31,6 +32,27 @@ _LASTMOD = re.compile(r"<url>\s*<loc>\s*(.*?)\s*</loc>.*?(?:<lastmod>\s*(.*?)\s*
 _LD = re.compile(r"<script[^>]+application/ld\+json[^>]*>(.*?)</script>", re.I | re.S)
 _LOCALE = re.compile(r"^[a-z]{2}(?:[-_][a-z]{2})?$", re.I)
 MAX_SITEMAPS = 20
+BOARD_SECONDS = 20 * 60          # a slow site can't hold the build: the rest waits for the next run
+# Listing pages that share the job-URL shape (/jobs/location/austin, /jobs/search?...): read last.
+_LISTING = re.compile(r"/(?:search|location|locations|category|categories|department|departments|team|teams|"
+                      r"city|cities|state|states|country|countries|keyword|keywords|tag|tags|saved|alerts?)(?:/|$)", re.I)
+
+
+def page_id(url: str) -> str:
+    """A stable id for a job page: its path, plus the query when the path alone isn't unique
+    (/careers/job?id=123)."""
+    parts = urlsplit(url)
+    ext = parts.path.strip("/") + (f"?{parts.query}" if parts.query else "")
+    return ext if 0 < len(ext) <= 200 else hashlib.sha1(url.encode()).hexdigest()
+
+
+def _priority(url: str) -> int:
+    """Job pages first: a URL with an id-like segment (digits) beats one that may be a listing."""
+    path = urlsplit(url).path
+    if _LISTING.search(path):
+        return 2
+    last = path.rstrip("/").rsplit("/", 1)[-1]
+    return 0 if re.search(r"\d", last) or re.search(r"\d", urlsplit(url).query) else 1
 
 
 def job_posting(page: str) -> dict | None:
@@ -116,7 +138,7 @@ class JsonLdSource(Source):
             if sm in seen:
                 continue
             seen.add(sm)
-            r = self.client.get(sm, headers={"Accept": "application/xml, text/xml"})
+            r = self.client.get(sm, headers={"Accept": "application/xml, text/xml"}, deadline=120, max_bytes=150_000_000)
             if r.status_code == 404:
                 raise BoardNotFound("sitemap not found")
             r.raise_for_status()
@@ -149,8 +171,9 @@ class JsonLdSource(Source):
             raise BoardNotFound("no job pages in this sitemap")
         board_host = urlsplit(slug).hostname or slug
         jobs, todo = [], []
+        pairs = sorted(pairs, key=lambda p: _priority(p[0]))
         for url, lastmod in pairs:
-            ext = urlsplit(url).path.strip("/")[-200:] or hashlib.sha1(url.encode()).hexdigest()
+            ext = page_id(url)
             uid = f"jsonld:{slug}:{ext}"
             marker = lastmod or url
             if known.get(uid) == (marker, True) or (known.get(uid, ("", False))[1] and not lastmod):
@@ -161,17 +184,22 @@ class JsonLdSource(Source):
         for uid, *_ in todo[self.max_detail_calls:]:
             if uid in known:
                 self.dropped.add(uid)     # changed, but over this run's budget: next run
+        stop_at = time.monotonic() + BOARD_SECONDS
+
+        def read(t):
+            return self._page(t[2]) if time.monotonic() < stop_at else False
+
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for (uid, ext, url, marker), page in zip(fetchable, pool.map(lambda t: self._page(t[2]), fetchable)):
+            for (uid, ext, url, marker), page in zip(fetchable, pool.map(read, fetchable)):
                 jp = job_posting(page) if page else None
                 if not jp:
                     if uid in known:
-                        self.dropped.add(uid)
+                        self.dropped.add(uid)   # not read this time (or no data today): keep what we have
                     continue
                 j = self.from_posting(slug, board_host, ext, url, marker, jp)
                 if j and self.wanted(j):
                     jobs.append(j)
-        if not jobs and not self.dropped:
+        if not jobs and not self.dropped and len(todo) <= len(fetchable):
             raise BoardNotFound("job pages carry no JobPosting data")
         return jobs
 
@@ -179,7 +207,7 @@ class JsonLdSource(Source):
         try:
             if not self._allowed(url):
                 return None
-            r = self.client.get(url, headers={"Accept": "text/html"})
+            r = self.client.get(url, headers={"Accept": "text/html"}, deadline=30, max_bytes=5_000_000)
             return r.text if r.status_code == 200 else None
         except Exception:
             return None

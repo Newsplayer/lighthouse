@@ -70,11 +70,22 @@ class _HostThrottle:
             time.sleep(delay)
 
 
-class Client:
-    """Thread-safe enough for our use: one requests.Session per thread."""
+class ResponseLimit(requests.RequestException):
+    """A response took longer than its deadline to arrive in full, or was larger than allowed."""
 
-    def __init__(self, timeout: float = 20, per_host_rps: float = 4.0, retries: int = 3):
+
+class Client:
+    """Thread-safe enough for our use: one requests.Session per thread.
+
+    `deadline` (seconds) and `max_bytes` bound a whole response, not just each read: a server that
+    trickles bytes or never stops can't hold a worker. Per-request overrides: get(..., deadline=,
+    max_bytes=). Streamed requests (stream=True) are left to the caller."""
+
+    def __init__(self, timeout: float = 20, per_host_rps: float = 4.0, retries: int = 3,
+                 deadline: float | None = None, max_bytes: int | None = None):
         self.timeout = timeout
+        self.deadline = deadline
+        self.max_bytes = max_bytes
         self.retries = retries
         self.throttle = _HostThrottle(1.0 / per_host_rps if per_host_rps > 0 else 0)
         self.counts: Counter = Counter()
@@ -106,7 +117,25 @@ class Client:
         with self._count_lock:
             self.counts[host] += 1
         kw.setdefault("timeout", self.timeout)
-        return self._session().request(method, url, **kw)
+        deadline, max_bytes = kw.pop("deadline", self.deadline), kw.pop("max_bytes", self.max_bytes)
+        if kw.get("stream") or not (deadline or max_bytes):
+            return self._session().request(method, url, **kw)
+        start = time.monotonic()
+        r = self._session().request(method, url, stream=True, **kw)
+        buf = bytearray()
+        try:
+            for chunk in r.iter_content(1 << 16):
+                buf += chunk
+                if max_bytes and len(buf) > max_bytes:
+                    raise ResponseLimit(f"{host}: response larger than {max_bytes:,} bytes")
+                if deadline and time.monotonic() - start > deadline:
+                    raise ResponseLimit(f"{host}: response took longer than {deadline:g} s")
+        except BaseException:
+            r.close()
+            raise
+        r._content, r._content_consumed = bytes(buf), True
+        r.close()
+        return r
 
     def get(self, url: str, **kw) -> requests.Response:
         return self.request("GET", url, **kw)
@@ -138,6 +167,8 @@ def open_network(client: Client | None = None) -> Client:
     BUILDER_AGENT. Readers never call this; their allowlist stays as above."""
     client = client or default_client()
     client.open = True
+    client.deadline = client.deadline or 300           # no single response may take more than 5 minutes
+    client.max_bytes = client.max_bytes or 300_000_000
     client.agent = BUILDER_AGENT
     client._local = threading.local()   # new sessions pick up the agent
     return client

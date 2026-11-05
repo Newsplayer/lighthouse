@@ -81,7 +81,8 @@ pre-filled issue here.
 
 **Actions → Job index → Run workflow → Run workflow.** The first run fetches everything (30–60 min;
 big Workday sites fill in their descriptions over the next few runs). When it's green:
-- **Releases → Job index** (tag `job-index`) has `base.db.xz` and `manifest.json`.
+- **Releases → Job index** (tag `job-index`) has `manifest.json` and a `base-<time>.db.xz`. Each build's
+  files get their own names; the manifest says which are current, and older ones are removed after it's uploaded.
 - The *Publish* step's last line reads like `48213 open roles from 509 boards; new base 41.2 MB`.
 
 After that it runs every 6 hours by itself, plus whenever you push a change under `config/`.
@@ -117,6 +118,11 @@ fetches it. The result is in the app's **Sources → Large employers** table and
 
 - **Re-checks:** a company whose board works is re-checked every 14 days, sooner if its board
   starts failing. One that couldn't be resolved is retried every 3 days. A full build re-checks all.
+- **Boards under other names:** a careers page often links to subsidiaries' or partners' boards. A board
+  is taken as the company's own only if its name matches the company (`jpmc` for JPMorgan Chase), it
+  was read off the company's own site, or the company's careers address redirects to it. A lone
+  board under another name is used with a note in its detail; several of them are listed and left
+  for you to pin.
 - **Wrong board, or a site discovery can't read:** fill in `ats` and `slug` to pin the board by hand
   (slug formats are in `config/sources.toml`). Oracle: `<api host>/<site>`. SuccessFactors / Jibe:
   the careers host. Phenom: `<host>/<country>/<lang>`. Eightfold: `<host>|<domain>`. Structured-data
@@ -185,7 +191,7 @@ once a week, or when the changes add up to half the base.
 ## How the build works (for reference)
 
 1. **Restore** `data/builder.db` from the Actions cache (kept between runs; GitHub drops cache
-   entries unused for 7 days). If it's gone, seed it from the published `base.db.xz`
+   entries unused for 7 days). If it's gone, seed it from the published base
    (`python -m lighthouse index seed`).
 2. **Discover** boards for the companies list (only those due a re-check), **apply the board lists**
    (the CSVs are the truth on the builder), then **fetch** all enabled boards. Unchanged boards and
@@ -195,11 +201,11 @@ once a week, or when the changes add up to half the base.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
    - **new base** (first build, weekly, `full`, a new rules version, or changes > half the base):
-     a ready-to-use database → `base.db.xz`. Every posting, a search index (index only, no second
+     a ready-to-use database → `base-<time>.db.xz`. Every posting, a search index (index only, no second
      copy of the text), the list indexes, and each description compressed against one shared
      dictionary of common posting text (~3x smaller on users' disks, still readable one row at a
      time).
-   - **otherwise:** postings changed since the base → `delta.db.xz`. Cumulative, so a user who
+   - **otherwise:** postings changed since the base → `delta-<time>.db.xz`. Cumulative, so a user who
      missed a few builds still needs only the latest one. Descriptions and search text are included
      only where they changed.
 
@@ -236,7 +242,7 @@ once a week, or when the changes add up to half the base.
 
 ```bat
 python -m lighthouse index build --out dist --db data\test-builder.db
-python -m lighthouse index import dist\base.db.xz
+python -m lighthouse index import dist\base-<time>.db.xz
 ```
 
 The first command finds boards and fetches everything into a separate database (it never touches your own

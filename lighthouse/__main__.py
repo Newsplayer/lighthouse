@@ -11,7 +11,7 @@
     python -m lighthouse key set|clear      # store / remove your Anthropic API key in the OS keychain
     python -m lighthouse mcp                # MCP server (stdio) for your own Claude app
     python -m lighthouse index status       # shared job index: when it was built, what it covers
-    python -m lighthouse index import [FILE] # update now (or merge a local base.db.xz to test a build)
+    python -m lighthouse index import [FILE] # update now (or merge a local base-*.db.xz to test a build)
     python -m lighthouse index seed base.db.xz  # builder: start from the published index (cache expired)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
                                             # what the GitHub Action runs (maintainers only)
