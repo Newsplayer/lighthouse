@@ -4,10 +4,11 @@ For the maintainer of `Newsplayer/lighthouse`. Users don't need any of this: the
 app, start it, and it reads the index this repo publishes.
 
 ```
-employer job boards ──► GitHub Action (every 6 h) ──► release "job-index" ──► every user's Lighthouse
-                         the only thing that writes      manifest.json            downloads, never writes
-                         job data                        base.db.xz  (weekly)
-your commits ──────────► (board list, code)              delta.db.xz (each run)
+config/companies.csv ─► careers pages ─┐
+config/boards/*.csv ───► job boards ───┴► GitHub Action (every 6 h) ─► release "job-index" ─► every user's Lighthouse
+                                           finds boards, fetches,        manifest.json          uses base.db.xz as is,
+                                           cleans, analyses, indexes     base.db.xz  (weekly)   applies deltas, never writes
+your commits ──────────► (lists, code)                                   delta.db.xz (each run)
 ```
 
 - **Who can change what:**
@@ -104,6 +105,33 @@ marks and Claude verdicts carry over: they're keyed by posting, and the postings
 
 ## Day to day
 
+### Add a large employer by its careers page
+
+Add a row to `config/companies.csv`: `company,group,domain,careers_url,ats,slug,enabled`, e.g.
+`Acme Corp,fortune500,acme.com,https://careers.acme.com,,,yes`. Leave `ats` and `slug` empty and
+push. The next build opens the careers page and finds the job system behind it: Workday, Oracle,
+SuccessFactors, Phenom, iCIMS/Jibe, Eightfold, Greenhouse, Lever, Ashby, SmartRecruiters, Workable,
+Recruitee, or a sitemap of job pages with JobPosting data. It checks the board answers, then
+fetches it. The result is in the app's **Sources → Large employers** table and in
+`manifest.json` → `coverage`.
+
+- **Re-checks:** a company whose board works is re-checked every 14 days, sooner if its board
+  starts failing. One that couldn't be resolved is retried every 3 days. A full build re-checks all.
+- **Wrong board, or a site discovery can't read:** fill in `ats` and `slug` to pin the board by hand
+  (slug formats are in `config/sources.toml`). Oracle: `<api host>/<site>`. SuccessFactors / Jibe:
+  the careers host. Phenom: `<host>/<country>/<lang>`. Eightfold: `<host>|<domain>`. Structured-data
+  sites: the sitemap URL.
+- **Remove a company:** set `enabled` to `no`.
+- **Statuses:**
+  - `unsupported`: the site uses a system Lighthouse can't read yet (Taleo, Avature, BrassRing...;
+    the row says which).
+  - `blocked`: robots.txt disallows the page.
+  - `error`: the page didn't open from GitHub's network.
+  - `not_found`: no job system was recognised.
+
+Careers pages are only read for links and structured data. Every page fetch respects robots.txt
+and identifies itself as `Lighthouse-index/<version> (+https://github.com/Newsplayer/lighthouse)`.
+
 ### Add a board (or act on a "Board suggestion" issue)
 
 1. Find the board's link on the company's careers page and check it answers:
@@ -142,8 +170,10 @@ Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthous
 - **You added a migration in `db.py` (schema change):** the next index is built with the new schema,
   and older apps can't read it. They keep the jobs they have, and their Sources page says
   "the job index needs a newer Lighthouse". Tell users to download the new version.
-- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`):** run the workflow with
-  **full** ticked, so everyone gets a fresh full file.
+- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`):** the next build writes a
+  fresh full file by itself (the manifest's rules version no longer matches).
+- **You changed the published index layout (`INDEX_SCHEMA` in `db.py`):** older apps keep the jobs
+  they have and say "needs a newer Lighthouse".
 
 ### Force a fresh full file
 
@@ -155,19 +185,27 @@ once a week, or when the changes add up to half the base.
 ## How the build works (for reference)
 
 1. **Restore** `data/builder.db` from the Actions cache (kept between runs; GitHub drops cache
-   entries unused for 7 days). If it's gone, seed it from the published `base.db.xz`.
-2. **Apply the board list** (CSV is the truth on the builder), then **fetch** all enabled boards.
-   Unchanged boards and postings are skipped by hash, and the usual de-duplication, field extraction,
-   years asked and ghost scoring run.
-3. **Export.** Each posting has a fingerprint of everything readers get. Changed fingerprints are
-   stamped with the build time, and:
-   - **new base** (first build, weekly, `full`, or changes > half the base): every posting →
-     `base.db.xz`
-   - **otherwise:** postings changed since the base → `delta.db.xz` (cumulative, so a user who missed
-     a few builds still needs only the latest one)
+   entries unused for 7 days). If it's gone, seed it from the published `base.db.xz`
+   (`python -m lighthouse index seed`).
+2. **Discover** boards for the companies list (only those due a re-check), **apply the board lists**
+   (the CSVs are the truth on the builder), then **fetch** all enabled boards. Unchanged boards and
+   postings are skipped by hash. Then the usual steps run: de-duplication, field extraction (pay,
+   years asked, visa, clearance, degree, job function, seniority, employment type, skills) and
+   ghost scoring.
+3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
+   search text and its description). Changed fingerprints are stamped with the build time, and:
+   - **new base** (first build, weekly, `full`, a new rules version, or changes > half the base):
+     a ready-to-use database → `base.db.xz`. Every posting, a search index (index only, no second
+     copy of the text), the list indexes, and each description compressed against one shared
+     dictionary of common posting text (~3x smaller on users' disks, still readable one row at a
+     time).
+   - **otherwise:** postings changed since the base → `delta.db.xz`. Cumulative, so a user who
+     missed a few builds still needs only the latest one. Descriptions and search text are included
+     only where they changed.
 
-   The files are written by whitelist (jobs, boards, rule extractions, history), with descriptions as
-   plain text and the whole file xz-compressed. That comes to about 1 KB per posting.
+   The files are written by whitelist (jobs, boards, rule extractions, history, coverage), so nothing
+   personal can be in them. Ghost reasons are stored as dates ("open since 2026-08-26"), not day
+   counts, so an unchanged posting doesn't change every day.
 4. **Publish** data files first and `manifest.json` last, then save the builder database to the cache.
    If publishing fails, the cache isn't saved. The next run also compares the published manifest with
    its own state and writes a fresh base if they disagree, so readers can never get a delta that
@@ -177,8 +215,8 @@ once a week, or when the changes add up to half the base.
 
 | Limit | Value | When it matters |
 |---|---|---|
-| Job run time | 6 h max (`timeout-minutes: 300`) | only if you add thousands of boards |
-| Release file size | 2 GiB | far off (~1 KB/posting) |
+| Job run time | 6 h max (`timeout-minutes: 340`) | first build of a large list; later runs only fetch what changed |
+| Release file size | 2 GiB | far off |
 | Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
@@ -201,5 +239,5 @@ python -m lighthouse index build --out dist --db data\test-builder.db
 python -m lighthouse index import dist\base.db.xz
 ```
 
-The first command fetches everything into a separate database (it never touches your own
-`data\lighthouse.db`). The second merges the result into your app the way a download would.
+The first command finds boards and fetches everything into a separate database (it never touches your own
+data). The second installs the result in your app the way a download would.

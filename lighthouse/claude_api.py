@@ -280,8 +280,10 @@ def _store_fit(conn, content_hash, profile_hash, out, method, model) -> None:
 
 # ---------------------------------------------------------------- selecting work
 
-def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
-    sql = """SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
+def extraction_candidates(conn, uids: list[str] | None, limit: int, count_only: bool = False):
+    cols = "COUNT(DISTINCT j.content_hash)" if count_only else \
+        "j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location"
+    sql = f"""SELECT {cols} FROM jobs j
              JOIN job_content c ON c.uid = j.uid
              WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0
                AND NOT EXISTS (SELECT 1 FROM claude_extractions ce WHERE ce.content_hash = j.content_hash)"""
@@ -291,16 +293,20 @@ def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
             return []
         sql += f" AND j.uid IN ({','.join('?' * len(uids))})"
         args = list(uids)
+    if count_only:
+        return conn.execute(sql, args).fetchone()[0]
     sql += " GROUP BY j.content_hash ORDER BY j.effective_first_seen DESC LIMIT ?"
     return conn.execute(sql, args + [limit]).fetchall()
 
 
 def fit_candidates(conn, profile_hash: str, uids: list[str] | None, limit: int, ghost_hide_at: int,
-                   prof: dict | None = None, yoe_slack: int = 2) -> list:
+                   prof: dict | None = None, yoe_slack: int = 2, count_only: bool = False):
     """Eligible, not-hidden postings with no verdict for this profile yet (newest first)."""
     prof = prof if prof is not None else profile_mod.load(conn)
     elig = profile_mod.eligibility_sql(conn, prof, yoe_slack)
-    sql = f"""SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
+    cols = "COUNT(DISTINCT j.content_hash)" if count_only else \
+        "j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location"
+    sql = f"""SELECT {cols} FROM jobs j
              JOIN job_content c ON c.uid = j.uid
              LEFT JOIN fit f ON f.content_hash = j.content_hash AND f.profile_hash = ?
              WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 AND f.tier IS NULL
@@ -311,6 +317,8 @@ def fit_candidates(conn, profile_hash: str, uids: list[str] | None, limit: int, 
             return []
         sql += f" AND j.uid IN ({','.join('?' * len(uids))})"
         args += list(uids)
+    if count_only:
+        return conn.execute(sql, args).fetchone()[0]
     sql += " GROUP BY j.content_hash ORDER BY j.effective_first_seen DESC LIMIT ?"
     return conn.execute(sql, args + [limit]).fetchall()
 

@@ -368,9 +368,9 @@ def create_app(db_path: Path | str | None = None, config_path: Path | str = conf
             usage=c.execute("SELECT purpose, model, COUNT(*) n, SUM(cost_usd) usd FROM api_usage "
                             "WHERE at >= ? GROUP BY purpose, model",
                             (datetime.now(timezone.utc).strftime("%Y-%m-01"),)).fetchall(),
-            pending_extract=len(claude_api.extraction_candidates(c, None, 100000)),
-            pending_fit=len(claude_api.fit_candidates(c, ph, None, 100000, k.settings.ghost_hide_signals, prof,
-                                                      k.settings.yoe_slack_years)),
+            pending_extract=claude_api.extraction_candidates(c, None, 0, count_only=True),
+            pending_fit=claude_api.fit_candidates(c, ph, None, 0, k.settings.ghost_hide_signals, prof,
+                                                  k.settings.yoe_slack_years, count_only=True),
             keyring_ok=_keyring_ok())
         c.close()
         return render_template("claude.html", **ctx)
