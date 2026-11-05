@@ -91,7 +91,15 @@ def parse_dt(value) -> datetime | None:
             v = float(value)
             return datetime.fromtimestamp(v / 1000 if v > 1e11 else v, tz=timezone.utc)
         s = str(value).strip().replace(" UTC", "+00:00").replace("Z", "+00:00")
-        return to_utc(datetime.fromisoformat(s))
+        try:
+            return to_utc(datetime.fromisoformat(s))
+        except ValueError:
+            for fmt in ("%B %d, %Y", "%b %d, %Y", "%d %B %Y", "%m/%d/%Y"):   # "October 1, 2026"
+                try:
+                    return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+            return None
     except (ValueError, OverflowError, OSError):
         return None
 

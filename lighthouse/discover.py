@@ -41,6 +41,7 @@ log = logging.getLogger("lighthouse.discover")
 COMPANIES_FILE = "companies.csv"   # in the config folder
 MAX_PAGES = 9                       # page requests per company (robots.txt and sitemaps not counted)
 MAX_BYTES = 3_000_000
+PARSE_BYTES = 1_000_000             # links are looked for in the first 1 MB of a page
 
 # Fingerprints of careers systems, for the coverage report (supported or not). Order matters a
 # little: the first match in a page is reported first.
@@ -140,8 +141,28 @@ def _site(host: str) -> str:
     return ".".join(parts[-3:]) if len(parts) > 2 and len(parts[-1]) == 2 and len(parts[-2]) <= 3 else ".".join(parts[-2:])
 
 
+# A cheap substring that every match of the platform's pattern contains: the regex runs only when
+# it's present (pages can be megabytes, and dozens of patterns per page add up across 700 sites).
+_GATES = {"workday": "myworkday", "oracle": "oraclecloud", "successfactors": "sap", "eightfold": "eightfold",
+          "phenom": "ph", "icims": "icims", "taleo": "taleo", "avature": "avature", "brassring": ("brassring", "kenexa"),
+          "jobvite": "jobvite", "ultipro": ("ultipro", "ukg"), "adp": "adp.com", "dayforce": "dayforce",
+          "cornerstone": "csod", "talentbrew": ("talentbrew", "radancy"), "jibe": "jibe", "paradox": "paradox",
+          "greenhouse": "greenhouse", "lever": "lever.co", "ashby": "ashbyhq", "smartrecruiters": "smartrecruiters",
+          "workable": "workable", "recruitee": "recruitee"}
+
+
 def platforms_in(text: str) -> list[str]:
-    return [name for name, pat in PLATFORMS if pat.search(text or "")]
+    low = (text or "").lower()
+    out = []
+    for name, pat in PLATFORMS:
+        gate = _GATES.get(name, "")
+        if gate and not any(g in low for g in ((gate,) if isinstance(gate, str) else gate)):
+            continue
+        if name == "successfactors" and "successfactors" not in low and "sapsf" not in low and "career" not in low:
+            continue
+        if pat.search(text):
+            out.append(name)
+    return out
 
 
 class Robots:
@@ -219,6 +240,71 @@ class Discoverer:
             return None
         return r
 
+    # ------------------------------------------------------------------ systems recognised from a page
+    def _special(self, r, platforms: list[str]) -> tuple[str, str] | None:
+        from .sources import eightfold, oracle, phenom
+        text, host = r.text, (urlsplit(r.url).hostname or "").lower()
+        if host.endswith("amazon.jobs"):
+            return "amazon", "amazon.jobs"
+        o = oracle.from_page(text)
+        if o:
+            return "oracle", o
+        p = phenom.from_page(text)
+        if p:
+            return self._phenom_board(p)
+        e = eightfold.from_page(text)
+        if e:
+            return "eightfold", e
+        low = text[:PARSE_BYTES].lower()
+        if "rmkcdn.successfactors" in low or "/platform/js/j2w/" in low:
+            return "successfactors", host
+        if "jibe" in platforms and ("jibecdn" in low or "/api/jobs" in low or '"jibe' in low):
+            return "jibe", host
+        return None
+
+    def _phenom_board(self, slug: str) -> tuple[str, str]:
+        """A Phenom site often fronts Workday (or another supported system): its Apply links say so."""
+        from collections import Counter
+        from .sources import detect
+        from .sources.phenom import PhenomSource
+        try:
+            jobs = PhenomSource(client=self.client).list_jobs(slug, size=25, limit=25)
+        except Exception:
+            return "phenom", slug
+        hits = Counter(detect(j.get("applyUrl") or "") for j in jobs if j.get("applyUrl"))
+        hits.pop(None, None)
+        if hits:
+            board, n = hits.most_common(1)[0]
+            if n >= max(2, len(jobs) // 2):
+                return board
+        return "phenom", slug
+
+    def _confirm(self, hit: tuple[str, str], res: Result) -> bool:
+        ats, slug = hit
+        if ats not in _CONFIRM:
+            return True
+        from .sources import SOURCES
+        try:
+            n = SOURCES[ats](client=self.client, max_detail_calls=0).peek(slug)
+        except Exception as exc:
+            res.detail = f"{ats} board {slug} didn't answer: {type(exc).__name__}"[:300]
+            return False
+        if not n:
+            res.detail = f"{ats} board {slug} has no openings"
+            return False
+        res.openings = n
+        return True
+
+    def _jsonld(self, host: str, res: Result) -> tuple[str, str] | None:
+        """Last resort: a sitemap of job pages that carry schema.org JobPosting data."""
+        maps = list(dict.fromkeys(self.robots.sitemaps.get(f"https://{host}", []) + [f"https://{host}/sitemap.xml"]))
+        for sm in maps[:3]:
+            if not sm.startswith("https://") or not self.robots.allowed(sm):
+                continue
+            if self._confirm(("jsonld", sm), res):
+                return "jsonld", sm
+        return None
+
     # ------------------------------------------------------------------ one company
     def resolve(self, company: dict) -> Result:
         from .sources import detect, detect_in_html
@@ -271,15 +357,15 @@ class Discoverer:
                 continue
             res.final_url = res.final_url or r.url
             home_sites.add(_site(urlsplit(r.url).hostname or ""))
-            hit = look(r)
-            if hit:
+            hit = look(r) or self._special(r, found_platforms)
+            if hit and self._confirm(hit, res):
                 res.ats, res.slug = hit
                 break
             if depth >= 2:
                 continue
             p = _Links()
             try:
-                p.feed(r.text[:MAX_BYTES])
+                p.feed(r.text[:PARSE_BYTES])
             except Exception:
                 pass
             for src in p.srcs:
@@ -306,6 +392,10 @@ class Discoverer:
         res.platforms = found_platforms
         host = urlsplit(res.final_url).netloc
         res.sitemaps = self.robots.sitemaps.get(f"https://{host}", [])[:5] if host else []
+        if not res.ats and host:
+            hit = self._jsonld(host, res)
+            if hit:
+                res.ats, res.slug = hit
         if res.ats:
             res.status = "ok"
         elif not res.pages or all(not isinstance(p[1], int) or p[1] >= 400 for p in res.pages):
@@ -324,6 +414,10 @@ def discovery_client(per_host_rps: float = 4.0):
     """Careers sites vary: a short timeout and one retry keep a dead site from costing minutes."""
     from .net import Client, open_network
     return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1))
+
+
+# Careers systems whose boards are inferred from a page: confirmed with one cheap request first.
+_CONFIRM = {"oracle", "successfactors", "phenom", "jibe", "eightfold", "amazon", "jsonld"}
 
 
 def run(companies: list[dict], client, agent: str, workers: int = 16, only: str | None = None,
