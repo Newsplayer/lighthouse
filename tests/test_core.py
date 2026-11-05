@@ -121,13 +121,13 @@ def test_eligibility(tmp_path):
                                                                        body="<p>" + "Analyze data daily. " * 40 + "</p>")])
     cfg = config.load(tmp_path / "none.toml")
     fetch.postprocess(conn, cfg)
-    profile.save(conn, {**profile.DEFAULT, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]})
-    profile.recompute(conn, None, 2, force=True)
-    r = db.get_job(conn, "greenhouse:acme:1")
+    p = {**profile.DEFAULT, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]}
+    r = db.get_job(conn, "greenhouse:acme:1", p)
     reasons = json.loads(r["elig_reasons"])
     assert r["elig"] == 0 and any("sponsor" in x for x in reasons) and any("5+ years" in x for x in reasons)
-    assert db.get_job(conn, "greenhouse:acme:2")["elig"] == 1
-    assert db.list_jobs(conn, db.Filters(eligible_only=True))[1] == 1
+    assert db.get_job(conn, "greenhouse:acme:2", p)["elig"] == 1
+    assert db.list_jobs(conn, db.Filters(eligible_only=True, profile=p))[1] == 1   # evaluated in the query
+    assert db.list_jobs(conn, db.Filters(eligible_only=True))[1] == 2               # no profile: nothing ruled out
 
 
 def test_redaction():

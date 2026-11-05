@@ -73,8 +73,9 @@ class _HostThrottle:
 class Client:
     """Thread-safe enough for our use: one requests.Session per thread."""
 
-    def __init__(self, timeout: float = 20, per_host_rps: float = 4.0):
+    def __init__(self, timeout: float = 20, per_host_rps: float = 4.0, retries: int = 3):
         self.timeout = timeout
+        self.retries = retries
         self.throttle = _HostThrottle(1.0 / per_host_rps if per_host_rps > 0 else 0)
         self.counts: Counter = Counter()
         self.blocked: Counter = Counter()
@@ -87,7 +88,7 @@ class Client:
         s = getattr(self._local, "s", None)
         if s is None:
             s = requests.Session()
-            retry = Retry(total=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504),
+            retry = Retry(total=self.retries, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504),
                           allowed_methods=("GET", "POST"), respect_retry_after_header=True)
             s.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=8))
             s.headers["User-Agent"] = self.agent

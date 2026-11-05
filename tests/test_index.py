@@ -1,4 +1,5 @@
-"""Shared job index: the builder publishes base + delta files; readers only download and merge them."""
+"""Shared job index: the builder publishes a ready-to-use base + small deltas; readers use the base as it
+comes (no re-processing) and apply deltas with SQL. Personal data lives apart, in user.db."""
 import json
 import lzma
 import shutil
@@ -65,7 +66,7 @@ def unpacked(path, tmp_path):
 
 def reader(tmp_path):
     cfg = config.load(write_cfg(tmp_path, "reader", REPO))
-    return db.connect(tmp_path / "reader.db"), cfg
+    return db.connect(db.app_db(cfg, tmp_path / "data")), cfg
 
 
 def test_export_is_whitelisted_and_compact(tmp_path):
@@ -85,10 +86,17 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     path = unpacked(b.dist / snapshot.BASE, tmp_path)
     assert b"jane@example.com" not in path.read_bytes()
     c = sqlite3.connect(path)
-    for t in ("marks", "fit", "api_usage", "claude_batches", "meta", "sponsor_match"):
-        assert c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
-    assert c.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NOT NULL OR mark IS NOT NULL OR elig IS NOT NULL").fetchone()[0] == 0
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not tables & {"marks", "fit", "api_usage", "claude_batches", "meta", "sponsor_match", "claude_extractions"}
+    cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+    assert not cols & {"minhash", "minhash_of", "elig", "elig_reasons"}
+    assert c.execute("SELECT COUNT(*) FROM jobs WHERE mark IS NOT NULL").fetchone()[0] == 0
     assert all(isinstance(r[0], str) for r in c.execute("SELECT html FROM job_content"))   # plain text, compressed as a whole
+    # ready to use: search index and list indexes are already in the file
+    assert "jobs_fts" in tables and c.execute("SELECT COUNT(*) FROM jobs WHERE fts_rowid IS NOT NULL").fetchone()[0] == 2
+    assert c.execute("SELECT COUNT(*) FROM jobs_fts WHERE jobs_fts MATCH '\"dashboards\"*'").fetchone()[0] == 2
+    assert c.execute("SELECT 1 FROM sqlite_master WHERE name='idx_canon_eff'").fetchone()
+    assert c.execute("PRAGMA application_id").fetchone()[0] == db.INDEX_APP_ID
 
 
 def test_base_then_cumulative_deltas(tmp_path):
@@ -114,30 +122,36 @@ def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     m1 = b.export()
     base = b.dist / snapshot.BASE
     conn, cfg = reader(tmp_path)
-    assert snapshot.import_file(conn, cfg, base, full=True)["new"] == 3
-    assert db.list_jobs(conn, db.Filters(q="dashboards"))[1] == 3       # search index built locally
+    assert snapshot.import_file(conn, cfg, base, full=True)["postings"] == 3
+    assert db.list_jobs(conn, db.Filters(q="dashboards"))[1] == 3       # search index came with the file
     uid = conn.execute("SELECT uid FROM jobs WHERE title='Data Analyst'").fetchone()[0]
     db.set_mark(conn, uid, "saved")
     ch = conn.execute("SELECT content_hash FROM jobs WHERE uid=?", (uid,)).fetchone()[0]
-    conn.execute("UPDATE extractions SET method='claude', data=? WHERE content_hash=?",
-                 (json.dumps({"yoe_min": {"value": 9}}), ch))
+    conn.execute("INSERT INTO claude_extractions(content_hash, data, model, at) VALUES (?, ?, 'm', 'x')",
+                 (ch, json.dumps({"yoe_min": {"value": 9}})))
     conn.commit()
     from lighthouse import extract
-    extract.derive(conn, ["acme"])   # what the app does after a Claude extraction
+    extract.derive_claude(conn)   # what the app does after a Claude extraction
+    assert conn.execute("SELECT name FROM pragma_database_list WHERE name='idx'").fetchone()   # two files
     b.ingest("acme", [job(1), job(2, "Accountant"), job(4, "Controller")])
     m2 = b.export()
     stats = snapshot.import_file(conn, cfg, b.dist / snapshot.DELTA, full=False)
     assert stats["postings"] == 2 and stats["new"] == 1
     assert conn.execute("SELECT active FROM jobs WHERE title='Data Engineer'").fetchone()[0] == 0
     assert conn.execute("SELECT mark FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == db.MARK_RANK["saved"]
-    assert conn.execute("SELECT method FROM extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "claude"
+    assert conn.execute("SELECT COUNT(*) FROM claude_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == 1
     assert conn.execute("SELECT yoe_min FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == 9   # your Claude result wins
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active=1").fetchone()[0] == 3
-    snapshot.import_file(conn, cfg, base, full=True)   # a base overwrites every row: your result is re-applied
+    assert db.list_jobs(conn, db.Filters(q="Controller"))[1] == 1       # delta rows are searchable
+    assert db.list_jobs(conn, db.Filters(q="Data Engineer"))[1] == 0    # closed ones drop out
+    snapshot.import_file(conn, cfg, base, full=True)   # a new base replaces the index: your layer is re-applied
     assert conn.execute("SELECT yoe_min FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == 9
+    assert conn.execute("SELECT mark FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == db.MARK_RANK["saved"]
+    data = tmp_path / "data"
+    assert len(list((data / "index").glob("index-2*.db"))) == 1   # the replaced index file is gone
 
 
-def test_tampered_index_is_cleaned_on_import(tmp_path):
+def test_tampered_index_is_harmless_when_shown(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1)])
     b.export()
@@ -149,9 +163,14 @@ def test_tampered_index_is_cleaned_on_import(tmp_path):
     c.close()
     conn, cfg = reader(tmp_path)
     snapshot.import_file(conn, cfg, path)
-    html = db.unpack(conn.execute("SELECT html FROM job_content").fetchone()[0])
-    assert html == "<p>Hi</p>"
-    assert conn.execute("SELECT url FROM jobs").fetchone()[0] == ""
+    uid = conn.execute("SELECT uid FROM jobs").fetchone()[0]
+    conn.close()
+    from lighthouse.web import create_app
+    app = create_app(db_path=tmp_path / "data" / "user.db", config_path=write_cfg(tmp_path, "reader", REPO))
+    client = app.test_client()
+    page = client.get(f"/job/{uid}").get_data(as_text=True)
+    assert "<p>Hi</p>" in page and "steal()" not in page and "onerror" not in page and "javascript:" not in page
+    assert "javascript:" not in client.get("/").get_data(as_text=True)
 
 
 def test_new_base_removes_dropped_boards(tmp_path):
@@ -170,7 +189,7 @@ def test_new_base_removes_dropped_boards(tmp_path):
     b.export(full=True)
     snapshot.import_file(conn, cfg, b.dist / snapshot.BASE, full=True)
     assert [r[0] for r in conn.execute("SELECT slug FROM boards")] == ["acme"]
-    assert conn.execute("SELECT active FROM jobs WHERE source_board='beta'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE source_board='beta'").fetchone()[0] == 0
 
 
 def test_builder_applies_board_list_and_closes_switched_off_boards(tmp_path):
@@ -238,22 +257,24 @@ def test_sync_downloads_base_once_then_only_deltas(tmp_path):
     b.export()
     gh = GitHubFake([first, b.dist])
     conn, cfg = reader(tmp_path)
-    r = snapshot.sync(conn, cfg, gh, tmp_path)
+    data = tmp_path / "data"
+    r = snapshot.sync(conn, cfg, gh)
     assert r["error"] is None and downloads(gh) == ["base.db.xz", "delta.db.xz"]
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active=1").fetchone()[0] == 11
     gh.calls.clear()
-    snapshot.sync(conn, cfg, gh, tmp_path)       # nothing new: only the manifest is read
+    snapshot.sync(conn, cfg, gh)       # nothing new: only the manifest is read
     assert downloads(gh) == []
     b.ingest("acme", ten[1:] + [job(11, "Controller"), job(12, "Auditor")])   # 1 closed, 12 new
     b.export()
     gh.publish(b.dist)
     gh.calls.clear()
-    snapshot.sync(conn, cfg, gh, tmp_path)
+    snapshot.sync(conn, cfg, gh)
     assert downloads(gh) == ["delta.db.xz"]
     active = {r[0] for r in conn.execute("SELECT external_id FROM jobs WHERE active=1")}
     assert active == {str(i) for i in range(2, 13)}
     assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["delta"]["built_at"]
-    assert not list(tmp_path.glob("index-*"))   # temp files cleaned up
+    assert not list((data / "index").glob("download-*"))   # temp files cleaned up
+    assert db.list_jobs(conn, db.Filters(q="Auditor"))[1] == 1
 
 
 @pytest.mark.parametrize("problem", ["checksum", "evil_redirect", "newer_schema", "not_published"])
@@ -270,11 +291,11 @@ def test_sync_failure_keeps_existing_jobs(tmp_path, problem):
     if problem == "checksum":
         m["base"]["sha256"] = "0" * 64
     if problem == "newer_schema":
-        m["schema"] += 1
+        m["index_schema"] += 1
     gh.files["manifest.json"] = json.dumps(m).encode()
     if problem == "not_published":
         gh.files.clear()
-    r = snapshot.sync(conn, cfg, gh, tmp_path)
+    r = snapshot.sync(conn, cfg, gh)
     assert r["error"]
     if problem == "newer_schema":
         assert "newer Lighthouse" in r["error"]

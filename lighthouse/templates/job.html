@@ -2,7 +2,7 @@
 {% block title %}{{ job.title }} · Lighthouse{% endblock %}
 {% block content %}
 <a class="back" href="{{ url_for('index') }}">← All jobs</a>
-{% set ghosts = job.ghost_reasons|fromjson %}
+{% set ghosts = job.ghost_reasons|ghosts %}
 {% set inelig = job.elig_reasons|fromjson %}
 <article class="detail">
   <header>
@@ -11,12 +11,16 @@
     <div class="tags">
       <span class="tag">{{ job.source }} / {{ job.source_board }}</span>
       {% if job.workplace_eff %}<span class="tag">{{ job.workplace_eff|capitalize }}</span>{% endif %}
-      {% if job.pay_max_annual %}<span class="tag">{{ job.pay_min_annual|money(job.pay_currency) }}–{{ job.pay_max_annual|money(job.pay_currency) }} / yr</span>{% endif %}
+      {% if job.pay_max_annual %}<span class="tag">{% if job.pay_interval == 'hour' %}{{ (job.pay_min_annual / 2080)|money(job.pay_currency) }}–{{ (job.pay_max_annual / 2080)|money(job.pay_currency) }} / hr{% else %}{{ job.pay_min_annual|money(job.pay_currency) }}–{{ job.pay_max_annual|money(job.pay_currency) }} / yr{% endif %}</span>{% endif %}
+      {% if job.job_function %}<span class="tag">{{ job.job_function }}</span>{% endif %}
+      {% if job.seniority %}<span class="tag">{{ seniorities[job.seniority] }}</span>{% endif %}
+      {% if job.emp_type %}<span class="tag">{{ emp_types[job.emp_type] }}</span>{% endif %}
       {% if not job.active %}<span class="tag warn">no longer listed</span>{% endif %}
       {% if mark %}<span class="tag ok">{{ mark }}</span>{% endif %}
     </div>
     <div class="cta">
-      <a class="btn" href="{{ job.url }}" target="_blank" rel="noopener noreferrer">Apply on original posting ↗</a>
+      {% if apply_links %}<a class="btn" href="{{ apply_links[0].url }}" target="_blank" rel="noopener noreferrer">Apply on {{ apply_links[0].url|host }} ↗</a>
+      {% elif job.url|safe_url %}<a class="btn" href="{{ job.url|safe_url }}" target="_blank" rel="noopener noreferrer">Apply on original posting ↗</a>{% endif %}
       <form method="post" action="{{ url_for('mark') }}" class="marks">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="uid" value="{{ job.uid }}">
@@ -27,6 +31,12 @@
         <button class="link" name="status" value="hidden">Hide</button>{% endif %}
       </form>
     </div>
+    {% if apply_links|length > 1 %}
+    <p class="meta">Also open for applications:
+      {% for a in apply_links[1:6] %}<a href="{{ a.url }}" target="_blank" rel="noopener noreferrer">{{ a.location or (a.url|host) }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+      {% if apply_links|length > 6 %}· +{{ apply_links|length - 6 }} more below{% endif %}</p>
+    {% endif %}
+    {% if job.skills %}<p class="meta">Mentions: {{ (job.skills|skills)|join(', ') }}</p>{% endif %}
   </header>
 
   <div class="panels">
@@ -85,7 +95,7 @@
       <h3>Same role, other listings</h3>
       <ul class="plain">
         {% for m in members if m.uid != job.uid %}
-          <li><a href="{{ m.url }}" target="_blank" rel="noopener noreferrer">{{ m.source }}/{{ m.source_board }}</a>
+          <li>{% if m.url|safe_url %}<a href="{{ m.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ m.source }}/{{ m.source_board }}</a>{% else %}{{ m.source }}/{{ m.source_board }}{% endif %}
             · {{ m.location }} · {{ 'open' if m.active else 'closed ' ~ (m.closed_at|day) }} · since {{ (m.posted_at or m.first_seen)|day }}</li>
         {% endfor %}
       </ul>

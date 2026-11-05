@@ -53,10 +53,9 @@ def test_years_asked_filter_and_title_fallback(tmp_path):
     assert titles(db.Filters(yoe_hi=4, yoe_unknown=False)) == ["Data Analyst:2"]
     assert [r["yoe_min"] for r in db.list_jobs(conn, db.Filters(sort="yoe"))[0]] == [2, 5, 7, None]
     # a title-based estimate never rules anyone out
-    profile.save(conn, {**profile.DEFAULT, "years_experience": 1})
-    profile.recompute(conn, None, 2, force=True)
-    assert db.get_job(conn, "greenhouse:acme:3")["elig"] == 1
-    assert db.get_job(conn, "greenhouse:acme:2")["elig"] == 0
+    p = {**profile.DEFAULT, "years_experience": 1}
+    assert db.get_job(conn, "greenhouse:acme:3", p)["elig"] == 1
+    assert db.get_job(conn, "greenhouse:acme:2", p)["elig"] == 0
 
 
 def test_geo_classifier():

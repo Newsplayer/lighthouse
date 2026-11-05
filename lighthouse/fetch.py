@@ -38,7 +38,7 @@ def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=N
         return None, src
 
 
-def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAULT_DB,
+def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str | None = None,
         only: list[tuple[str, str]] | None = None, wait: bool = True,
         use_snapshot: bool = True, overrides: dict | None = None) -> list[dict] | None:
     """Fetch all enabled boards (or just `only`). Returns per-board results, or None if a
@@ -58,6 +58,8 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
 
 def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
     cfg = config_mod.load(config_path)
+    if db_path is None:
+        db_path = db.app_db(cfg) if use_snapshot else db.DEFAULT_DB
     s = cfg.settings
     for k, v in (overrides or {}).items():
         if v is not None and hasattr(s, k):
@@ -140,7 +142,6 @@ def postprocess(conn, cfg=None, company_keys=None) -> None:
         db.set_meta(conn, "ghost_full_rescore", today)
     else:
         ghost.rescore(conn, keys, s.ghost_age_days)
-    profile.recompute(conn, None, s.yoe_slack_years)
     sponsors.refresh_matches(conn, keys)
     _prune(conn, s.inactive_content_retention_days)
     db.bump_generation(conn)
@@ -161,11 +162,12 @@ def _prune(conn, days: int) -> None:
 
 
 def refresh_derived(conn, cfg=None) -> None:
-    """Re-derive filter fields and eligibility after new extractions arrive (no re-clustering)."""
-    cfg = cfg or config_mod.load()
+    """Re-derive filter fields after new Claude extractions arrive (no re-clustering)."""
+    if db.is_reader(conn):   # only rows you have Claude extractions for differ from the index
+        extract.derive_claude(conn)
+        return
     keys = [r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs")]
     extract.derive(conn, keys)
-    profile.recompute(conn, None, cfg.settings.yoe_slack_years)
 
 
 def needs_reprocess(conn) -> bool:

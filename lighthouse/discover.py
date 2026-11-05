@@ -209,7 +209,7 @@ class Discoverer:
             res.pages.append([url, "robots"])
             return None
         try:
-            r = self.client.get(url, timeout=20, allow_redirects=True,
+            r = self.client.get(url, allow_redirects=True,
                                 headers={"Accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         except Exception as exc:
             res.pages.append([url, type(exc).__name__])
@@ -318,6 +318,12 @@ class Discoverer:
             res.status = "not_found"
             res.detail = "no careers system recognised on the careers page"
         return res
+
+
+def discovery_client(per_host_rps: float = 4.0):
+    """Careers sites vary: a short timeout and one retry keep a dead site from costing minutes."""
+    from .net import Client, open_network
+    return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1))
 
 
 def run(companies: list[dict], client, agent: str, workers: int = 16, only: str | None = None,

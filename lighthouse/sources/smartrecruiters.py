@@ -87,4 +87,5 @@ class SmartRecruitersSource(Source):
             if sec.get("text"):
                 parts.append(f"<h3>{sec.get('title') or ''}</h3>{sec['text']}")
         job.content_html = sanitize_html("".join(parts))
-        job.url = detail.get("postingUrl") or detail.get("applyUrl") or job.url
+        # Keep the short link (jobs.smartrecruiters.com/<company>/<id>): it opens the same posting, and
+        # switching to the long postingUrl only on detail runs made every new posting change twice.

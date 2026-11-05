@@ -261,10 +261,13 @@ def _store_extraction(conn, content_hash: str, out: dict, model: str) -> None:
             "citizenship": f(out.get("citizenship_required"), "citizenship"),
             "degree": f(out.get("degree_required"), "degree"), "visa": f(out.get("visa_sponsorship"), "visa")}
     old = conn.execute("SELECT data FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
-    if old:  # keep the free pipeline-wording signal from the rules pass
-        data["pipeline"] = json.loads(old["data"]).get("pipeline") or {"value": None, "evidence": None}
-    conn.execute("INSERT OR REPLACE INTO extractions(content_hash, method, data, model, at) VALUES (?,?,?,?,?)",
-                 (content_hash, "claude", json.dumps(data, ensure_ascii=False), model, utcnow()))
+    if old:  # keep the free signals Claude isn't asked for (pipeline wording, function, skills...)
+        rules = json.loads(old["data"])
+        for k, v in rules.items():
+            data.setdefault(k, v)
+    # Kept apart from the rule-based extractions, so a new job index never overwrites what you paid for.
+    conn.execute("INSERT OR REPLACE INTO claude_extractions(content_hash, data, model, at) VALUES (?,?,?,?)",
+                 (content_hash, json.dumps(data, ensure_ascii=False), model, utcnow()))
 
 
 def _store_fit(conn, content_hash, profile_hash, out, method, model) -> None:
@@ -280,8 +283,8 @@ def _store_fit(conn, content_hash, profile_hash, out, method, model) -> None:
 def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
     sql = """SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
              JOIN job_content c ON c.uid = j.uid
-             LEFT JOIN extractions e ON e.content_hash = j.content_hash
-             WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 AND (e.method IS NULL OR e.method <> 'claude')"""
+             WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0
+               AND NOT EXISTS (SELECT 1 FROM claude_extractions ce WHERE ce.content_hash = j.content_hash)"""
     args: list = []
     if uids is not None:
         if not uids:
@@ -292,13 +295,17 @@ def extraction_candidates(conn, uids: list[str] | None, limit: int) -> list:
     return conn.execute(sql, args + [limit]).fetchall()
 
 
-def fit_candidates(conn, profile_hash: str, uids: list[str] | None, limit: int, ghost_hide_at: int) -> list:
-    sql = """SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
+def fit_candidates(conn, profile_hash: str, uids: list[str] | None, limit: int, ghost_hide_at: int,
+                   prof: dict | None = None, yoe_slack: int = 2) -> list:
+    """Eligible, not-hidden postings with no verdict for this profile yet (newest first)."""
+    prof = prof if prof is not None else profile_mod.load(conn)
+    elig = profile_mod.eligibility_sql(conn, prof, yoe_slack)
+    sql = f"""SELECT j.uid, j.content_hash, unz(c.html) AS content_html, j.title, j.company, j.location FROM jobs j
              JOIN job_content c ON c.uid = j.uid
              LEFT JOIN fit f ON f.content_hash = j.content_hash AND f.profile_hash = ?
              WHERE j.active=1 AND j.is_canonical=1 AND length(c.html) > 0 AND f.tier IS NULL
-               AND (j.elig IS NULL OR j.elig = 1) AND j.ghost_score < ?"""
-    args: list = [profile_hash, ghost_hide_at]
+               AND j.ghost_score < ? {f"AND ({elig[0]})" if elig else ""}"""
+    args: list = [profile_hash, ghost_hide_at] + (elig[1] if elig else [])
     if uids is not None:
         if not uids:
             return []
@@ -398,14 +405,19 @@ def run_in_background(db_path, cfg, purpose: str, uids: list[str] | None, limit:
         try:
             if purpose == "fit":
                 prof = profile_mod.load(conn)
-                rows = fit_candidates(conn, profile_mod.fit_hash(prof), uids, limit, cfg.settings.ghost_hide_signals)
+                rows = fit_candidates(conn, profile_mod.fit_hash(prof), uids, limit, cfg.settings.ghost_hide_signals,
+                                      prof, cfg.settings.yoe_slack_years)
             else:
                 rows = extraction_candidates(conn, uids, limit)
             res = run(conn, cfg, purpose, rows)
             if purpose == "extract" and res.get("done"):
-                postprocess(conn, cfg, {r[0] for r in conn.execute(
-                    "SELECT DISTINCT company_key FROM jobs WHERE uid IN (%s)" % ",".join("?" * len(rows)),
-                    [r["uid"] for r in rows])})
+                if db.is_reader(conn):
+                    from .extract import derive_claude
+                    derive_claude(conn)
+                else:
+                    postprocess(conn, cfg, {r[0] for r in conn.execute(
+                        "SELECT DISTINCT company_key FROM jobs WHERE uid IN (%s)" % ",".join("?" * len(rows)),
+                        [r["uid"] for r in rows])})
             STATUS["message"] = (f"{purpose}: submitted batch of {res['sent']} (results usually within an hour)"
                                  if res.get("batch") else f"{purpose}: finished {res.get('done', 0)} of {res['sent']}")
         except Exception as exc:

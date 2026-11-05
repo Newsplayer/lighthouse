@@ -12,6 +12,19 @@
       <option value="">All companies</option>
       {% for c in companies %}<option {% if c == f.company %}selected{% endif %}>{{ c }}</option>{% endfor %}
     </select>
+    <select name="function" aria-label="Job function">
+      <option value="">Any function</option>
+      {% for fn in functions %}<option {% if fn == f.function %}selected{% endif %}>{{ fn }}</option>{% endfor %}
+    </select>
+    <select name="seniority" aria-label="Seniority">
+      <option value="">Any level</option>
+      {% for k, label in seniorities.items() %}<option value="{{ k }}" {% if k == f.seniority %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <select name="emp_type" aria-label="Employment type">
+      <option value="">Any type</option>
+      {% for k, label in emp_types.items() %}<option value="{{ k }}" {% if k == f.emp_type %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+    <input type="text" name="skills" value="{{ f.skills|join(', ') }}" placeholder="Skills, e.g. python, sql" aria-label="Skills the posting mentions" class="short">
     <select name="workplace" aria-label="Workplace">
       <option value="">Any workplace</option>
       {% for w in ('remote', 'hybrid', 'onsite') %}<option value="{{ w }}" {% if w == f.workplace %}selected{% endif %}>{{ w|capitalize }}</option>{% endfor %}
@@ -83,7 +96,7 @@
 
 <ul class="jobs">
 {% for j in jobs %}
-  {% set ghosts = j.ghost_reasons|fromjson %}
+  {% set ghosts = j.ghost_reasons|ghosts %}
   {% set locs = j.cluster_locations|fromjson %}
   {% set inelig = j.elig_reasons|fromjson %}
   <li class="job{% if j.elig == 0 %} dim{% endif %}">
@@ -96,11 +109,13 @@
         <span class="company">{{ j.company }}</span>
         {% if locs %}<span>· {{ locs[0] }}{% if locs|length > 1 %} +{{ locs|length - 1 }} more{% endif %}</span>{% endif %}
         {% if j.workplace_eff %}<span>· {{ j.workplace_eff|capitalize }}</span>{% endif %}
-        {% if j.pay_max_annual %}<span>· {{ j.pay_min_annual|money(j.pay_currency) }}{% if j.pay_max_annual != j.pay_min_annual %}–{{ j.pay_max_annual|money(j.pay_currency) }}{% endif %}</span>{% endif %}
+        {% if j.pay_max_annual %}<span>· {% if j.pay_interval == 'hour' %}{{ (j.pay_min_annual / 2080)|money(j.pay_currency) }}{% if j.pay_max_annual != j.pay_min_annual %}–{{ (j.pay_max_annual / 2080)|money(j.pay_currency) }}{% endif %}/hr{% else %}{{ j.pay_min_annual|money(j.pay_currency) }}{% if j.pay_max_annual != j.pay_min_annual %}–{{ j.pay_max_annual|money(j.pay_currency) }}{% endif %}{% endif %}</span>{% endif %}
       </div>
       <div class="tags">
         {% if f.since and j.effective_first_seen and j.effective_first_seen > f.since %}<span class="tag new">new</span>{% endif %}
-        <span class="tag">{{ j.source }}</span>
+        {% if j.job_function %}<span class="tag">{{ j.job_function }}</span>{% endif %}
+        {% if j.seniority %}<span class="tag">{{ seniorities[j.seniority] }}</span>{% endif %}
+        {% if j.emp_type and j.emp_type != 'full_time' %}<span class="tag">{{ emp_types[j.emp_type] }}</span>{% endif %}
         <span class="tag" title="Earliest date this role was seen, including reposts">since {{ j.effective_first_seen|day }}</span>
         {% if j.yoe_min is not none %}
           {% if j.yoe_source == 'title' %}<span class="tag" title="The posting doesn't state years; estimated from the title">~{{ j.yoe_min }}+ yrs (from title)</span>
@@ -119,7 +134,7 @@
       </div>
     </div>
     <div class="actions">
-      <a class="btn" href="{{ j.url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>
+      {% if j.url|safe_url %}<a class="btn" href="{{ j.url|safe_url }}" target="_blank" rel="noopener noreferrer">Apply ↗</a>{% endif %}
       <form method="post" action="{{ url_for('mark') }}" class="marks">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <input type="hidden" name="uid" value="{{ j.uid }}">
