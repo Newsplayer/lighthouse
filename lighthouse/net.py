@@ -36,6 +36,9 @@ ALLOWED_HOSTS = (
 )
 
 USER_AGENT = f"Lighthouse/{__version__} (personal job aggregator; local)"
+# The job-index builder (GitHub Action) reads employers' own careers sites, so it may reach any
+# https host. It says who it is and where to find the project.
+BUILDER_AGENT = f"Lighthouse-index/{__version__} (+https://github.com/Newsplayer/lighthouse)"
 
 
 class BlockedHost(Exception):
@@ -77,6 +80,8 @@ class Client:
         self.blocked: Counter = Counter()
         self._local = threading.local()
         self._count_lock = threading.Lock()
+        self.open = False          # builder only: any https host (see open_network)
+        self.agent = USER_AGENT
 
     def _session(self) -> requests.Session:
         s = getattr(self._local, "s", None)
@@ -85,14 +90,14 @@ class Client:
             retry = Retry(total=3, backoff_factor=1.0, status_forcelist=(429, 500, 502, 503, 504),
                           allowed_methods=("GET", "POST"), respect_retry_after_header=True)
             s.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=8))
-            s.headers["User-Agent"] = USER_AGENT
+            s.headers["User-Agent"] = self.agent
             self._local.s = s
         return s
 
     def request(self, method: str, url: str, *, allow_once: bool = False, **kw) -> requests.Response:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower()
-        if parts.scheme != "https" or not (allow_once or host_allowed(host)):
+        if parts.scheme != "https" or not (allow_once or self.open or host_allowed(host)):
             with self._count_lock:
                 self.blocked[host] += 1
             raise BlockedHost(f"{host} is not on Lighthouse's network allowlist")
@@ -125,3 +130,13 @@ def default_client(timeout: float = 20, per_host_rps: float = 4.0) -> Client:
         if _default is None:
             _default = Client(timeout=timeout, per_host_rps=per_host_rps)
         return _default
+
+
+def open_network(client: Client | None = None) -> Client:
+    """Builder only (the job-index Action): let the client reach any https host, as the
+    BUILDER_AGENT. Readers never call this; their allowlist stays as above."""
+    client = client or default_client()
+    client.open = True
+    client.agent = BUILDER_AGENT
+    client._local = threading.local()   # new sessions pick up the agent
+    return client

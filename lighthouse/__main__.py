@@ -14,6 +14,8 @@
     python -m lighthouse index import [FILE] # update now (or merge a local base.db.xz to test a build)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
                                             # what the GitHub Action runs (maintainers only)
+    python -m lighthouse discover [--only NAME] [--out FILE]
+                                            # find job boards from config/companies.csv careers pages
 """
 
 from __future__ import annotations
@@ -88,6 +90,26 @@ def _index(args) -> None:
     print(f"Job index from {st['built_at']}: {st['jobs']} open roles from {st['boards']} boards. {r['updated'] or 'Already up to date.'}")
 
 
+def _discover(args) -> None:
+    import json
+    from . import discover, net
+    cfg_dir = config.DEFAULT_CONFIG.parent
+    companies = discover.load_companies(cfg_dir)
+    s = config.load().settings
+    client = net.open_network(net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second))
+    out = open(args.out, "w", encoding="utf-8") if args.out else None
+
+    def show(r):
+        line = discover.to_json(r)
+        print("DISCOVER " + line, flush=True)
+        if out:
+            out.write(line + "\n")
+    results = discover.run(companies, client, net.BUILDER_AGENT, workers=args.workers, only=args.only, on_result=show)
+    if out:
+        out.close()
+    print("SUMMARY " + json.dumps(discover.summary(results)))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="lighthouse")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -123,6 +145,10 @@ def main() -> None:
                    help="build: description calls per SmartRecruiters/Workday board per run")
     p.add_argument("--published", default=None, help="build: the manifest.json currently published")
     p.add_argument("--full", action="store_true", help="build: write a new base file even if a delta would do")
+    p = sub.add_parser("discover", help="find job boards from the careers pages in config/companies.csv")
+    p.add_argument("--only", default=None, help="only companies whose name contains this")
+    p.add_argument("--out", default=None, help="write one JSON line per company here")
+    p.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
 
     if args.cmd == "mcp":  # stdout is the protocol channel: log to stderr only
@@ -212,6 +238,8 @@ def main() -> None:
             fetch.refresh_derived(conn, cfg)
     elif args.cmd == "index":
         _index(args)
+    elif args.cmd == "discover":
+        _discover(args)
     elif args.cmd == "key":
         from . import claude_api
         if args.action == "set":

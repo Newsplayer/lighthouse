@@ -1,0 +1,707 @@
+# Large employers whose careers pages the job-index Action reads (see MAINTAINING.md).
+# company: display name. group: fortune500 | private | tech | finance | consulting | media-consumer | health.
+# domain: main website (used to find the careers page when careers_url is blank or moved).
+# careers_url: the careers page. The Action works out which job system it uses (Workday, Oracle, ...).
+# ats, slug: optional. Fill in to pin a board by hand; otherwise the Action fills them in its coverage report.
+# enabled: no = skip this company.
+company,group,domain,careers_url,ats,slug,enabled
+Walmart,fortune500,walmart.com,https://careers.walmart.com,,,yes
+Amazon,fortune500,amazon.com,https://www.amazon.jobs,,,yes
+UnitedHealth Group,fortune500,unitedhealthgroup.com,https://careers.unitedhealthgroup.com,,,yes
+Apple,fortune500,apple.com,https://jobs.apple.com,,,yes
+CVS Health,fortune500,cvshealth.com,https://jobs.cvshealth.com,,,yes
+Berkshire Hathaway,fortune500,berkshirehathaway.com,,,,yes
+Alphabet (Google),fortune500,google.com,https://www.google.com/about/careers/applications/jobs/results,,,yes
+Exxon Mobil,fortune500,exxonmobil.com,https://jobs.exxonmobil.com,,,yes
+McKesson,fortune500,mckesson.com,https://careers.mckesson.com,,,yes
+Cencora,fortune500,cencora.com,https://careers.cencora.com,,,yes
+JPMorgan Chase,fortune500,jpmorganchase.com,https://careers.jpmorgan.com,,,yes
+Costco Wholesale,fortune500,costco.com,https://www.costco.com/jobs.html,,,yes
+The Cigna Group,fortune500,thecignagroup.com,https://jobs.thecignagroup.com,,,yes
+Microsoft,fortune500,microsoft.com,https://jobs.careers.microsoft.com,,,yes
+Cardinal Health,fortune500,cardinalhealth.com,https://jobs.cardinalhealth.com,,,yes
+Chevron,fortune500,chevron.com,https://careers.chevron.com,,,yes
+Bank of America,fortune500,bankofamerica.com,https://careers.bankofamerica.com,,,yes
+General Motors,fortune500,gm.com,https://search-careers.gm.com,,,yes
+Ford Motor,fortune500,ford.com,https://corporate.ford.com/careers.html,,,yes
+Elevance Health,fortune500,elevancehealth.com,https://careers.elevancehealth.com,,,yes
+Citigroup,fortune500,citi.com,https://jobs.citi.com,,,yes
+Meta Platforms,fortune500,meta.com,https://www.metacareers.com/jobs,,,yes
+Centene,fortune500,centene.com,https://jobs.centene.com,,,yes
+Home Depot,fortune500,homedepot.com,https://careers.homedepot.com,,,yes
+Fannie Mae,fortune500,fanniemae.com,https://www.fanniemae.com/careers,,,yes
+Walgreens Boots Alliance,fortune500,walgreens.com,https://jobs.walgreens.com,,,yes
+Kroger,fortune500,kroger.com,https://www.krogerfamilycareers.com,,,yes
+Phillips 66,fortune500,phillips66.com,https://careers.phillips66.com,,,yes
+Marathon Petroleum,fortune500,marathonpetroleum.com,https://mpc.wd1.myworkdayjobs.com/MPCCareers,workday,mpc.wd1/MPCCareers,yes
+Verizon Communications,fortune500,verizon.com,https://mycareer.verizon.com,,,yes
+Nvidia,fortune500,nvidia.com,https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite,workday,nvidia.wd5/NVIDIAExternalCareerSite,yes
+Goldman Sachs,fortune500,goldmansachs.com,https://higher.gs.com,,,yes
+Wells Fargo,fortune500,wellsfargo.com,https://www.wellsfargojobs.com,,,yes
+Valero Energy,fortune500,valero.com,https://valero.wd1.myworkdayjobs.com/en-US/valero,workday,valero.wd1/valero,yes
+Comcast,fortune500,comcast.com,https://jobs.comcast.com,,,yes
+State Farm Insurance,fortune500,statefarm.com,https://jobs.statefarm.com,,,yes
+AT&T,fortune500,att.com,https://www.att.jobs,,,yes
+Freddie Mac,fortune500,freddiemac.com,https://careers.freddiemac.com,,,yes
+Humana,fortune500,humana.com,https://careers.humana.com,,,yes
+Morgan Stanley,fortune500,morganstanley.com,https://www.morganstanley.com/careers,,,yes
+Target,fortune500,target.com,https://corporate.target.com/careers,,,yes
+StoneX Group,fortune500,stonex.com,https://www.stonex.com/en/careers/,,,yes
+Tesla,fortune500,tesla.com,https://www.tesla.com/careers/search,,,yes
+Dell Technologies,fortune500,dell.com,https://jobs.dell.com,,,yes
+PepsiCo,fortune500,pepsico.com,https://www.pepsicojobs.com,,,yes
+Walt Disney,fortune500,disney.com,https://jobs.disneycareers.com,,,yes
+United Parcel Service,fortune500,ups.com,https://www.jobs-ups.com,,,yes
+Johnson & Johnson,fortune500,jnj.com,https://www.careers.jnj.com,,,yes
+FedEx,fortune500,fedex.com,https://careers.fedex.com,,,yes
+Archer Daniels Midland,fortune500,adm.com,https://www.adm.com/en-us/careers/,,,yes
+Procter & Gamble,fortune500,pg.com,https://www.pgcareers.com,,,yes
+Lowe's,fortune500,lowes.com,https://talent.lowes.com,,,yes
+Energy Transfer,fortune500,energytransfer.com,https://www.energytransfer.com/careers/,,,yes
+RTX,fortune500,rtx.com,https://careers.rtx.com,,,yes
+Albertsons,fortune500,albertsons.com,https://www.albertsonscompanies.com/careers/,,,yes
+Sysco,fortune500,sysco.com,https://careers.sysco.com,,,yes
+Progressive,fortune500,progressive.com,https://www.progressive.com/careers/,,,yes
+American Express,fortune500,americanexpress.com,https://aexp.eightfold.ai/careers,,,yes
+Lockheed Martin,fortune500,lockheedmartin.com,https://www.lockheedmartinjobs.com,,,yes
+MetLife,fortune500,metlife.com,https://www.metlife.com/careers/,,,yes
+HCA Healthcare,fortune500,hcahealthcare.com,https://careers.hcahealthcare.com,,,yes
+Prudential Financial,fortune500,prudential.com,https://www.prudential.com/links/about/careers,,,yes
+Boeing,fortune500,boeing.com,https://jobs.boeing.com,,,yes
+Caterpillar,fortune500,caterpillar.com,https://careers.caterpillar.com,,,yes
+Merck,fortune500,merck.com,https://jobs.merck.com,,,yes
+Allstate,fortune500,allstate.com,https://www.allstate.jobs,,,yes
+Pfizer,fortune500,pfizer.com,https://www.pfizer.com/about/careers,,,yes
+IBM,fortune500,ibm.com,https://www.ibm.com/careers/search,,,yes
+New York Life Insurance,fortune500,newyorklife.com,https://www.newyorklife.com/careers,,,yes
+Delta Air Lines,fortune500,delta.com,https://www.delta.com/us/en/careers/overview,,,yes
+Publix Super Markets,fortune500,publix.com,https://corporate.publix.com/careers,,,yes
+Nationwide,fortune500,nationwide.com,https://www.nationwide.com/careers/,,,yes
+TD Synnex,fortune500,tdsynnex.com,https://careers.tdsynnex.com,,,yes
+United Airlines Holdings,fortune500,united.com,https://careers.united.com,,,yes
+ConocoPhillips,fortune500,conocophillips.com,https://careers.conocophillips.com,,,yes
+TJX,fortune500,tjx.com,https://jobs.tjx.com,,,yes
+AbbVie,fortune500,abbvie.com,https://careers.abbvie.com,,,yes
+Enterprise Products Partners,fortune500,enterpriseproducts.com,https://www.enterpriseproducts.com/careers,,,yes
+Charter Communications,fortune500,spectrum.com,https://jobs.spectrum.com,,,yes
+Performance Food Group,fortune500,pfgc.com,https://www.pfgc.com/careers,,,yes
+American Airlines Group,fortune500,aa.com,https://jobs.aa.com,,,yes
+Capital One Financial,fortune500,capitalone.com,https://www.capitalonecareers.com,,,yes
+Cisco Systems,fortune500,cisco.com,https://jobs.cisco.com,,,yes
+HP,fortune500,hp.com,https://jobs.hp.com,,,yes
+Tyson Foods,fortune500,tysonfoods.com,https://careers.tysonfoods.com,,,yes
+Intel,fortune500,intel.com,https://jobs.intel.com,,,yes
+Oracle,fortune500,oracle.com,https://careers.oracle.com,,,yes
+Broadcom,fortune500,broadcom.com,https://broadcom.wd1.myworkdayjobs.com/External_Career,workday,broadcom.wd1/External_Career,yes
+Deere,fortune500,deere.com,https://www.deere.com/en/our-company/careers/,,,yes
+Nike,fortune500,nike.com,https://careers.nike.com,,,yes
+Liberty Mutual Insurance Group,fortune500,libertymutual.com,https://jobs.libertymutualgroup.com,,,yes
+Plains GP Holdings,fortune500,plains.com,https://www.plains.com/careers/,,,yes
+USAA,fortune500,usaa.com,https://www.usaajobs.com,,,yes
+Bristol-Myers Squibb,fortune500,bms.com,https://careers.bms.com,,,yes
+Ingram Micro Holding,fortune500,ingrammicro.com,https://careers.ingrammicro.com,,,yes
+General Dynamics,fortune500,gd.com,https://www.gd.com/careers,,,yes
+Coca-Cola,fortune500,coca-colacompany.com,https://careers.coca-colacompany.com,,,yes
+TIAA,fortune500,tiaa.org,https://www.tiaa.org/public/about-tiaa/careers,,,yes
+Travelers,fortune500,travelers.com,https://careers.travelers.com,,,yes
+Eli Lilly,fortune500,lilly.com,https://careers.lilly.com,,,yes
+CHS,fortune500,chsinc.com,https://www.chsinc.com/careers,,,yes
+Dow,fortune500,dow.com,https://corporate.dow.com/en-us/careers.html,,,yes
+Thermo Fisher Scientific,fortune500,thermofisher.com,https://jobs.thermofisher.com,,,yes
+Northrop Grumman,fortune500,northropgrumman.com,https://www.northropgrumman.com/careers,,,yes
+Massachusetts Mutual Life Insurance,fortune500,massmutual.com,https://careers.massmutual.com,,,yes
+Abbott Laboratories,fortune500,abbott.com,https://www.jobs.abbott,,,yes
+Molina Healthcare,fortune500,molinahealthcare.com,https://careers.molinahealthcare.com,,,yes
+Honeywell International,fortune500,honeywell.com,https://careers.honeywell.com,,,yes
+Philip Morris International,fortune500,pmi.com,https://www.pmi.com/careers,,,yes
+Northwestern Mutual,fortune500,northwesternmutual.com,https://www.northwesternmutual.com/careers/,,,yes
+Arrow Electronics,fortune500,arrow.com,https://careers.arrow.com,,,yes
+Netflix,fortune500,netflix.com,https://explore.jobs.netflix.net/careers,,,yes
+Salesforce,fortune500,salesforce.com,https://careers.salesforce.com,,,yes
+Hewlett Packard Enterprise,fortune500,hpe.com,https://careers.hpe.com,,,yes
+Starbucks,fortune500,starbucks.com,https://careers.starbucks.com,,,yes
+Mondelez International,fortune500,mondelezinternational.com,https://www.mondelezinternational.com/careers,,,yes
+D.R. Horton,fortune500,drhorton.com,https://www.drhorton.com/careers,,,yes
+Nucor,fortune500,nucor.com,https://nucor.jobs,,,yes
+U.S. Bancorp,fortune500,usbank.com,https://careers.usbank.com,,,yes
+PNC Financial Services,fortune500,pnc.com,https://careers.pnc.com,,,yes
+Dollar General,fortune500,dollargeneral.com,https://careers.dollargeneral.com,,,yes
+CBRE Group,fortune500,cbre.com,https://careers.cbre.com,,,yes
+Kraft Heinz,fortune500,kraftheinzcompany.com,https://careers.kraftheinz.com,,,yes
+Duke Energy,fortune500,duke-energy.com,https://www.duke-energy.com/our-company/careers,,,yes
+Truist Financial,fortune500,truist.com,https://careers.truist.com,,,yes
+Paccar,fortune500,paccar.com,https://www.paccar.com/careers/,,,yes
+Lennar,fortune500,lennar.com,https://careers.lennar.com,,,yes
+Qualcomm,fortune500,qualcomm.com,https://careers.qualcomm.com,,,yes
+Visa,fortune500,visa.com,https://corporate.visa.com/en/jobs/,,,yes
+Southern Company,fortune500,southerncompany.com,https://www.southerncompany.com/careers.html,,,yes
+Penske Automotive Group,fortune500,penskeautomotive.com,https://www.penskeautomotive.com/careers/,,,yes
+US Foods Holding,fortune500,usfoods.com,https://www.usfoods.com/careers.html,,,yes
+Halliburton,fortune500,halliburton.com,https://careers.halliburton.com,,,yes
+Union Pacific,fortune500,up.com,https://www.up.jobs,,,yes
+Micron Technology,fortune500,micron.com,https://careers.micron.com,,,yes
+Cummins,fortune500,cummins.com,https://careers.cummins.com,,,yes
+Gilead Sciences,fortune500,gilead.com,https://www.gilead.com/careers,,,yes
+Danaher,fortune500,danaher.com,https://jobs.danaher.com,,,yes
+Dollar Tree,fortune500,dollartree.com,https://careers.dollartree.com,,,yes
+Amgen,fortune500,amgen.com,https://careers.amgen.com,,,yes
+Mastercard,fortune500,mastercard.com,https://careers.mastercard.com,,,yes
+NextEra Energy,fortune500,nexteraenergy.com,https://jobs.nexteraenergy.com,,,yes
+Exelon,fortune500,exeloncorp.com,https://www.exeloncorp.com/careers,,,yes
+Lear,fortune500,lear.com,https://www.lear.com/careers,,,yes
+Jabil,fortune500,jabil.com,https://careers.jabil.com,,,yes
+CarMax,fortune500,carmax.com,https://careers.carmax.com,,,yes
+Marriott International,fortune500,marriott.com,https://careers.marriott.com,,,yes
+AutoNation,fortune500,autonation.com,https://jobs.autonation.com,,,yes
+Kohl's,fortune500,kohls.com,https://careers.kohls.com,,,yes
+Carrier Global,fortune500,carrier.com,https://www.corporate.carrier.com/careers/,,,yes
+Bank of New York,fortune500,bny.com,https://www.bny.com/corporate/global/en/careers.html,,,yes
+Altria Group,fortune500,altria.com,https://www.altria.com/careers,,,yes
+Hartford Financial Services,fortune500,thehartford.com,https://www.thehartford.com/careers,,,yes
+Becton Dickinson,fortune500,bd.com,https://jobs.bd.com,,,yes
+Occidental Petroleum,fortune500,oxy.com,https://www.oxy.com/careers/,,,yes
+Fluor,fortune500,fluor.com,https://careers.fluor.com,,,yes
+Synchrony Financial,fortune500,synchrony.com,https://www.synchronycareers.com,,,yes
+American Electric Power,fortune500,aep.com,https://www.aep.com/careers,,,yes
+Genuine Parts,fortune500,genpt.com,https://www.genpt.com/careers,,,yes
+Kimberly-Clark,fortune500,kimberly-clark.com,https://careers.kimberly-clark.com,,,yes
+Freeport-McMoRan,fortune500,fcx.com,https://jobs.fcx.com,,,yes
+Avnet,fortune500,avnet.com,https://careers.avnet.com,,,yes
+Sherwin-Williams,fortune500,sherwin-williams.com,https://careers.sherwin-williams.com,,,yes
+Emerson Electric,fortune500,emerson.com,https://www.emerson.com/en-us/careers,,,yes
+EOG Resources,fortune500,eogresources.com,https://www.eogresources.com/careers/,,,yes
+Applied Materials,fortune500,appliedmaterials.com,https://careers.appliedmaterials.com,,,yes
+PG&E,fortune500,pge.com,https://www.pge.com/en/about/careers.html,,,yes
+C.H. Robinson Worldwide,fortune500,chrobinson.com,https://www.chrobinson.com/en-us/careers/,,,yes
+Gap,fortune500,gap.com,https://www.gapinc.com/en-us/careers/gap-careers,,,yes
+Lincoln National,fortune500,lincolnfinancial.com,https://www.lincolnfinancial.com/public/aboutus/careers,,,yes
+DaVita,fortune500,davita.com,https://careers.davita.com,,,yes
+Jones Lang LaSalle,fortune500,jll.com,https://www.us.jll.com/en/careers,,,yes
+Smurfit Westrock,fortune500,smurfitwestrock.com,https://www.smurfitwestrock.com/careers,,,yes
+CDW,fortune500,cdw.com,https://www.cdwjobs.com,,,yes
+Cognizant Technology Solutions,fortune500,cognizant.com,https://careers.cognizant.com,,,yes
+Nordstrom,fortune500,nordstrom.com,https://careers.nordstrom.com,,,yes
+Aramark,fortune500,aramark.com,https://careers.aramark.com,,,yes
+Texas Instruments,fortune500,ti.com,https://careers.ti.com,,,yes
+General Mills,fortune500,generalmills.com,https://careers.generalmills.com,,,yes
+Colgate-Palmolive,fortune500,colgatepalmolive.com,https://jobs.colgate.com,,,yes
+Goodyear Tire & Rubber,fortune500,goodyear.com,https://jobs.goodyear.com,,,yes
+PayPal Holdings,fortune500,paypal.com,https://careers.pypl.com,,,yes
+PPG Industries,fortune500,ppg.com,https://careers.ppg.com,,,yes
+Omnicom Group,fortune500,omnicomgroup.com,https://www.omnicomgroup.com/careers/,,,yes
+Jacobs Solutions,fortune500,jacobs.com,https://careers.jacobs.com,,,yes
+Ross Stores,fortune500,rossstores.com,https://jobs.rossstores.com,,,yes
+Marsh McLennan,fortune500,marshmclennan.com,https://careers.marshmclennan.com,,,yes
+Land O'Lakes,fortune500,landolakesinc.com,https://careers.landolakesinc.com,,,yes
+Waste Management,fortune500,wm.com,https://careers.wm.com,,,yes
+Illinois Tool Works,fortune500,itw.com,https://careers.itw.com,,,yes
+Ecolab,fortune500,ecolab.com,https://jobs.ecolab.com,,,yes
+Booking Holdings,fortune500,bookingholdings.com,https://careers.bookingholdings.com,,,yes
+Paramount Global,fortune500,paramount.com,https://careers.paramount.com,,,yes
+Parker-Hannifin,fortune500,parker.com,https://parker.wd5.myworkdayjobs.com/en-US/Parker_Careers,workday,parker.wd5/Parker_Careers,yes
+Principal Financial,fortune500,principal.com,https://www.principal.com/about-us/careers,,,yes
+DTE Energy,fortune500,dteenergy.com,https://careers.dteenergy.com,,,yes
+BlackRock,fortune500,blackrock.com,https://careers.blackrock.com,,,yes
+United States Steel,fortune500,ussteel.com,https://www.ussteel.com/careers,,,yes
+Community Health Systems,fortune500,chs.net,https://jobs.chs.net,,,yes
+Kinder Morgan,fortune500,kindermorgan.com,https://www.kindermorgan.com/Careers,,,yes
+QVC Group,fortune500,qvc.com,https://corporate.qvc.com/careers,,,yes
+Loews,fortune500,loews.com,https://www.loews.com/careers/,,,yes
+Howmet Aerospace,fortune500,howmet.com,https://www.howmet.com/careers/,,,yes
+Stanley Black & Decker,fortune500,stanleyblackanddecker.com,https://www.stanleyblackanddecker.com/careers,,,yes
+Textron,fortune500,textron.com,https://www.textron.com/careers,,,yes
+Las Vegas Sands,fortune500,sands.com,https://www.sands.com/careers/,,,yes
+Estee Lauder,fortune500,elcompanies.com,https://careers.elcompanies.com,,,yes
+Stryker,fortune500,stryker.com,https://careers.stryker.com,,,yes
+Kellanova,fortune500,kellanova.com,https://www.kellanova.com/us/en/careers.html,,,yes
+Biogen,fortune500,biogen.com,https://www.biogen.com/careers.html,,,yes
+Alcoa,fortune500,alcoa.com,https://www.alcoa.com/global/en/careers,,,yes
+Dominion Energy,fortune500,dominionenergy.com,https://careers.dominionenergy.com,,,yes
+ADP,fortune500,adp.com,https://jobs.adp.com,,,yes
+Bath & Body Works,fortune500,bathandbodyworks.com,https://careers.bathandbodyworks.com,,,yes
+Henry Schein,fortune500,henryschein.com,https://www.henryschein.com/careers,,,yes
+Newell Brands,fortune500,newellbrands.com,https://www.newellbrands.com/careers,,,yes
+Guardian Life,fortune500,guardianlife.com,https://www.guardianlife.com/careers,,,yes
+BJ's Wholesale Club,fortune500,bjs.com,https://careers.bjs.com,,,yes
+State Street,fortune500,statestreet.com,https://careers.statestreet.com,,,yes
+Ameriprise Financial,fortune500,ameriprise.com,https://www.ameripriseadvisors.com/careers/,,,yes
+Reinsurance Group of America,fortune500,rgare.com,https://www.rgare.com/careers,,,yes
+VF Corporation,fortune500,vfc.com,https://careers.vfc.com,,,yes
+Edison International,fortune500,edison.com,https://www.edisoncareers.com,,,yes
+Oneok,fortune500,oneok.com,https://www.oneok.com/careers,,,yes
+Murphy USA,fortune500,murphyusa.com,https://www.murphyusa.com/careers,,,yes
+Consolidated Edison,fortune500,coned.com,https://www.coned.com/en/careers,,,yes
+CSX,fortune500,csx.com,https://www.csx.com/index.cfm/working-at-csx/,,,yes
+LKQ,fortune500,lkqcorp.com,https://www.lkqcorp.com/careers/,,,yes
+FirstEnergy,fortune500,firstenergycorp.com,https://www.firstenergycorp.com/careers.html,,,yes
+Steel Dynamics,fortune500,steeldynamics.com,https://www.steeldynamics.com/careers/,,,yes
+Lithia Motors,fortune500,lithia.com,https://careers.lithia.com,,,yes
+MGM Resorts International,fortune500,mgmresorts.com,https://careers.mgmresorts.com,,,yes
+Sempra,fortune500,sempra.com,https://www.sempra.com/careers,,,yes
+Farmers Insurance Exchange,fortune500,farmers.com,https://www.farmers.com/careers/,,,yes
+Ball,fortune500,ball.com,https://www.ball.com/careers,,,yes
+Group 1 Automotive,fortune500,group1auto.com,https://www.group1auto.com/careers,,,yes
+Unum Group,fortune500,unum.com,https://careers.unum.com,,,yes
+Xcel Energy,fortune500,xcelenergy.com,https://jobs.xcelenergy.com,,,yes
+Reliance Steel & Aluminum,fortune500,rsac.com,https://www.rsac.com/careers/,,,yes
+Huntsman,fortune500,huntsman.com,https://www.huntsman.com/careers,,,yes
+Norfolk Southern,fortune500,norfolksouthern.com,https://www.norfolksouthern.com/en/careers,,,yes
+Labcorp,fortune500,labcorp.com,https://careers.labcorp.com,,,yes
+Corning,fortune500,corning.com,https://www.corning.com/worldwide/en/careers.html,,,yes
+Expedia Group,fortune500,expediagroup.com,https://careers.expediagroup.com,,,yes
+AutoZone,fortune500,autozone.com,https://careers.autozone.com,,,yes
+W.W. Grainger,fortune500,grainger.com,https://jobs.grainger.com,,,yes
+Quanta Services,fortune500,quantaservices.com,https://www.quantaservices.com/careers,,,yes
+Crown Holdings,fortune500,crowncork.com,https://www.crowncork.com/careers,,,yes
+ODP Corporation,fortune500,theodpcorp.com,https://careers.odpcorp.com,,,yes
+Baxter International,fortune500,baxter.com,https://jobs.baxter.com,,,yes
+Lam Research,fortune500,lamresearch.com,https://careers.lamresearch.com,,,yes
+Entergy,fortune500,entergy.com,https://www.entergy.com/careers/,,,yes
+Charles Schwab,fortune500,schwab.com,https://www.schwabjobs.com,,,yes
+L3Harris Technologies,fortune500,l3harris.com,https://careers.l3harris.com,,,yes
+NRG Energy,fortune500,nrg.com,https://careers.nrg.com,,,yes
+Live Nation Entertainment,fortune500,livenationentertainment.com,https://www.livenationentertainment.com/careers/,,,yes
+Universal Health Services,fortune500,uhs.com,https://jobs.uhs.com,,,yes
+Molson Coors Beverage,fortune500,molsoncoors.com,https://www.molsoncoors.com/careers,,,yes
+eBay,fortune500,ebayinc.com,https://jobs.ebayinc.com,,,yes
+AES,fortune500,aes.com,https://www.aes.com/careers,,,yes
+Devon Energy,fortune500,devonenergy.com,https://www.devonenergy.com/careers,,,yes
+Pacific Life,fortune500,pacificlife.com,https://www.pacificlife.com/home/careers.html,,,yes
+CenterPoint Energy,fortune500,centerpointenergy.com,https://www.centerpointenergy.com/en-us/corporate/about-us/careers,,,yes
+Warner Bros. Discovery,fortune500,wbd.com,https://careers.wbd.com,,,yes
+BorgWarner,fortune500,borgwarner.com,https://www.borgwarner.com/careers,,,yes
+Targa Resources,fortune500,targaresources.com,https://www.targaresources.com/careers,,,yes
+Ally Financial,fortune500,ally.com,https://www.ally.com/about/careers/,,,yes
+IQVIA Holdings,fortune500,iqvia.com,https://jobs.iqvia.com,,,yes
+American Family Insurance Group,fortune500,amfam.com,https://www.amfam.com/careers,,,yes
+Delek US Holdings,fortune500,delekus.com,https://www.delekus.com/careers/,,,yes
+Expand Energy,fortune500,expandenergy.com,https://www.expandenergy.com/careers,,,yes
+United Natural Foods,fortune500,unfi.com,https://careers.unfi.com,,,yes
+Leidos Holdings,fortune500,leidos.com,https://careers.leidos.com,,,yes
+PulteGroup,fortune500,pultegroupinc.com,https://www.pultegroupinc.com/careers/,,,yes
+Eastman Chemical,fortune500,eastman.com,https://www.eastman.com/en/careers,,,yes
+Republic Services,fortune500,republicservices.com,https://www.republicservices.com/careers,,,yes
+Mohawk Industries,fortune500,mohawkind.com,https://www.mohawkind.com/careers,,,yes
+Sonic Automotive,fortune500,sonicautomotive.com,https://careers.sonicautomotive.com,,,yes
+Owens & Minor,fortune500,owens-minor.com,https://www.owens-minor.com/careers/,,,yes
+Xerox,fortune500,xerox.com,https://careers.xerox.com,,,yes
+Boston Scientific,fortune500,bostonscientific.com,https://jobs.bostonscientific.com,,,yes
+Autoliv,fortune500,autoliv.com,https://www.autoliv.com/careers,,,yes
+Interpublic Group,fortune500,interpublic.com,https://www.interpublic.com/careers/,,,yes
+Public Service Enterprise Group,fortune500,pseg.com,https://jobs.pseg.com,,,yes
+PVH,fortune500,pvh.com,https://careers.pvh.com,,,yes
+Mosaic,fortune500,mosaicco.com,https://mosaicco.com/careers,,,yes
+Advance Auto Parts,fortune500,advanceautoparts.com,https://jobs.advanceautoparts.com,,,yes
+Hormel Foods,fortune500,hormelfoods.com,https://careers.hormelfoods.com,,,yes
+O'Reilly Automotive,fortune500,oreillyauto.com,https://corporate.oreillyauto.com/careers,,,yes
+Hertz Global Holdings,fortune500,hertz.com,https://jobs.hertz.com,,,yes
+Fiserv,fortune500,fiserv.com,https://careers.fiserv.com,,,yes
+Coty,fortune500,coty.com,https://www.coty.com/careers,,,yes
+AGCO,fortune500,agcocorp.com,https://www.agcocorp.com/careers.html,,,yes
+Mutual of Omaha Insurance,fortune500,mutualofomaha.com,https://www.mutualofomaha.com/careers,,,yes
+Vistra,fortune500,vistracorp.com,https://www.vistracorp.com/careers/,,,yes
+Avis Budget Group,fortune500,avisbudgetgroup.com,https://careers.avisbudgetgroup.com,,,yes
+Adobe,fortune500,adobe.com,https://careers.adobe.com,,,yes
+Kiewit,fortune500,kiewit.com,https://www.kiewit.com/careers/,,,yes
+News Corp,fortune500,newscorp.com,https://newscorp.com/careers/,,,yes
+Brighthouse Financial,fortune500,brighthousefinancial.com,https://www.brighthousefinancial.com/about-us/careers/,,,yes
+Voya Financial,fortune500,voya.com,https://careers.voya.com,,,yes
+Air Products & Chemicals,fortune500,airproducts.com,https://careers.airproducts.com,,,yes
+Hilton Worldwide Holdings,fortune500,hilton.com,https://jobs.hilton.com,,,yes
+GameStop,fortune500,gamestop.com,https://careers.gamestop.com,,,yes
+Williams,fortune500,williams.com,https://www.williams.com/careers/,,,yes
+Campbell's,fortune500,campbellsoupcompany.com,https://careers.campbellsoupcompany.com,,,yes
+Thrivent Financial,fortune500,thrivent.com,https://www.thrivent.com/about-us/careers,,,yes
+Westlake,fortune500,westlake.com,https://www.westlake.com/careers,,,yes
+J.B. Hunt Transport Services,fortune500,jbhunt.com,https://careers.jbhunt.com,,,yes
+Edward Jones,fortune500,edwardjones.com,https://careers.edwardjones.com,,,yes
+NOV,fortune500,nov.com,https://www.nov.com/careers,,,yes
+Eversource Energy,fortune500,eversource.com,https://www.eversource.com/content/residential/about/careers,,,yes
+Dick's Sporting Goods,fortune500,dickssportinggoods.com,https://careers.dickssportinggoods.com,,,yes
+Genworth Financial,fortune500,genworth.com,https://www.genworth.com/careers,,,yes
+Fidelity National Information Services,fortune500,fisglobal.com,https://careers.fisglobal.com,,,yes
+Ryder System,fortune500,ryder.com,https://ryder.wd5.myworkdayjobs.com/RyderCareers,workday,ryder.wd5/RyderCareers,yes
+Caesars Entertainment,fortune500,caesars.com,https://careers.caesars.com,,,yes
+Masco,fortune500,masco.com,https://www.masco.com/careers,,,yes
+Thor Industries,fortune500,thorindustries.com,https://www.thorindustries.com/careers,,,yes
+Alaska Air Group,fortune500,alaskaair.com,https://careers.alaskaair.com,,,yes
+Amphenol,fortune500,amphenol.com,https://www.amphenol.com/careers,,,yes
+WESCO International,fortune500,wesco.com,https://www.wesco.com/us/en/careers.html,,,yes
+Huntington Ingalls Industries,fortune500,hii.com,https://careers.hii.com,,,yes
+Jefferies Financial Group,fortune500,jefferies.com,https://www.jefferies.com/careers/,,,yes
+Dana,fortune500,dana.com,https://www.dana.com/careers/,,,yes
+Expeditors International,fortune500,expeditors.com,https://www.expeditors.com/careers,,,yes
+EMCOR Group,fortune500,emcorgroup.com,https://www.emcorgroup.com/careers,,,yes
+Darden Restaurants,fortune500,darden.com,https://www.darden.com/careers,,,yes
+SpartanNash,fortune500,spartannash.com,https://www.spartannash.com/careers/,,,yes
+Assurant,fortune500,assurant.com,https://jobs.assurant.com,,,yes
+United Rentals,fortune500,unitedrentals.com,https://jobs.unitedrentals.com,,,yes
+Erie Insurance Group,fortune500,erieinsurance.com,https://www.erieinsurance.com/careers,,,yes
+Auto-Owners Insurance,fortune500,auto-owners.com,https://www.auto-owners.com/careers,,,yes
+Cheniere Energy,fortune500,cheniere.com,https://www.cheniere.com/careers,,,yes
+Fifth Third Bancorp,fortune500,53.com,https://www.53.com/content/fifth-third/en/careers.html,,,yes
+Foot Locker,fortune500,footlocker.com,https://careers.footlocker.com,,,yes
+Conagra Brands,fortune500,conagrabrands.com,https://careers.conagrabrands.com,,,yes
+Zimmer Biomet Holdings,fortune500,zimmerbiomet.com,https://careers.zimmerbiomet.com,,,yes
+Tractor Supply,fortune500,tractorsupply.com,https://tractorsupply.jobs,,,yes
+Berry Global Group,fortune500,berryglobal.com,https://www.berryglobal.com/careers,,,yes
+Hershey,fortune500,thehersheycompany.com,https://careers.thehersheycompany.com,,,yes
+PPL,fortune500,pplweb.com,https://www.pplweb.com/careers/,,,yes
+Builders FirstSource,fortune500,bldr.com,https://www.bldr.com/careers,,,yes
+Oshkosh,fortune500,oshkoshcorp.com,https://www.oshkoshcorp.com/careers,,,yes
+W.R. Berkley,fortune500,berkley.com,https://www.berkley.com/careers,,,yes
+WEC Energy Group,fortune500,wecenergygroup.com,https://www.wecenergygroup.com/careers/,,,yes
+JetBlue Airways,fortune500,jetblue.com,https://careers.jetblue.com,,,yes
+UGI,fortune500,ugicorp.com,https://www.ugicorp.com/careers,,,yes
+Fidelity National Financial,fortune500,fnf.com,https://www.fnf.com/careers,,,yes
+Constellation Brands,fortune500,cbrands.com,https://www.cbrands.com/careers,,,yes
+Quest Diagnostics,fortune500,questdiagnostics.com,https://careers.questdiagnostics.com,,,yes
+Weyerhaeuser,fortune500,weyerhaeuser.com,https://www.weyerhaeuser.com/careers/,,,yes
+Raymond James Financial,fortune500,raymondjames.com,https://www.raymondjames.com/careers,,,yes
+Casey's General Stores,fortune500,caseys.com,https://www.caseys.com/careers,,,yes
+Keurig Dr Pepper,fortune500,keurigdrpepper.com,https://careers.keurigdrpepper.com,,,yes
+American Tower,fortune500,americantower.com,https://careers.americantower.com,,,yes
+APA Corporation,fortune500,apacorp.com,https://apacorp.com/careers/,,,yes
+Dover,fortune500,dovercorporation.com,https://www.dovercorporation.com/careers,,,yes
+KeyCorp,fortune500,key.com,https://www.key.com/about/careers.html,,,yes
+J.M. Smucker,fortune500,jmsmucker.com,https://www.jmsmucker.com/careers,,,yes
+Citizens Financial Group,fortune500,citizensbank.com,https://jobs.citizensbank.com,,,yes
+Motorola Solutions,fortune500,motorolasolutions.com,https://www.motorolasolutions.com/en_us/about/careers.html,,,yes
+American Axle & Manufacturing,fortune500,aam.com,https://www.aam.com/careers,,,yes
+Newmont,fortune500,newmont.com,https://www.newmont.com/careers/,,,yes
+Spirit AeroSystems Holdings,fortune500,spiritaero.com,https://www.spiritaero.com/careers/,,,yes
+Western & Southern Financial Group,fortune500,westernsouthern.com,https://www.westernsouthern.com/careers,,,yes
+Fortive,fortune500,fortive.com,https://careers.fortive.com,,,yes
+Graybar Electric,fortune500,graybar.com,https://www.graybar.com/careers,,,yes
+NVR,fortune500,nvrinc.com,https://www.nvrinc.com/careers,,,yes
+Avery Dennison,fortune500,averydennison.com,https://careers.averydennison.com,,,yes
+Celanese,fortune500,celanese.com,https://www.celanese.com/careers,,,yes
+American Financial Group,fortune500,afginc.com,https://www.afginc.com/careers,,,yes
+Toll Brothers,fortune500,tollbrothers.com,https://www.tollbrothers.com/careers,,,yes
+Sanmina,fortune500,sanmina.com,https://www.sanmina.com/careers/,,,yes
+Insight Enterprises,fortune500,insight.com,https://careers.insight.com,,,yes
+Owens Corning,fortune500,owenscorning.com,https://www.owenscorning.com/en-us/corporate/careers,,,yes
+Packaging Corp. of America,fortune500,packagingcorp.com,https://www.packagingcorp.com/careers,,,yes
+Olin,fortune500,olin.com,https://www.olin.com/careers/,,,yes
+Arthur J. Gallagher,fortune500,ajg.com,https://www.ajg.com/us/careers/,,,yes
+MasTec,fortune500,mastec.com,https://www.mastec.com/careers/,,,yes
+O-I Glass,fortune500,o-i.com,https://www.o-i.com/careers/,,,yes
+Asbury Automotive Group,fortune500,asburyauto.com,https://careers.asburyauto.com,,,yes
+CMS Energy,fortune500,cmsenergy.com,https://www.cmsenergy.com/careers,,,yes
+Markel Group,fortune500,markel.com,https://www.markel.com/careers,,,yes
+Blackstone,fortune500,blackstone.com,https://www.blackstone.com/careers/,,,yes
+Cleveland-Cliffs,fortune500,clevelandcliffs.com,https://www.clevelandcliffs.com/careers,,,yes
+Hanesbrands,fortune500,hanes.com,https://www.hanes.com/corporate/careers,,,yes
+Wayfair,fortune500,wayfair.com,https://www.aboutwayfair.com/careers,,,yes
+Regions Financial,fortune500,regions.com,https://careers.regions.com,,,yes
+Wynn Resorts,fortune500,wynnresorts.com,https://www.wynnresorts.com/careers,,,yes
+Ulta Beauty,fortune500,ulta.com,https://careers.ulta.com,,,yes
+Regeneron Pharmaceuticals,fortune500,regeneron.com,https://careers.regeneron.com,,,yes
+Burlington Stores,fortune500,burlington.com,https://burlington.jobs,,,yes
+Rockwell Automation,fortune500,rockwellautomation.com,https://www.rockwellautomation.com/en-us/company/careers.html,,,yes
+Northern Trust,fortune500,northerntrust.com,https://careers.northerntrust.com,,,yes
+Chemours,fortune500,chemours.com,https://www.chemours.com/en/careers,,,yes
+Seaboard,fortune500,seaboardcorp.com,https://www.seaboardcorp.com/careers/,,,yes
+Dillard's,fortune500,dillards.com,https://careers.dillards.com,,,yes
+Cintas,fortune500,cintas.com,https://careers.cintas.com,,,yes
+Advanced Micro Devices,fortune500,amd.com,https://careers.amd.com,,,yes
+M&T Bank,fortune500,mtb.com,https://jobs.mtb.com,,,yes
+ABM Industries,fortune500,abm.com,https://careers.abm.com,,,yes
+QXO,fortune500,qxo.com,https://www.qxo.com/careers,,,yes
+NCR Voyix,fortune500,ncrvoyix.com,https://www.ncrvoyix.com/company/careers,,,yes
+iHeartMedia,fortune500,iheartmedia.com,https://www.iheartmedia.com/careers,,,yes
+Franklin Resources,fortune500,franklinresources.com,https://www.franklinresources.com/careers,,,yes
+Ameren,fortune500,ameren.com,https://www.ameren.com/company/careers,,,yes
+Intercontinental Exchange,fortune500,ice.com,https://careers.ice.com,,,yes
+S&P Global,fortune500,spglobal.com,https://careers.spglobal.com,,,yes
+Post Holdings,fortune500,postholdings.com,https://www.postholdings.com/careers/,,,yes
+Analog Devices,fortune500,analog.com,https://careers.analog.com,,,yes
+Ralph Lauren,fortune500,ralphlauren.com,https://careers.ralphlauren.com,,,yes
+Booz Allen Hamilton,fortune500,boozallen.com,https://careers.boozallen.com,,,yes
+Polaris,fortune500,polaris.com,https://www.polaris.com/en-us/careers/,,,yes
+Clorox,fortune500,thecloroxcompany.com,https://www.thecloroxcompany.com/careers/,,,yes
+Anywhere Real Estate,fortune500,anywhere.re,https://www.anywhere.re/careers,,,yes
+Graphic Packaging Holding,fortune500,graphicpkg.com,https://www.graphicpkg.com/careers/,,,yes
+Old Republic International,fortune500,oldrepublic.com,https://www.oldrepublic.com/careers,,,yes
+Intuit,fortune500,intuit.com,https://jobs.intuit.com,,,yes
+NetApp,fortune500,netapp.com,https://careers.netapp.com,,,yes
+Tapestry,fortune500,tapestry.com,https://careers.tapestry.com,,,yes
+ON Semiconductor,fortune500,onsemi.com,https://www.onsemi.com/careers,,,yes
+Ingredion,fortune500,ingredion.com,https://www.ingredion.com/na/en-us/company/careers.html,,,yes
+Zoetis,fortune500,zoetis.com,https://www.zoetis.com/careers/,,,yes
+Robert Half,fortune500,roberthalf.com,https://www.roberthalf.com/us/en/about/careers,,,yes
+First American Financial,fortune500,firstam.com,https://careers.firstam.com,,,yes
+Harley-Davidson,fortune500,harley-davidson.com,https://careers.harley-davidson.com,,,yes
+Yum Brands,fortune500,yum.com,https://careers.yum.com,,,yes
+Williams-Sonoma,fortune500,williams-sonomainc.com,https://careers.williams-sonomainc.com,,,yes
+Simon Property Group,fortune500,simon.com,https://careers.simon.com,,,yes
+Western Union,fortune500,westernunion.com,https://careers.westernunion.com,,,yes
+Peabody Energy,fortune500,peabodyenergy.com,https://www.peabodyenergy.com/careers,,,yes
+Levi Strauss,fortune500,levistrauss.com,https://www.levistrauss.com/work-with-us/,,,yes
+Uber Technologies,fortune500,uber.com,https://www.uber.com/us/en/careers/list/,,,yes
+Airbnb,fortune500,airbnb.com,https://careers.airbnb.com,,,yes
+DoorDash,fortune500,doordash.com,https://careersatdoordash.com,,,yes
+ServiceNow,fortune500,servicenow.com,https://careers.servicenow.com,,,yes
+Workday,fortune500,workday.com,https://workday.wd5.myworkdayjobs.com/Workday,workday,workday.wd5/Workday,yes
+Block,fortune500,block.xyz,https://block.xyz/careers,,,yes
+Carvana,fortune500,carvana.com,https://careers.carvana.com,,,yes
+Chewy,fortune500,chewy.com,https://careers.chewy.com,,,yes
+GE Aerospace,fortune500,geaerospace.com,https://careers.geaerospace.com,,,yes
+GE HealthCare,fortune500,gehealthcare.com,https://careers.gehealthcare.com,,,yes
+GE Vernova,fortune500,gevernova.com,https://careers.gevernova.com,,,yes
+Otis Worldwide,fortune500,otis.com,https://www.otis.com/en/us/careers,,,yes
+Corteva,fortune500,corteva.com,https://careers.corteva.com,,,yes
+DuPont de Nemours,fortune500,dupont.com,https://careers.dupont.com,,,yes
+Fox Corporation,fortune500,foxcorporation.com,https://www.foxcareers.com,,,yes
+Constellation Energy,fortune500,constellationenergy.com,https://jobs.constellationenergy.com,,,yes
+Kenvue,fortune500,kenvue.com,https://careers.kenvue.com,,,yes
+Solventum,fortune500,solventum.com,https://www.solventum.com/en-us/home/our-company/careers/,,,yes
+3M,fortune500,3m.com,https://www.3m.com/3M/en_US/careers-us/,,,yes
+Veralto,fortune500,veralto.com,https://www.veralto.com/careers/,,,yes
+Equitable Holdings,fortune500,equitable.com,https://careers.equitable.com,,,yes
+Jackson Financial,fortune500,jackson.com,https://careers.jackson.com,,,yes
+Corebridge Financial,fortune500,corebridgefinancial.com,https://www.corebridgefinancial.com/careers,,,yes
+AIG,fortune500,aig.com,https://www.aig.com/careers,,,yes
+Huntington Bancshares,fortune500,huntington.com,https://www.huntington.com/careers,,,yes
+Global Payments,fortune500,globalpayments.com,https://jobs.globalpayments.com,,,yes
+Discover Financial Services,fortune500,discover.com,https://jobs.discover.com,,,yes
+KKR,fortune500,kkr.com,https://www.kkr.com/careers,,,yes
+Apollo Global Management,fortune500,apollo.com,https://www.apollo.com/careers,,,yes
+Moody's,fortune500,moodys.com,https://careers.moodys.com,,,yes
+CME Group,fortune500,cmegroup.com,https://www.cmegroup.com/careers.html,,,yes
+Nasdaq,fortune500,nasdaq.com,https://www.nasdaq.com/about/careers,,,yes
+Victoria's Secret,fortune500,victoriassecret.com,https://careers.victoriassecret.com,,,yes
+Mars,private,mars.com,https://careers.mars.com,,,yes
+Cargill,private,cargill.com,https://careers.cargill.com,,,yes
+Koch Industries,private,kochind.com,https://jobs.kochcareers.com,,,yes
+Bechtel,private,bechtel.com,https://jobs.bechtel.com,,,yes
+Enterprise Mobility,private,enterprisemobility.com,https://careers.enterprise.com,,,yes
+Fidelity Investments,private,fidelity.com,https://jobs.fidelity.com,,,yes
+Vanguard,private,vanguard.com,https://www.vanguardjobs.com,,,yes
+Meijer,private,meijer.com,https://jobs.meijer.com,,,yes
+H-E-B,private,heb.com,https://careers.heb.com,,,yes
+Hy-Vee,private,hy-vee.com,https://careers.hy-vee.com,,,yes
+Wegmans Food Markets,private,wegmans.com,https://jobs.wegmans.com,,,yes
+SC Johnson,private,scjohnson.com,https://www.scjohnson.com/en/careers,,,yes
+SpaceX,private,spacex.com,https://www.spacex.com/careers/jobs,,,yes
+Blue Origin,private,blueorigin.com,https://www.blueorigin.com/careers,,,yes
+Kaiser Permanente,health,kaiserpermanente.org,https://www.kaiserpermanentejobs.org,,,yes
+Mayo Clinic,health,mayoclinic.org,https://jobs.mayoclinic.org,,,yes
+Cleveland Clinic,health,clevelandclinic.org,https://jobs.clevelandclinic.org,,,yes
+Providence,health,providence.org,https://www.providenceiscalling.jobs,,,yes
+Ascension,health,ascension.org,https://jobs.ascension.org,,,yes
+CommonSpirit Health,health,commonspirit.org,https://www.commonspirit.careers,,,yes
+Advocate Health,health,advocatehealth.org,https://www.advocatehealth.org/careers,,,yes
+Trinity Health,health,trinity-health.org,https://jobs.trinity-health.org,,,yes
+Mass General Brigham,health,massgeneralbrigham.org,https://www.massgeneralbrigham.org/en/careers,,,yes
+Northwell Health,health,northwell.edu,https://jobs.northwell.edu,,,yes
+Bloomberg,tech,bloomberg.com,https://bloomberg.avature.net/careers,,,yes
+OpenAI,tech,openai.com,https://openai.com/careers/search/,,,yes
+Anthropic,tech,anthropic.com,https://www.anthropic.com/careers,,,yes
+Databricks,tech,databricks.com,https://www.databricks.com/company/careers/open-positions,,,yes
+Snowflake,tech,snowflake.com,https://careers.snowflake.com,,,yes
+Atlassian,tech,atlassian.com,https://www.atlassian.com/company/careers/all-jobs,,,yes
+Shopify,tech,shopify.com,https://www.shopify.com/careers,,,yes
+Spotify,tech,spotify.com,https://www.lifeatspotify.com/jobs,,,yes
+Lyft,tech,lyft.com,https://www.lyft.com/careers,,,yes
+Pinterest,tech,pinterest.com,https://www.pinterestcareers.com,,,yes
+Snap,tech,snap.com,https://careers.snap.com,,,yes
+Reddit,tech,redditinc.com,https://www.redditinc.com/careers,,,yes
+Roblox,tech,roblox.com,https://careers.roblox.com,,,yes
+Electronic Arts,tech,ea.com,https://www.ea.com/careers,,,yes
+Take-Two Interactive,tech,take2games.com,https://www.take2games.com/careers/,,,yes
+Zoom,tech,zoom.com,https://careers.zoom.us,,,yes
+Dropbox,tech,dropbox.com,https://jobs.dropbox.com,,,yes
+Box,tech,box.com,https://careers.box.com,,,yes
+Cloudflare,tech,cloudflare.com,https://www.cloudflare.com/careers/jobs/,,,yes
+Datadog,tech,datadoghq.com,https://careers.datadoghq.com,,,yes
+MongoDB,tech,mongodb.com,https://www.mongodb.com/company/careers,,,yes
+Okta,tech,okta.com,https://www.okta.com/company/careers/,,,yes
+CrowdStrike,tech,crowdstrike.com,https://crowdstrike.wd5.myworkdayjobs.com/crowdstrikecareers,workday,crowdstrike.wd5/crowdstrikecareers,yes
+Palo Alto Networks,tech,paloaltonetworks.com,https://jobs.paloaltonetworks.com,,,yes
+Fortinet,tech,fortinet.com,https://www.fortinet.com/corporate/careers,,,yes
+Zscaler,tech,zscaler.com,https://www.zscaler.com/careers,,,yes
+Autodesk,tech,autodesk.com,https://autodesk.wd1.myworkdayjobs.com/Ext,workday,autodesk.wd1/Ext,yes
+Synopsys,tech,synopsys.com,https://careers.synopsys.com,,,yes
+Cadence Design Systems,tech,cadence.com,https://cadence.wd1.myworkdayjobs.com/External_Careers,workday,cadence.wd1/External_Careers,yes
+KLA,tech,kla.com,https://kla.wd1.myworkdayjobs.com/Search,workday,kla.wd1/Search,yes
+Marvell Technology,tech,marvell.com,https://marvell.wd1.myworkdayjobs.com/MarvellCareers,workday,marvell.wd1/MarvellCareers,yes
+Arista Networks,tech,arista.com,https://www.arista.com/en/careers,,,yes
+Garmin,tech,garmin.com,https://careers.garmin.com,,,yes
+Palantir Technologies,tech,palantir.com,https://jobs.lever.co/palantir,lever,palantir,yes
+Stripe,tech,stripe.com,https://stripe.com/jobs/search,,,yes
+Coinbase,tech,coinbase.com,https://www.coinbase.com/careers/positions,,,yes
+Robinhood,tech,robinhood.com,https://careers.robinhood.com,,,yes
+SoFi,tech,sofi.com,https://www.sofi.com/careers/,,,yes
+Affirm,tech,affirm.com,https://www.affirm.com/careers,,,yes
+Chime,tech,chime.com,https://careers.chime.com,,,yes
+Plaid,tech,plaid.com,https://plaid.com/careers/,,,yes
+Twilio,tech,twilio.com,https://www.twilio.com/en-us/company/jobs,,,yes
+HubSpot,tech,hubspot.com,https://www.hubspot.com/careers,,,yes
+Splunk,tech,splunk.com,https://www.splunk.com/en_us/careers.html,,,yes
+Juniper Networks,tech,juniper.net,https://careers.juniper.net,,,yes
+Western Digital,tech,westerndigital.com,https://careers.westerndigital.com,,,yes
+Sandisk,tech,sandisk.com,https://careers.sandisk.com,,,yes
+Seagate Technology,tech,seagate.com,https://www.seagate.com/careers/,,,yes
+GlobalFoundries,tech,gf.com,https://gf.com/careers/,,,yes
+Microchip Technology,tech,microchip.com,https://careers.microchip.com,,,yes
+Intuitive Surgical,tech,intuitive.com,https://careers.intuitive.com,,,yes
+Medtronic,tech,medtronic.com,https://jobs.medtronic.com,,,yes
+Siemens,tech,siemens.com,https://jobs.siemens.com,,,yes
+Siemens Healthineers,tech,siemens-healthineers.com,https://jobs.siemens-healthineers.com,,,yes
+Bosch,tech,bosch.us,https://www.bosch.us/careers/,,,yes
+Samsung Electronics America,tech,samsung.com,https://sec.wd3.myworkdayjobs.com/Samsung_Careers,workday,sec.wd3/Samsung_Careers,yes
+Sony,tech,sony.com,https://www.sony.com/en/SonyInfo/Careers/,,,yes
+Toyota North America,tech,toyota.com,https://careers.toyota.com,,,yes
+Honda North America,tech,honda.com,https://careers.honda.com,,,yes
+Hyundai Motor America,tech,hyundaiusa.com,https://careers.hyundaiusa.com,,,yes
+Volkswagen Group of America,tech,vw.com,https://www.vwgoacareers.com,,,yes
+BMW Group,tech,bmwgroup.com,https://www.bmwgroup.jobs,,,yes
+Stellantis,tech,stellantis.com,https://www.stellantis.com/en/careers,,,yes
+Rivian,tech,rivian.com,https://careers.rivian.com,,,yes
+Lucid Motors,tech,lucidmotors.com,https://lucidmotors.com/careers,,,yes
+Anduril Industries,tech,anduril.com,https://www.anduril.com/careers/,,,yes
+Waymo,tech,waymo.com,https://careers.withwaymo.com,,,yes
+Instacart,tech,instacart.com,https://instacart.careers,,,yes
+Etsy,tech,etsy.com,https://careers.etsy.com,,,yes
+Zillow Group,tech,zillow.com,https://www.zillow.com/careers/,,,yes
+Yelp,tech,yelp.com,https://www.yelp.careers,,,yes
+DocuSign,tech,docusign.com,https://careers.docusign.com,,,yes
+Unity Software,tech,unity.com,https://careers.unity.com,,,yes
+Nutanix,tech,nutanix.com,https://careers.nutanix.com,,,yes
+Pure Storage,tech,purestorage.com,https://www.purestorage.com/company/careers.html,,,yes
+Akamai Technologies,tech,akamai.com,https://www.akamai.com/careers,,,yes
+Gartner,tech,gartner.com,https://jobs.gartner.com,,,yes
+EPAM Systems,tech,epam.com,https://www.epam.com/careers,,,yes
+Accenture,tech,accenture.com,https://www.accenture.com/us-en/careers/jobsearch,,,yes
+Capgemini,tech,capgemini.com,https://www.capgemini.com/us-en/careers/,,,yes
+Infosys,tech,infosys.com,https://www.infosys.com/careers/,,,yes
+Tata Consultancy Services,tech,tcs.com,https://www.tcs.com/careers,,,yes
+Wipro,tech,wipro.com,https://careers.wipro.com,,,yes
+HCLTech,tech,hcltech.com,https://www.hcltech.com/careers,,,yes
+Citadel,finance,citadel.com,https://www.citadel.com/careers/open-opportunities/,,,yes
+Citadel Securities,finance,citadelsecurities.com,https://www.citadelsecurities.com/careers/open-opportunities/,,,yes
+Jane Street,finance,janestreet.com,https://www.janestreet.com/join-jane-street/open-roles/,,,yes
+Two Sigma,finance,twosigma.com,https://careers.twosigma.com,,,yes
+D. E. Shaw,finance,deshaw.com,https://www.deshaw.com/careers,,,yes
+Bridgewater Associates,finance,bridgewater.com,https://www.bridgewater.com/working-at-bridgewater,,,yes
+Point72,finance,point72.com,https://careers.point72.com,,,yes
+Millennium Management,finance,mlp.com,https://www.mlp.com/careers/,,,yes
+Hudson River Trading,finance,hudsonrivertrading.com,https://www.hudsonrivertrading.com/careers/,,,yes
+Jump Trading,finance,jumptrading.com,https://www.jumptrading.com/careers/,,,yes
+Susquehanna International Group,finance,sig.com,https://careers.sig.com,,,yes
+Optiver,finance,optiver.com,https://optiver.com/working-at-optiver/career-opportunities/,,,yes
+IMC Trading,finance,imc.com,https://www.imc.com/us/careers,,,yes
+DRW,finance,drw.com,https://drw.com/work-at-drw/listings,,,yes
+Barclays,finance,barclays.com,https://search.jobs.barclays,,,yes
+UBS,finance,ubs.com,https://www.ubs.com/global/en/careers.html,,,yes
+Deutsche Bank,finance,db.com,https://careers.db.com,,,yes
+HSBC,finance,hsbc.com,https://www.hsbc.com/careers,,,yes
+BNP Paribas,finance,bnpparibas.com,https://group.bnpparibas/en/careers,,,yes
+Nomura,finance,nomura.com,https://www.nomura.com/careers/,,,yes
+Mizuho Americas,finance,mizuhoamericas.com,https://www.mizuhoamericas.com/careers,,,yes
+MUFG Americas,finance,mufgamericas.com,https://careers.mufgamericas.com,,,yes
+Royal Bank of Canada,finance,rbc.com,https://jobs.rbc.com,,,yes
+TD Bank,finance,td.com,https://jobs.td.com,,,yes
+BMO,finance,bmo.com,https://jobs.bmo.com,,,yes
+Evercore,finance,evercore.com,https://www.evercore.com/careers/,,,yes
+Lazard,finance,lazard.com,https://www.lazard.com/careers/,,,yes
+Moelis & Company,finance,moelis.com,https://www.moelis.com/careers/,,,yes
+PJT Partners,finance,pjtpartners.com,https://pjtpartners.com/careers,,,yes
+Houlihan Lokey,finance,hl.com,https://hl.com/careers/,,,yes
+T. Rowe Price,finance,troweprice.com,https://www.troweprice.com/corporate/us/en/careers.html,,,yes
+Invesco,finance,invesco.com,https://careers.invesco.com,,,yes
+PIMCO,finance,pimco.com,https://www.pimco.com/us/en/about-us/careers,,,yes
+Capital Group,finance,capitalgroup.com,https://www.capitalgroup.com/us/about-us/careers.html,,,yes
+Wellington Management,finance,wellington.com,https://www.wellington.com/en-us/careers,,,yes
+Carlyle,finance,carlyle.com,https://www.carlyle.com/careers,,,yes
+TPG,finance,tpg.com,https://www.tpg.com/careers,,,yes
+Bain Capital,finance,baincapital.com,https://www.baincapital.com/careers,,,yes
+MSCI,finance,msci.com,https://careers.msci.com,,,yes
+Cboe Global Markets,finance,cboe.com,https://www.cboe.com/about/careers/,,,yes
+FactSet,finance,factset.com,https://www.factset.com/careers,,,yes
+Morningstar,finance,morningstar.com,https://www.morningstar.com/careers,,,yes
+Experian,finance,experian.com,https://jobs.experian.com,,,yes
+Equifax,finance,equifax.com,https://careers.equifax.com,,,yes
+TransUnion,finance,transunion.com,https://www.transunion.com/careers,,,yes
+LPL Financial,finance,lpl.com,https://careers.lpl.com,,,yes
+Prudential Global Investment,finance,pgim.com,https://www.pgim.com/careers,,,yes
+Allianz of America,finance,allianzlife.com,https://www.allianzlife.com/about/careers,,,yes
+Chubb,finance,chubb.com,https://careers.chubb.com,,,yes
+Aon,finance,aon.com,https://jobs.aon.com,,,yes
+Willis Towers Watson,finance,wtwco.com,https://careers.wtwco.com,,,yes
+Deloitte,consulting,deloitte.com,https://apply.deloitte.com,,,yes
+PwC,consulting,pwc.com,https://www.pwc.com/us/en/careers.html,,,yes
+EY,consulting,ey.com,https://careers.ey.com,,,yes
+KPMG,consulting,kpmg.com,https://www.kpmguscareers.com,,,yes
+McKinsey & Company,consulting,mckinsey.com,https://www.mckinsey.com/careers/search-jobs,,,yes
+Boston Consulting Group,consulting,bcg.com,https://careers.bcg.com,,,yes
+Bain & Company,consulting,bain.com,https://www.bain.com/careers/find-a-role/,,,yes
+Oliver Wyman,consulting,oliverwyman.com,https://careers.oliverwyman.com,,,yes
+Grant Thornton,consulting,grantthornton.com,https://www.gt.com/careers,,,yes
+RSM US,consulting,rsmus.com,https://rsmus.com/careers.html,,,yes
+BDO USA,consulting,bdo.com,https://www.bdo.com/careers,,,yes
+Crowe,consulting,crowe.com,https://www.crowe.com/careers,,,yes
+Guidehouse,consulting,guidehouse.com,https://guidehouse.com/careers,,,yes
+Slalom,consulting,slalom.com,https://www.slalom.com/us/en/careers,,,yes
+Kearney,consulting,kearney.com,https://www.kearney.com/careers,,,yes
+Alvarez & Marsal,consulting,alvarezandmarsal.com,https://www.alvarezandmarsal.com/careers,,,yes
+FTI Consulting,consulting,fticonsulting.com,https://www.fticonsulting.com/careers,,,yes
+Huron Consulting,consulting,huronconsultinggroup.com,https://www.huronconsultinggroup.com/company/careers,,,yes
+ZS Associates,consulting,zs.com,https://www.zs.com/careers,,,yes
+CGI,consulting,cgi.com,https://www.cgi.com/en/careers,,,yes
+SAIC,consulting,saic.com,https://jobs.saic.com,,,yes
+CACI International,consulting,caci.com,https://careers.caci.com,,,yes
+ManTech,consulting,mantech.com,https://www.mantech.com/careers,,,yes
+Parsons,consulting,parsons.com,https://www.parsons.com/careers/,,,yes
+KBR,consulting,kbr.com,https://careers.kbr.com,,,yes
+AECOM,consulting,aecom.com,https://aecom.jobs,,,yes
+WSP,consulting,wsp.com,https://www.wsp.com/en-us/careers,,,yes
+Burns & McDonnell,consulting,burnsmcd.com,https://www.burnsmcd.com/careers,,,yes
+New York Times,media-consumer,nytimes.com,https://www.nytco.com/careers/,,,yes
+Condé Nast,media-consumer,condenast.com,https://www.condenast.com/careers,,,yes
+Hearst,media-consumer,hearst.com,https://www.hearst.com/careers,,,yes
+NBCUniversal,media-consumer,nbcuniversal.com,https://www.nbcunicareers.com,,,yes
+Universal Music Group,media-consumer,universalmusic.com,https://www.universalmusic.com/careers/,,,yes
+Sony Music,media-consumer,sonymusic.com,https://www.sonymusic.com/careers/,,,yes
+Nestlé USA,media-consumer,nestleusa.com,https://www.nestlejobs.com,,,yes
+Unilever,media-consumer,unilever.com,https://careers.unilever.com,,,yes
+L'Oréal USA,media-consumer,loreal.com,https://careers.loreal.com,,,yes
+LVMH,media-consumer,lvmh.com,https://www.lvmh.com/join-us,,,yes
+Lululemon,media-consumer,lululemon.com,https://careers.lululemon.com,,,yes
+adidas,media-consumer,adidas.com,https://careers.adidas-group.com,,,yes
+Under Armour,media-consumer,underarmour.com,https://careers.underarmour.com,,,yes
+Hasbro,media-consumer,hasbro.com,https://careers.hasbro.com,,,yes
+Mattel,media-consumer,mattel.com,https://jobs.mattel.com,,,yes
+Chipotle Mexican Grill,media-consumer,chipotle.com,https://jobs.chipotle.com,,,yes
+McDonald's,media-consumer,mcdonalds.com,https://careers.mcdonalds.com,,,yes
+Restaurant Brands International,media-consumer,rbi.com,https://www.rbi.com/English/careers/,,,yes
+Hyatt Hotels,media-consumer,hyatt.com,https://careers.hyatt.com,,,yes
+IHG Hotels & Resorts,media-consumer,ihg.com,https://careers.ihg.com,,,yes
+Royal Caribbean Group,media-consumer,rclcareers.com,https://www.rclcareers.com,,,yes
+Carnival,media-consumer,carnival.com,https://jobs.carnival.com,,,yes
+Southwest Airlines,media-consumer,southwest.com,https://careers.southwestair.com,,,yes
+Peloton,media-consumer,onepeloton.com,https://careers.onepeloton.com,,,yes
+Novartis,health,novartis.com,https://www.novartis.com/careers,,,yes
+Roche / Genentech,health,gene.com,https://careers.gene.com,,,yes
+Sanofi,health,sanofi.com,https://jobs.sanofi.com,,,yes
+AstraZeneca,health,astrazeneca.com,https://careers.astrazeneca.com,,,yes
+GSK,health,gsk.com,https://jobs.gsk.com,,,yes
+Novo Nordisk,health,novonordisk-us.com,https://www.novonordisk-us.com/careers.html,,,yes
+Takeda,health,takeda.com,https://jobs.takeda.com,,,yes
+Bayer,health,bayer.com,https://career.bayer.com,,,yes
+Moderna,health,modernatx.com,https://modernatx.eightfold.ai/careers,,,yes
+Vertex Pharmaceuticals,health,vrtx.com,https://careers.vrtx.com,,,yes
+Illumina,health,illumina.com,https://www.illumina.com/company/careers.html,,,yes
+Edwards Lifesciences,health,edwards.com,https://www.edwards.com/careers,,,yes
+Agilent Technologies,health,agilent.com,https://careers.agilent.com,,,yes
+Fortrea,health,fortrea.com,https://careers.fortrea.com,,,yes
+Blue Cross Blue Shield of Michigan,health,bcbsm.com,https://www.bcbsm.com/careers,,,yes
+Highmark Health,health,highmarkhealth.org,https://careers.highmarkhealth.org,,,yes
+Johns Hopkins Medicine,health,hopkinsmedicine.org,https://jobs.hopkinsmedicine.org,,,yes
+NYU Langone Health,health,nyulangone.org,https://jobs.nyulangone.org,,,yes
+UCHealth,health,uchealth.org,https://www.uchealth.org/careers/,,,yes
+Intermountain Health,health,intermountainhealth.org,https://intermountainhealthcare.org/careers,,,yes
+Atrium Health,health,atriumhealth.org,https://careers.atriumhealth.org,,,yes
+Sutter Health,health,sutterhealth.org,https://jobs.sutterhealth.org,,,yes
+Banner Health,health,bannerhealth.com,https://www.bannerhealth.com/careers,,,yes
