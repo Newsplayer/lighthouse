@@ -10,8 +10,9 @@ from lighthouse.sources.workable import WorkableSource
 from conftest import FakeClient, FakeResp
 
 
-def test_registry_has_seven_ats():
-    assert set(SOURCES) == {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday"}
+def test_registry():
+    assert set(SOURCES) == {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "recruitee", "workday",
+                            "oracle", "successfactors", "phenom", "jibe", "eightfold", "amazon", "jsonld"}
 
 
 def test_parse_greenhouse(gh):
@@ -60,7 +61,8 @@ def test_smartrecruiters_detail_only_when_new_or_changed(ats):
     client = FakeClient({"/postings?": ats["smartrecruiters_list"], "/postings/744000159462147": ats["smartrecruiters_detail"]})
     src = SmartRecruitersSource(client=client)
     [j] = src.fetch("Acme")
-    assert "Audit quality" in j.content_html and j.url.endswith("quality-auditor")
+    assert "Audit quality" in j.content_html
+    assert j.url == "https://jobs.smartrecruiters.com/Acme/744000159462147"   # same link on every run
     assert j.workplace == "onsite" and j.company == "Acme Group"
     detail_calls = sum(1 for c in client.calls if "/postings/7440" in c)
     assert detail_calls == 1

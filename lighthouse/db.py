@@ -23,6 +23,14 @@ from .models import Job, company_key, iso, parse_dt, utcnow
 from .sanitize import html_to_text
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "lighthouse.db"
+# Readers (the normal setup) keep two files: the job index exactly as the GitHub Action published it
+# (data/index/index-*.db, replaced weekly, patched by small deltas) and their own data in user.db
+# (profile, marks, Claude verdicts, sponsorship imports), which the index attaches to as "idx".
+USER_DB = DEFAULT_DB.parent / "user.db"
+INDEX_DIR = DEFAULT_DB.parent / "index"
+USER_APP_ID = 0x4C485553    # PRAGMA application_id of a user.db ("LHUS")
+INDEX_APP_ID = 0x4C484958   # ... of a published job index ("LHIX")
+INDEX_SCHEMA = 1            # bump when the index file's layout changes (readers then need a new app)
 
 V1 = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -265,11 +273,62 @@ def _migrate_3_to_4(conn: sqlite3.Connection) -> None:
     sync_marks(conn)
 
 
+CLAUDE_EXTRACTIONS = """
+CREATE TABLE IF NOT EXISTS claude_extractions (   -- your optional Claude reading of a posting
+    content_hash TEXT PRIMARY KEY,
+    data         TEXT NOT NULL,     -- JSON, same shape as extractions.data
+    model        TEXT,
+    at           TEXT NOT NULL
+);
+"""
+
+COMPANIES = """
+CREATE TABLE IF NOT EXISTS companies (   -- coverage of config/companies.csv (builder; shipped in the index)
+    company     TEXT PRIMARY KEY,
+    grp         TEXT,
+    domain      TEXT,
+    careers_url TEXT,
+    final_url   TEXT,
+    ats         TEXT,
+    slug        TEXT,
+    status      TEXT,      -- ok | pinned | unsupported | not_found | blocked | error
+    detail      TEXT,
+    platforms   TEXT,      -- JSON list of careers systems seen on the site
+    openings    INTEGER,
+    checked_at  TEXT
+);
+"""
+
+# Filter fields added in v5 (extract.derive fills them).
+_JOB_COLUMNS_V5 = [("job_function", "TEXT"), ("seniority", "TEXT"), ("emp_type", "TEXT"), ("skills", "TEXT"),
+                   ("pay_interval", "TEXT")]
+_V5_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_canon_function ON jobs(job_function) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_canon_seniority ON jobs(seniority) WHERE active = 1 AND is_canonical = 1;
+"""
+
+
+def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
+    """Claude extractions get their own table (so a shared index never overwrites what you paid for),
+    new filter fields, and the companies coverage table."""
+    conn.executescript(CLAUDE_EXTRACTIONS + COMPANIES)
+    conn.execute("INSERT OR REPLACE INTO claude_extractions(content_hash, data, model, at) "
+                 "SELECT content_hash, data, model, at FROM extractions WHERE method = 'claude'")
+    conn.execute("DELETE FROM extractions WHERE method = 'claude'")
+    have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    for name, decl in _JOB_COLUMNS_V5:
+        if name not in have:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+    conn.executescript(_V5_INDEXES)
+    conn.execute("UPDATE jobs SET derived_of = NULL")   # derive the new fields once
+
+
 MIGRATIONS = [
     lambda c: c.executescript(V1),  # 0 -> 1
     _migrate_1_to_2,                # 1 -> 2
     _migrate_2_to_3,                # 2 -> 3
     _migrate_3_to_4,                # 3 -> 4
+    _migrate_4_to_5,                # 4 -> 5
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -279,30 +338,360 @@ def pack(html: str) -> bytes:
     return zlib.compress((html or "").encode("utf-8"), 6)
 
 
+# A published index compresses each description against a dictionary of its board's common text
+# (the company's "About us", benefits, EEO statement...; one shared dictionary for small boards):
+# ~4.9x instead of ~2.4x on real postings, and still one row at a time, so the file is used as
+# downloaded. Dictionaries are registered by their zlib id (adler32), which is also their row id.
+_ZDICTS: dict[int, bytes] = {}
+
+
+def register_zdict(data: bytes | None) -> None:
+    if data:
+        _ZDICTS[zlib.adler32(data)] = bytes(data)
+
+
+def pack_with(html: str, zdict: bytes) -> bytes:
+    if not zdict:
+        return pack(html)
+    co = zlib.compressobj(9, zlib.DEFLATED, 15, 9, zlib.Z_DEFAULT_STRATEGY, zdict)
+    return co.compress((html or "").encode("utf-8")) + co.flush()
+
+
 def unpack(value) -> str:
     if value is None:
         return ""
     if isinstance(value, (bytes, memoryview)):
-        return zlib.decompress(bytes(value)).decode("utf-8")
+        b = bytes(value)
+        if len(b) > 6 and b[1] & 0x20:   # compressed against a dictionary (FDICT bit)
+            d = _ZDICTS.get(int.from_bytes(b[2:6], "big"))
+            if d is None:
+                raise ValueError("description needs a dictionary that isn't loaded")
+            return zlib.decompressobj(zdict=d).decompress(b).decode("utf-8")
+        return zlib.decompress(b).decode("utf-8")
     return value  # plain text from an older v0.2 database
+
+
+def train_zdict(samples, size: int = 32768) -> bytes:
+    """The most repeated lines across sample descriptions, most common last (zlib reaches the end of
+    a dictionary most cheaply)."""
+    from collections import Counter
+    cnt: Counter = Counter()
+    samples = list(samples)
+    min_count = 2 if len(samples) < 500 else 5
+    for h in samples:
+        for seg in set((h or "").replace("</p>", "</p>\n").replace("</li>", "</li>\n").split("\n")):
+            if 40 <= len(seg) <= 600:
+                cnt[seg] += 1
+    picked, total = [], 0
+    for seg, n in cnt.most_common():
+        if n < min_count or total > size:
+            break
+        picked.append(seg)
+        total += len(seg.encode("utf-8")) + 1
+    return "\n".join(reversed(picked)).encode("utf-8")[-size:]
 
 
 FTS_BODY_CHARS = 4000  # index the start of each description: plenty for search, keeps the index small
 
 
+def _tune(conn, schema: str = "main") -> None:
+    conn.execute(f"PRAGMA {schema}.journal_mode=WAL")
+    conn.execute(f"PRAGMA {schema}.synchronous=NORMAL")
+    conn.execute(f"PRAGMA {schema}.cache_size=-65536")      # 64 MB page cache
+    conn.execute(f"PRAGMA {schema}.mmap_size=268435456")    # read through memory-mapped I/O (256 MB window)
+
+
 def connect(path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
+    """Open a Lighthouse database. A user.db (reader) gets its job index attached as "idx", so every
+    query can say plain `jobs`; any other file is a full single-file database (builder, local mode)."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.create_function("unz", 1, unpack, deterministic=True)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.create_function("zpack", 1, pack, deterministic=True)
     conn.execute("PRAGMA busy_timeout=30000")
-    conn.execute("PRAGMA cache_size=-65536")      # 64 MB page cache
-    conn.execute("PRAGMA mmap_size=268435456")    # read through memory-mapped I/O (256 MB window)
     conn.execute("PRAGMA temp_store=MEMORY")
-    migrate(conn)
+    _tune(conn)
+    if conn.execute("PRAGMA application_id").fetchone()[0] == USER_APP_ID:
+        migrate_user(conn)
+        attach_index(conn, Path(path).parent)
+    else:
+        migrate(conn)
     return conn
+
+
+# ---------------------------------------------------------------- reader: user.db + job index
+
+USER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS marks (
+    uid    TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('saved', 'applied', 'hidden')),
+    at     TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fit (
+    content_hash TEXT NOT NULL,
+    profile_hash TEXT NOT NULL,
+    tier         TEXT NOT NULL CHECK (tier IN ('Strong', 'Possible', 'Weak')),
+    summary      TEXT,
+    requirements TEXT,
+    method       TEXT NOT NULL,
+    model        TEXT,
+    at           TEXT NOT NULL,
+    PRIMARY KEY (content_hash, profile_hash)
+);
+CREATE TABLE IF NOT EXISTS api_usage (
+    id            INTEGER PRIMARY KEY,
+    at            TEXT NOT NULL,
+    purpose       TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd      REAL NOT NULL,
+    batch         INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS claude_batches (
+    id            TEXT PRIMARY KEY,
+    purpose       TEXT NOT NULL,
+    model         TEXT NOT NULL,
+    profile_hash  TEXT,
+    status        TEXT NOT NULL,
+    request_count INTEGER NOT NULL,
+    reserved_usd  REAL NOT NULL DEFAULT 0,
+    submitted_at  TEXT NOT NULL,
+    done_at       TEXT
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS sponsor_lca (
+    employer_key TEXT NOT NULL, employer_name TEXT NOT NULL, fiscal_year INTEGER NOT NULL,
+    filings INTEGER NOT NULL DEFAULT 0, certified INTEGER NOT NULL DEFAULT 0,
+    wage_l1 INTEGER NOT NULL DEFAULT 0, wage_l2 INTEGER NOT NULL DEFAULT 0,
+    wage_l3 INTEGER NOT NULL DEFAULT 0, wage_l4 INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (employer_key, fiscal_year)
+);
+CREATE TABLE IF NOT EXISTS sponsor_uscis (
+    employer_key TEXT NOT NULL, employer_name TEXT NOT NULL, fiscal_year INTEGER NOT NULL,
+    initial_approvals INTEGER NOT NULL DEFAULT 0, initial_denials INTEGER NOT NULL DEFAULT 0,
+    continuing_approvals INTEGER NOT NULL DEFAULT 0, continuing_denials INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (employer_key, fiscal_year)
+);
+CREATE TABLE IF NOT EXISTS sponsor_files (
+    file_key TEXT PRIMARY KEY, kind TEXT NOT NULL, rows INTEGER NOT NULL, imported_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sponsor_match (
+    company_key TEXT PRIMARY KEY, lca_recent INTEGER NOT NULL DEFAULT 0,
+    uscis_recent INTEGER NOT NULL DEFAULT 0, names TEXT
+);
+""" + CLAUDE_EXTRACTIONS
+
+USER_MIGRATIONS = [lambda c: c.executescript(USER_SCHEMA)]
+
+
+def migrate_user(conn) -> None:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    for i in range(version, len(USER_MIGRATIONS)):
+        with conn:
+            USER_MIGRATIONS[i](conn)
+            conn.execute(f"PRAGMA user_version={i + 1}")
+
+
+def init_user(path: Path | str = USER_DB) -> None:
+    """Create a reader's user.db (no-op if it exists)."""
+    path = Path(path)
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    c = sqlite3.connect(path)
+    c.execute(f"PRAGMA application_id={USER_APP_ID}")
+    c.commit()
+    c.close()
+
+
+_PERSONAL_META = ("profile", "visit")
+
+
+def app_db(cfg=None, data_dir: Path | None = None) -> Path:
+    """The database file the app opens: user.db for readers (created, and converted from a pre-0.6
+    single-file database, on first use), the full lighthouse.db otherwise (builder, local mode)."""
+    if cfg is None:
+        from . import config
+        cfg = config.load()
+    folder = Path(data_dir or DEFAULT_DB.parent)
+    if not cfg.reader:
+        return folder / DEFAULT_DB.name
+    user = folder / USER_DB.name
+    if not user.exists():
+        legacy = folder / DEFAULT_DB.name
+        part = folder / (USER_DB.name + ".part")
+        part.unlink(missing_ok=True)
+        init_user(part)
+        if legacy.exists():
+            _convert_legacy(legacy, part)   # if this fails, user.db isn't created and it's tried again next start
+        part.replace(user)
+    return user
+
+
+def _convert_legacy(legacy: Path, user: Path) -> None:
+    """Copy your own data out of a pre-0.6 database into user.db. The old file (mostly job rows) is
+    deleted once the first real index has been installed."""
+    c = connect(user)
+    try:
+        c.execute("ATTACH DATABASE ? AS old", (str(legacy),))
+        have = {r[0] for r in c.execute("SELECT name FROM old.sqlite_master WHERE type='table'")}
+        with c:
+            for t in ("marks", "fit", "api_usage", "claude_batches", "sponsor_lca", "sponsor_uscis", "sponsor_files",
+                      "sponsor_match"):
+                if t in have:
+                    cols = [r[1] for r in c.execute(f"PRAGMA old.table_info({t})")
+                            if r[1] in {x[1] for x in c.execute(f"PRAGMA main.table_info({t})")}]
+                    c.execute(f"INSERT OR IGNORE INTO main.{t} ({', '.join(cols)}) SELECT {', '.join(cols)} FROM old.{t}")
+            if "claude_extractions" in have:
+                c.execute("INSERT OR IGNORE INTO main.claude_extractions SELECT content_hash, data, model, at "
+                          "FROM old.claude_extractions")
+            if "extractions" in have:
+                c.execute("INSERT OR IGNORE INTO main.claude_extractions SELECT content_hash, data, model, at "
+                          "FROM old.extractions WHERE method = 'claude'")
+            if "meta" in have:
+                c.executemany("INSERT OR REPLACE INTO main.meta (key, value) SELECT key, value FROM old.meta WHERE key = ?",
+                              [(k,) for k in _PERSONAL_META])
+        c.execute("DETACH DATABASE old")
+        set_meta(c, "legacy_db", legacy.name)
+    finally:
+        c.close()
+
+
+def is_user_db(conn) -> bool:
+    return conn.execute("PRAGMA main.application_id").fetchone()[0] == USER_APP_ID
+
+
+def index_path(conn, folder: Path | str | None = None) -> Path | None:
+    name = get_meta(conn, "index_file")
+    return (Path(folder or INDEX_DIR.parent) / name) if name else None
+
+
+def attach_index(conn, folder: Path) -> None:
+    """Attach the current job index as "idx" (an empty one until the first download).
+
+    If the recorded file is gone (a new index was installed between reading the setting and opening
+    the file, or the file was deleted), the newest index file present is used, else an empty one.
+    That stand-in is never recorded, so the next sync sees the index is missing and downloads it."""
+    rel = get_meta(conn, "index_file")
+    path = Path(folder) / rel if rel else None
+    if path is None or not path.exists():
+        rel = get_meta(conn, "index_file")          # re-read: a new index may have just been installed
+        path = Path(folder) / rel if rel else None
+    if path is None or not path.exists():
+        found = sorted((p for p in (Path(folder) / "index").glob("index-*.db") if p.name != "index-empty.db"),
+                       key=lambda p: p.name, reverse=True)
+        path = found[0] if found else Path(folder) / "index" / "index-empty.db"
+        if not path.exists():
+            create_empty_index(path)
+    conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
+    _tune(conn, "idx")
+    load_zdicts(conn, "idx")
+
+
+def attached_index(conn) -> Path | None:
+    """The index file this connection actually has open."""
+    for _, name, file in conn.execute("PRAGMA database_list"):
+        if name == "idx" and file:
+            return Path(file)
+    return None
+
+
+def index_base_built_at(conn) -> str | None:
+    """When the base of the attached index was built (None for the empty stand-in)."""
+    try:
+        row = conn.execute("SELECT value FROM idx.index_meta WHERE key = 'base_built_at'").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return row[0]
+
+
+def load_zdicts(conn, schema: str) -> None:
+    """Register the index's dictionaries (each is read once per process; later connections only
+    list their ids)."""
+    try:
+        ids = [r[0] for r in conn.execute(f"SELECT id FROM {schema}.zdict")]
+    except sqlite3.OperationalError:
+        return   # an index without dictionaries (empty, or older)
+    for i in ids:
+        if i not in _ZDICTS:
+            row = conn.execute(f"SELECT data FROM {schema}.zdict WHERE id = ?", (i,)).fetchone()
+            register_zdict(row[0] if row else None)
+
+
+def create_empty_index(path: Path) -> None:
+    """An index with the published layout and no rows (before the first download)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(str(path) + ".tmp")
+    tmp.unlink(missing_ok=True)
+    src = sqlite3.connect(":memory:")
+    for i in range(SCHEMA_VERSION):
+        MIGRATIONS[i](src)
+    cols = [(r[1], r[2]) for r in src.execute("PRAGMA table_info(jobs)")]
+    src.close()
+    c = sqlite3.connect(tmp)
+    create_index_tables(c, [x for x in cols if x[0] not in INDEX_EXCLUDED_COLUMNS], fts=True)
+    c.commit()
+    c.close()
+    tmp.replace(path)
+
+
+# Job columns that never go into a published index: personal (eligibility is computed per reader),
+# or builder-only (near-duplicate signatures).
+INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of"}
+
+INDEX_TABLES = """
+CREATE TABLE IF NOT EXISTS job_content (uid TEXT PRIMARY KEY, html TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS boards (
+    ats TEXT NOT NULL, slug TEXT NOT NULL, company TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+    origin TEXT NOT NULL DEFAULT 'config', options TEXT, added_at TEXT NOT NULL, last_fetch TEXT, last_ok TEXT,
+    last_error TEXT, job_count INTEGER, fail_count INTEGER NOT NULL DEFAULT 0, list TEXT, body_hash TEXT,
+    PRIMARY KEY (ats, slug)
+);
+CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, uid TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS extractions (
+    content_hash TEXT PRIMARY KEY, method TEXT NOT NULL, data TEXT NOT NULL, model TEXT, at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS zdict (id INTEGER PRIMARY KEY, data BLOB NOT NULL);   -- description dictionaries; id = adler32(data)
+""" + COMPANIES
+
+INDEX_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_events_uid ON events(uid);
+CREATE INDEX IF NOT EXISTS idx_jobs_ck ON jobs(company_key);
+CREATE INDEX IF NOT EXISTS idx_jobs_cluster ON jobs(cluster_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_board ON jobs(source, source_board);
+CREATE INDEX IF NOT EXISTS idx_jobs_hash ON jobs(content_hash);
+CREATE INDEX IF NOT EXISTS idx_jobs_fts ON jobs(fts_rowid);
+CREATE INDEX IF NOT EXISTS idx_canon_eff ON jobs(effective_first_seen) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_canon_company ON jobs(company) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_canon_source ON jobs(source) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_canon_yoe ON jobs(yoe_min) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_canon_pay ON jobs(pay_max_annual) WHERE active = 1 AND is_canonical = 1;
+CREATE INDEX IF NOT EXISTS idx_jobs_mark ON jobs(mark) WHERE mark IS NOT NULL;
+""" + _V5_INDEXES
+
+# Search index of a published index: contentless (the text isn't stored twice) and without term
+# positions, which keeps it ~15% of the file. Queries are AND-ed prefix terms, which this supports.
+INDEX_FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(title, company, location, body, "
+             "tokenize = 'porter unicode61', content = '', detail = none)")
+
+
+def create_index_tables(conn, job_columns: list[tuple[str, str]], fts: bool = True, indexes: bool = True) -> None:
+    """The published index layout. job_columns: (name, declared type) of the shipped job columns."""
+    cols = ",\n    ".join(f"{n} {t or ''}{' PRIMARY KEY' if n == 'uid' else ''}" for n, t in job_columns)
+    conn.execute(f"CREATE TABLE IF NOT EXISTS jobs (\n    {cols}\n)")
+    conn.executescript(INDEX_TABLES)
+    if indexes:
+        conn.executescript(INDEX_INDEXES)
+    if fts:
+        conn.execute(INDEX_FTS)
+    conn.execute(f"PRAGMA application_id={INDEX_APP_ID}")
+    conn.execute(f"PRAGMA user_version={INDEX_SCHEMA}")
 
 
 def migrate(conn: sqlite3.Connection) -> None:
@@ -316,8 +705,21 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"PRAGMA user_version={i + 1}")
 
 
+def has_table(conn: sqlite3.Connection, name: str) -> bool:
+    """In the main database or the attached job index."""
+    if conn.execute("SELECT 1 FROM main.sqlite_master WHERE name=?", (name,)).fetchone():
+        return True
+    if conn.execute("SELECT 1 FROM pragma_database_list WHERE name='idx'").fetchone():
+        return conn.execute("SELECT 1 FROM idx.sqlite_master WHERE name=?", (name,)).fetchone() is not None
+    return False
+
+
 def has_fts(conn: sqlite3.Connection) -> bool:
-    return conn.execute("SELECT 1 FROM sqlite_master WHERE name='jobs_fts'").fetchone() is not None
+    return has_table(conn, "jobs_fts")
+
+
+def is_reader(conn) -> bool:
+    return conn.execute("SELECT 1 FROM pragma_database_list WHERE name='idx'").fetchone() is not None
 
 
 def _fts_put(conn, uid, title, company, location, html) -> None:
@@ -597,6 +999,12 @@ class Filters:
     ghost_hide_at: int = 3
     profile_hash: str = ""
     countries: tuple = ()        # e.g. ("US", "CA"); empty = everywhere
+    profile: dict | None = None  # for eligibility (filter + reasons on the rows shown)
+    yoe_slack: int = 2
+    function: str = ""           # job_function, e.g. "Software Engineering"
+    seniority: str = ""          # intern | entry | mid | senior | lead | manager | director | executive
+    emp_type: str = ""           # full_time | part_time | contract | internship | temporary
+    skills: tuple = ()           # every one must be mentioned, e.g. ("python", "sql")
 
 
 class Count(int):
@@ -608,11 +1016,15 @@ COUNT_CAP = 5000
 _LIST_COLS = """j.uid, j.title, j.company, j.company_key, j.location, j.cluster_locations, j.cluster_count,
     j.url, j.source, j.departments, j.posted_at, j.first_seen, j.effective_first_seen, j.content_hash,
     j.repost_count, j.ghost_score, j.ghost_reasons, j.workplace_eff, j.pay_min_annual, j.pay_max_annual,
-    j.pay_currency, j.yoe_min, j.yoe_source, j.visa, j.elig, j.elig_reasons, j.mark AS mrank"""
+    j.pay_currency, j.pay_interval, j.yoe_min, j.yoe_source, j.visa, j.citizenship, j.clearance, j.degree,
+    j.job_function, j.seniority, j.emp_type, j.skills, j.mark AS mrank"""
 
 
 def _fts_query(q: str) -> str:
-    terms = [t.replace('"', "") for t in q.split() if t.replace('"', "")]
+    """Every word must appear (prefix match). Words are split on punctuation ("full-stack" -> full,
+    stack) so no query needs term positions, which the published search index doesn't store."""
+    import re
+    terms = [t for t in re.split(r"[^\w]+", q or "", flags=re.UNICODE) if t]
     return " ".join(f'"{t}"*' for t in terms)
 
 
@@ -657,8 +1069,19 @@ def _where(conn, f: Filters) -> tuple[list[str], list, bool]:
     elif f.visa == "sponsors":
         where.append("(j.visa = 'yes' OR EXISTS (SELECT 1 FROM sponsor_match s WHERE s.company_key = j.company_key "
                      "AND (s.lca_recent > 0 OR s.uscis_recent > 0)))")
-    if f.eligible_only:
-        where.append("(j.elig IS NULL OR j.elig = 1)")
+    if f.function:
+        where.append("j.job_function = ?"); args.append(f.function)
+    if f.seniority:
+        where.append("j.seniority = ?"); args.append(f.seniority)
+    if f.emp_type:
+        where.append("j.emp_type = ?"); args.append(f.emp_type)
+    for sk in f.skills:
+        where.append("j.skills LIKE ?"); args.append(f"%,{sk.strip().lower()},%")
+    if f.eligible_only and f.profile:
+        from .profile import eligibility_sql
+        clause = eligibility_sql(conn, f.profile, f.yoe_slack)
+        if clause:
+            where.append(f"({clause[0]})"); args += clause[1]
     need_fit = bool(f.tier) or f.sort == "fit"
     if f.tier:
         tiers = ["Strong", "Possible"] if f.tier == "Strong+Possible" else [f.tier]
@@ -713,16 +1136,20 @@ def list_jobs(conn, f: Filters, page: int = 1, per_page: int = 50, with_count: b
             f"AND content_hash IN ({','.join('?' * len(hashes))})", [f.profile_hash, *hashes])}
     for r in rows:
         r["fit_tier"], r["fit_summary"] = tiers.get(r["content_hash"], (None, None))
+    from .profile import annotate
+    annotate(rows, f.profile or {}, f.yoe_slack)
     total = count_jobs(conn, f) if with_count else Count(len(rows))
     return rows, total
 
 
-def get_job(conn: sqlite3.Connection, uid: str) -> dict | None:
+def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe_slack: int = 2) -> dict | None:
     r = conn.execute("SELECT * FROM jobs WHERE uid=?", (uid,)).fetchone()
     if r is None:
         return None
     row = dict(r)
     row["content_html"] = content(conn, uid)
+    from .profile import annotate
+    annotate([row], profile or {}, yoe_slack)
     return row
 
 

@@ -103,33 +103,75 @@ def check(row, p: dict, yoe_slack: int = 2) -> list[str]:
     return reasons
 
 
-def recompute(conn, company_keys=None, yoe_slack: int = 2, force: bool = False) -> int:
-    p = load(conn)
+def _posted_places(cluster_locations, location) -> str:
+    places = json.loads(cluster_locations or "[]") or [location or ""]
+    return " | ".join(places).lower()
+
+
+def eligibility_sql(conn, p: dict, yoe_slack: int = 2, alias: str = "j") -> tuple[str, list] | None:
+    """The same rules as check(), as one WHERE clause over the job index (None = no profile, so
+    everything counts as eligible). Nothing is stored per job: changing your profile or getting a
+    new index never needs a recompute. Locations use a small SQL function for exact matching."""
     if not is_set(p):
-        conn.execute("UPDATE jobs SET elig=NULL, elig_reasons=NULL, elig_version=NULL WHERE elig IS NOT NULL")
-        conn.commit()
-        return 0
-    version = elig_version(p, yoe_slack)
-    sql = ("SELECT uid, visa, citizenship, clearance, workplace_eff, cluster_locations, location, yoe_min, yoe_source, "
-           "pay_max_annual, degree, derived_of, elig_version FROM jobs WHERE active=1")
-    args: list = []
-    if company_keys is not None:
-        keys = list(company_keys)
-        if not keys:
-            return 0
-        sql += f" AND company_key IN ({','.join('?' * len(keys))})"
-        args = keys
-    n = 0
-    with conn:
-        for r in conn.execute(sql, args).fetchall():
-            stamp = f"{version}:{r['derived_of']}:{r['cluster_locations']}"
-            if not force and r["elig_version"] == stamp:
-                continue
-            reasons = check(r, p, yoe_slack)
-            conn.execute("UPDATE jobs SET elig=?, elig_reasons=?, elig_version=? WHERE uid=?",
-                         (0 if reasons else 1, json.dumps(reasons), stamp, r["uid"]))
-            n += 1
-    return n
+        return None
+    j = alias
+    conds, args = [], []
+    if p.get("needs_sponsorship"):
+        conds.append(f"{j}.visa IS NOT 'no'")
+    us = bool(p.get("us_citizen"))
+    if not us:
+        conds.append(f"({j}.citizenship IS NULL OR {j}.citizenship = 0)")
+    held = CLEARANCE_ORDER.get(p.get("clearance") or "none", 0)
+    rank = (f"CASE {j}.clearance WHEN 'none' THEN 0 WHEN 'public_trust' THEN 1 WHEN 'secret' THEN 2 "
+            f"WHEN 'ts' THEN 3 WHEN 'ts_sci' THEN 4 ELSE 2 END")
+    if not us and held == 0:
+        conds.append(f"({j}.clearance IS NULL OR {j}.clearance = '')")
+    elif held > 0:
+        conds.append(f"({j}.clearance IS NULL OR {j}.clearance = '' OR {rank} <= ?)")
+        args.append(held)
+    wants = sorted(set(p.get("workplaces") or []))
+    if wants:
+        conds.append(f"({j}.workplace_eff IS NULL OR {j}.workplace_eff = '' OR {j}.workplace_eff IN "
+                     f"({','.join('?' * len(wants))}))")
+        args += wants
+    locs = [l.strip().lower() for l in p.get("locations") or [] if l.strip()]
+    if locs:
+        want_remote = "remote" in locs
+        others = [l for l in locs if l != "remote"]
+
+        def loc_ok(cluster_locations, location) -> int:
+            posted = _posted_places(cluster_locations, location)
+            return int(not posted or (want_remote and "remote" in posted) or any(l in posted for l in others))
+        conn.create_function("lh_loc_ok", 2, loc_ok, deterministic=True)
+        conds.append(f"({j}.workplace_eff IS 'remote' OR lh_loc_ok({j}.cluster_locations, {j}.location))")
+    have = p.get("years_experience")
+    if have is not None:
+        conds.append(f"({j}.yoe_source IS NOT 'stated' OR {j}.yoe_min IS NULL OR {j}.yoe_min <= ?)")
+        args.append(have + yoe_slack)
+    floor = p.get("min_salary")
+    if floor:
+        conds.append(f"({j}.pay_max_annual IS NULL OR {j}.pay_max_annual = 0 OR {j}.pay_max_annual >= ?)")
+        args.append(floor)
+    mine = DEGREE_ORDER.get(p.get("degree") or "none", 0)
+    if mine < 3:
+        conds.append(f"(CASE {j}.degree WHEN 'bachelors' THEN 1 WHEN 'masters' THEN 2 WHEN 'phd' THEN 3 "
+                     f"ELSE 0 END <= ?)")
+        args.append(mine)
+    return (" AND ".join(conds) or "1=1"), args
+
+
+def annotate(rows: list[dict], p: dict, yoe_slack: int = 2) -> None:
+    """Add elig (1/0, None without a profile) and elig_reasons (JSON) to rows about to be shown."""
+    on = is_set(p)
+    for r in rows:
+        reasons = check(r, p, yoe_slack) if on else []
+        r["elig"] = (0 if reasons else 1) if on else None
+        r["elig_reasons"] = json.dumps(reasons)
+
+
+def recompute(*_a, **_k) -> int:
+    """Kept for old callers: eligibility is now evaluated at query time (eligibility_sql)."""
+    return 0
 
 
 # ------------------------------------------------------------ privacy: what Claude may see

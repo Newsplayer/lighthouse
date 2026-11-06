@@ -24,8 +24,9 @@ def _due(last: str | None, hours: float) -> bool:
         return True
 
 
-def tick(db_path=db.DEFAULT_DB, config_path=config.DEFAULT_CONFIG) -> None:
+def tick(db_path=None, config_path=config.DEFAULT_CONFIG) -> None:
     cfg = config.load(config_path)
+    db_path = db_path or db.app_db(cfg)
     conn = db.connect(db_path)
     try:
         every = cfg.index.check_every_hours if cfg.reader else cfg.settings.fetch_interval_hours
@@ -43,7 +44,7 @@ def tick(db_path=db.DEFAULT_DB, config_path=config.DEFAULT_CONFIG) -> None:
         conn.close()
 
 
-def start(db_path=db.DEFAULT_DB, config_path=config.DEFAULT_CONFIG) -> threading.Thread:
+def start(db_path=None, config_path=config.DEFAULT_CONFIG) -> threading.Thread:
     stop = threading.Event()
 
     def loop():

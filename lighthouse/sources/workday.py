@@ -26,6 +26,8 @@ from .base import BoardNotFound, Source, workplace
 
 PAGE = 20  # the API rejects larger pages
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
+# The same boards are also served as wdN.myworkdaysite.com/recruiting/<tenant>/<site>
+_SITE_URL = re.compile(r"(?P<dc>wd\d+)\.myworkdaysite\.com/(?:[a-z]{2}-[A-Z]{2}/)?recruiting/(?P<tenant>[\w-]+)/(?P<site>[\w-]+)", re.I)
 _SLUG = re.compile(r"^(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)/(?P<site>[\w-]+)$", re.I)
 _RESERVED_SITES = {"wday", "job", "jobs", "login", "en-us"}
 
@@ -58,7 +60,7 @@ class WorkdaySource(Source):
 
     @classmethod
     def detect(cls, url: str) -> str | None:
-        m = _URL.search(url or "")
+        m = _URL.search(url or "") or _SITE_URL.search(url or "")
         if not m or m["site"].lower() in _RESERVED_SITES:
             return None
         return f"{m['tenant'].lower()}.{m['dc'].lower()}/{m['site']}"

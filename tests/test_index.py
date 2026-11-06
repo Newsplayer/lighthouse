@@ -1,4 +1,5 @@
-"""Shared job index: the builder publishes base + delta files; readers only download and merge them."""
+"""Shared job index: the builder publishes a ready-to-use base + small deltas; readers use the base as it
+comes (no re-processing) and apply deltas with SQL. Personal data lives apart, in user.db."""
 import json
 import lzma
 import shutil
@@ -18,7 +19,8 @@ REPO = "maintainer/lighthouse"
 
 def job(eid, title="Data Analyst", board="acme", company="Acme", body=None):
     words = " ".join(f"topic{eid}x{k}" for k in range(80))   # distinct text: no accidental clustering
-    body = body if body is not None else f"<p>Build dashboards with SQL. 3+ years of experience. {words}</p>"
+    body = body if body is not None else (f"<p>Build dashboards with SQL. 3+ years of experience. {words}</p>"
+                                          "<p>Acme is an equal opportunity employer and values a diverse workforce.</p>")
     return Job("greenhouse", board, str(eid), title, company, f"Austin {eid}, TX", f"https://x/{eid}", sanitize_html(body),
                posted_at=datetime(2026, 10, 1, tzinfo=timezone.utc))
 
@@ -56,6 +58,11 @@ class Builder:
         return m
 
 
+def base_file(b):
+    found = list(b.dist.glob("base-*.db.xz"))
+    return found[0] if found else b.dist / "base-missing.db.xz"
+
+
 def unpacked(path, tmp_path):
     out = tmp_path / (path.name + ".db")
     with lzma.open(path) as f, open(out, "wb") as o:
@@ -65,7 +72,7 @@ def unpacked(path, tmp_path):
 
 def reader(tmp_path):
     cfg = config.load(write_cfg(tmp_path, "reader", REPO))
-    return db.connect(tmp_path / "reader.db"), cfg
+    return db.connect(db.app_db(cfg, tmp_path / "data")), cfg
 
 
 def test_export_is_whitelisted_and_compact(tmp_path):
@@ -81,77 +88,100 @@ def test_export_is_whitelisted_and_compact(tmp_path):
     conn.commit()
     conn.close()
     m = b.export()
-    assert m["base"]["rows"] == 2 and m["delta"] is None and (b.dist / snapshot.BASE).exists()
-    path = unpacked(b.dist / snapshot.BASE, tmp_path)
+    assert m["base"]["rows"] == 2 and m["deltas"] == [] and (base_file(b)).exists()
+    path = unpacked(base_file(b), tmp_path)
     assert b"jane@example.com" not in path.read_bytes()
     c = sqlite3.connect(path)
-    for t in ("marks", "fit", "api_usage", "claude_batches", "meta", "sponsor_match"):
-        assert c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] == 0, t
-    assert c.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NOT NULL OR mark IS NOT NULL OR elig IS NOT NULL").fetchone()[0] == 0
-    assert all(isinstance(r[0], str) for r in c.execute("SELECT html FROM job_content"))   # plain text, compressed as a whole
+    tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not tables & {"marks", "fit", "api_usage", "claude_batches", "meta", "sponsor_match", "claude_extractions"}
+    cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
+    assert not cols & {"minhash", "minhash_of", "elig", "elig_reasons"}
+    assert c.execute("SELECT COUNT(*) FROM jobs WHERE mark IS NOT NULL").fetchone()[0] == 0
+    assert all(isinstance(r[0], bytes) for r in c.execute("SELECT html FROM job_content"))   # compressed per row...
+    assert c.execute("SELECT COUNT(*) FROM zdict").fetchone()[0] == 1                       # ...against one dictionary
+    # ready to use: search index and list indexes are already in the file
+    assert "jobs_fts" in tables and c.execute("SELECT COUNT(*) FROM jobs WHERE fts_rowid IS NOT NULL").fetchone()[0] == 2
+    assert c.execute("SELECT COUNT(*) FROM jobs_fts WHERE jobs_fts MATCH '\"dashboards\"*'").fetchone()[0] == 2
+    assert c.execute("SELECT 1 FROM sqlite_master WHERE name='idx_canon_eff'").fetchone()
+    assert c.execute("PRAGMA application_id").fetchone()[0] == db.INDEX_APP_ID
 
 
-def test_base_then_cumulative_deltas(tmp_path):
+def test_base_then_a_chain_of_deltas(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(i) for i in range(1, 6)])
     m1 = b.export()
     assert m1["base"]["rows"] == 5
     b.ingest("acme", [job(i) for i in range(1, 5)] + [job(6, "Controller")])     # 5 closed, 6 new
     m2 = b.export()
-    assert not (b.dist / snapshot.BASE).exists(), "base must not be re-uploaded"
-    assert m2["base"] == m1["base"] and m2["delta"]["base_built_at"] == m1["base"]["built_at"]
-    assert m2["delta"]["rows"] == 2
-    m3 = b.export()   # nothing changed: the delta still carries every change since the base
-    assert m3["delta"]["rows"] == 2
+    assert not (base_file(b)).exists(), "base must not be re-uploaded"
+    d1 = m2["deltas"][0]
+    assert m2["base"] == m1["base"] and d1["base_built_at"] == d1["since"] == m1["base"]["built_at"]
+    assert d1["rows"] == 2
+    m3 = b.export()   # nothing changed: no new file, the chain stays as it was
+    assert m3["deltas"] == [d1] and not list(b.dist.glob("delta-*.db.xz"))
+    b.ingest("acme", [job(i) for i in range(1, 5)] + [job(6, "Controller"), job(7, "Auditor")])
+    m4 = b.export()   # each delta holds only what changed since the build before it
+    assert [d["rows"] for d in m4["deltas"]] == [2, 1] and m4["deltas"][1]["since"] == d1["built_at"]
     b.published = tmp_path / "missing.json"   # published index doesn't match the builder: start over
-    assert b.export()["delta"] is None and (b.dist / snapshot.BASE).exists()
-    assert b.export(full=True)["delta"] is None
+    assert b.export()["deltas"] == [] and (base_file(b)).exists()
+    assert b.export(full=True)["deltas"] == []
 
 
 def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1), job(2, "Accountant"), job(3, "Data Engineer")])
     m1 = b.export()
-    base = b.dist / snapshot.BASE
+    base = base_file(b)
     conn, cfg = reader(tmp_path)
-    assert snapshot.import_file(conn, cfg, base, full=True)["new"] == 3
-    assert db.list_jobs(conn, db.Filters(q="dashboards"))[1] == 3       # search index built locally
+    assert snapshot.import_file(conn, cfg, base, full=True)["postings"] == 3
+    assert db.list_jobs(conn, db.Filters(q="dashboards"))[1] == 3       # search index came with the file
     uid = conn.execute("SELECT uid FROM jobs WHERE title='Data Analyst'").fetchone()[0]
     db.set_mark(conn, uid, "saved")
     ch = conn.execute("SELECT content_hash FROM jobs WHERE uid=?", (uid,)).fetchone()[0]
-    conn.execute("UPDATE extractions SET method='claude', data=? WHERE content_hash=?",
-                 (json.dumps({"yoe_min": {"value": 9}}), ch))
+    conn.execute("INSERT INTO claude_extractions(content_hash, data, model, at) VALUES (?, ?, 'm', 'x')",
+                 (ch, json.dumps({"yoe_min": {"value": 9}})))
     conn.commit()
     from lighthouse import extract
-    extract.derive(conn, ["acme"])   # what the app does after a Claude extraction
+    extract.derive_claude(conn)   # what the app does after a Claude extraction
+    assert conn.execute("SELECT name FROM pragma_database_list WHERE name='idx'").fetchone()   # two files
     b.ingest("acme", [job(1), job(2, "Accountant"), job(4, "Controller")])
     m2 = b.export()
-    stats = snapshot.import_file(conn, cfg, b.dist / snapshot.DELTA, full=False)
+    stats = snapshot.import_file(conn, cfg, next(b.dist.glob('delta-*.db.xz')), full=False)
     assert stats["postings"] == 2 and stats["new"] == 1
     assert conn.execute("SELECT active FROM jobs WHERE title='Data Engineer'").fetchone()[0] == 0
     assert conn.execute("SELECT mark FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == db.MARK_RANK["saved"]
-    assert conn.execute("SELECT method FROM extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "claude"
+    assert conn.execute("SELECT COUNT(*) FROM claude_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == 1
     assert conn.execute("SELECT yoe_min FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == 9   # your Claude result wins
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active=1").fetchone()[0] == 3
-    snapshot.import_file(conn, cfg, base, full=True)   # a base overwrites every row: your result is re-applied
+    assert db.list_jobs(conn, db.Filters(q="Controller"))[1] == 1       # delta rows are searchable
+    assert db.list_jobs(conn, db.Filters(q="Data Engineer"))[1] == 0    # closed ones drop out
+    snapshot.import_file(conn, cfg, base, full=True)   # a new base replaces the index: your layer is re-applied
     assert conn.execute("SELECT yoe_min FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == 9
+    assert conn.execute("SELECT mark FROM jobs WHERE uid=?", (uid,)).fetchone()[0] == db.MARK_RANK["saved"]
+    data = tmp_path / "data"
+    assert len(list((data / "index").glob("index-2*.db"))) == 1   # the replaced index file is gone
 
 
-def test_tampered_index_is_cleaned_on_import(tmp_path):
+def test_tampered_index_is_harmless_when_shown(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1)])
     b.export()
-    path = unpacked(b.dist / snapshot.BASE, tmp_path)
+    path = unpacked(base_file(b), tmp_path)
     c = sqlite3.connect(path)
-    c.execute("UPDATE job_content SET html = '<p>Hi</p><script>steal()</script><img src=x onerror=alert(1)>'")
+    c.execute("UPDATE job_content SET html = ?", (db.pack('<p>Hi</p><script>steal()</script><img src=x onerror=alert(1)>'),))
     c.execute("UPDATE jobs SET url = 'javascript:alert(1)'")
     c.commit()
     c.close()
     conn, cfg = reader(tmp_path)
     snapshot.import_file(conn, cfg, path)
-    html = db.unpack(conn.execute("SELECT html FROM job_content").fetchone()[0])
-    assert html == "<p>Hi</p>"
-    assert conn.execute("SELECT url FROM jobs").fetchone()[0] == ""
+    uid = conn.execute("SELECT uid FROM jobs").fetchone()[0]
+    conn.close()
+    from lighthouse.web import create_app
+    app = create_app(db_path=tmp_path / "data" / "user.db", config_path=write_cfg(tmp_path, "reader", REPO))
+    client = app.test_client()
+    page = client.get(f"/job/{uid}").get_data(as_text=True)
+    assert "<p>Hi</p>" in page and "steal()" not in page and "onerror" not in page and "javascript:" not in page
+    assert "javascript:" not in client.get("/").get_data(as_text=True)
 
 
 def test_new_base_removes_dropped_boards(tmp_path):
@@ -160,7 +190,7 @@ def test_new_base_removes_dropped_boards(tmp_path):
     b.ingest("beta", [job(7, board="beta", company="Beta")])
     b.export()
     conn, cfg = reader(tmp_path)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE)
+    snapshot.import_file(conn, cfg, base_file(b))
     assert conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0] == 2
     bc = db.connect(b.path)   # maintainer removes the beta board
     bc.execute("DELETE FROM boards WHERE slug='beta'")
@@ -168,9 +198,9 @@ def test_new_base_removes_dropped_boards(tmp_path):
     bc.commit()
     bc.close()
     b.export(full=True)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE, full=True)
+    snapshot.import_file(conn, cfg, base_file(b), full=True)
     assert [r[0] for r in conn.execute("SELECT slug FROM boards")] == ["acme"]
-    assert conn.execute("SELECT active FROM jobs WHERE source_board='beta'").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE source_board='beta'").fetchone()[0] == 0
 
 
 def test_builder_applies_board_list_and_closes_switched_off_boards(tmp_path):
@@ -224,6 +254,10 @@ class GitHubFake:
         return r
 
 
+def kinds(gh):
+    return [n.split("-")[0] for n in downloads(gh)]
+
+
 def downloads(gh):
     return [u.rsplit("/", 1)[1] for u in gh.calls if "githubusercontent" in u and not u.endswith(".json")]
 
@@ -238,22 +272,24 @@ def test_sync_downloads_base_once_then_only_deltas(tmp_path):
     b.export()
     gh = GitHubFake([first, b.dist])
     conn, cfg = reader(tmp_path)
-    r = snapshot.sync(conn, cfg, gh, tmp_path)
-    assert r["error"] is None and downloads(gh) == ["base.db.xz", "delta.db.xz"]
+    data = tmp_path / "data"
+    r = snapshot.sync(conn, cfg, gh)
+    assert r["error"] is None and kinds(gh) == ["base", "delta"]
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active=1").fetchone()[0] == 11
     gh.calls.clear()
-    snapshot.sync(conn, cfg, gh, tmp_path)       # nothing new: only the manifest is read
+    snapshot.sync(conn, cfg, gh)       # nothing new: only the manifest is read
     assert downloads(gh) == []
     b.ingest("acme", ten[1:] + [job(11, "Controller"), job(12, "Auditor")])   # 1 closed, 12 new
     b.export()
     gh.publish(b.dist)
     gh.calls.clear()
-    snapshot.sync(conn, cfg, gh, tmp_path)
-    assert downloads(gh) == ["delta.db.xz"]
+    snapshot.sync(conn, cfg, gh)
+    assert kinds(gh) == ["delta"]
     active = {r[0] for r in conn.execute("SELECT external_id FROM jobs WHERE active=1")}
     assert active == {str(i) for i in range(2, 13)}
-    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["delta"]["built_at"]
-    assert not list(tmp_path.glob("index-*"))   # temp files cleaned up
+    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["deltas"][-1]["built_at"]
+    assert not list((data / "index").glob("download-*"))   # temp files cleaned up
+    assert db.list_jobs(conn, db.Filters(q="Auditor"))[1] == 1
 
 
 @pytest.mark.parametrize("problem", ["checksum", "evil_redirect", "newer_schema", "not_published"])
@@ -262,7 +298,7 @@ def test_sync_failure_keeps_existing_jobs(tmp_path, problem):
     b.ingest("acme", [job(1)])
     b.export()
     conn, cfg = reader(tmp_path)
-    snapshot.import_file(conn, cfg, b.dist / snapshot.BASE)
+    snapshot.import_file(conn, cfg, base_file(b))
     gh = GitHubFake([b.dist], file_host="evil.example.com" if problem == "evil_redirect" else
                     "release-assets.githubusercontent.com")
     m = json.loads(gh.files["manifest.json"])
@@ -270,11 +306,11 @@ def test_sync_failure_keeps_existing_jobs(tmp_path, problem):
     if problem == "checksum":
         m["base"]["sha256"] = "0" * 64
     if problem == "newer_schema":
-        m["schema"] += 1
+        m["index_schema"] += 1
     gh.files["manifest.json"] = json.dumps(m).encode()
     if problem == "not_published":
         gh.files.clear()
-    r = snapshot.sync(conn, cfg, gh, tmp_path)
+    r = snapshot.sync(conn, cfg, gh)
     assert r["error"]
     if problem == "newer_schema":
         assert "newer Lighthouse" in r["error"]
@@ -313,3 +349,19 @@ def test_sources_page_is_read_only_for_readers(tmp_path):
     assert "Suggest a board" in html and f"github.com/{REPO}/issues/new" in html and "Add boards" not in html
     assert "Check for new jobs" in html
     assert client.post("/sources/add", data={"csrf": app.config["CSRF"], "urls": "https://jobs.lever.co/x"}).status_code == 403
+
+
+def test_builder_can_restart_from_the_published_base(tmp_path):
+    b = Builder(tmp_path)
+    b.ingest("acme", [job(1), job(2, "Accountant")])
+    b.export()
+    fresh = tmp_path / "fresh.db"
+    assert snapshot.seed_builder(base_file(b), fresh) == 2
+    conn = db.connect(fresh)
+    assert db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")   # stored compressed again
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 2
+    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, "Accountant"), job(3, "Controller")])
+    fetch.postprocess(conn, b.cfg)
+    conn.close()
+    m = snapshot.export(fresh, tmp_path / "again", full=True)
+    assert m["base"]["rows"] == 3

@@ -19,7 +19,8 @@ import re
 from .models import utcnow
 from .sanitize import html_to_text
 
-FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline")
+FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
+          "skills", "employment")
 
 _PREFERRED = re.compile(r"\b(prefer|preferred|nice to have|nice-to-have|bonus|a plus|plus if|ideally|desirable)\b", re.I)
 
@@ -258,6 +259,14 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
     mm = _first(PIPELINE_LANGUAGE, text, _spans(text, low, _PIPELINE_KEYS, 50, 70))
     if mm:
         out["pipeline"] = _f(mm.group(0), _line(text, mm.start(), mm.end()))
+
+    from . import classify
+    found = classify.skills(text)
+    if found:
+        out["skills"] = _f(found)
+    emp = classify.employment_from_text(text)
+    if emp:
+        out["employment"] = _f(emp)
     return out
 
 
@@ -285,54 +294,86 @@ def ensure_rules(conn, company_keys) -> int:
 _ANNUAL = {"year": 1, "month": 12, "week": 52, "day": 260, "hour": 2080}
 
 
+def interval_of(per: str | None) -> str:
+    """How the posting states pay: 'hour' or 'year' (week/month/day shown as yearly)."""
+    return "hour" if per == "hour" else "year"
+
+
 def _annual(v, per):
     return v * _ANNUAL.get(per or "year", 1) if v is not None else None
+
+
+_DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
+       j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
+       j.employment_type, COALESCE(ce.data, e.data) AS data, CASE WHEN ce.data IS NOT NULL THEN 'claude' ELSE e.method END AS method
+FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
+LEFT JOIN claude_extractions ce ON ce.content_hash = j.content_hash"""
 
 
 def derive(conn, company_keys) -> None:
     """Combine ATS structure + extraction (+ title level, + location countries) into the indexed
     filter columns on jobs. Pure lookups and string checks: no description parsing here."""
-    from . import geo
     for ck in company_keys:
-        rows = conn.execute(
-            """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency, j.salary_interval,
-                      j.content_hash, j.derived_of, j.cluster_locations, j.location, e.data, e.method
-               FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
-               WHERE j.company_key=? AND j.active=1""", (ck,)).fetchall()
-        with conn:
-            for r in rows:
-                key = (f"{r['content_hash']}:{r['method']}:{r['workplace']}:{r['salary_min']}:{r['salary_max']}:"
-                       f"{r['salary_interval']}:{r['title']}:{r['cluster_locations']}")
-                if key == r["derived_of"]:
-                    continue
-                d = json.loads(r["data"]) if r["data"] else {}
-                val = lambda k: (d.get(k) or {}).get("value")
-                sal = val("salary") or {}
-                if r["salary_min"] is not None or r["salary_max"] is not None:
-                    smin, smax, cur, per = r["salary_min"], r["salary_max"], r["salary_currency"], r["salary_interval"]
-                else:
-                    smin, smax, cur, per = sal.get("min"), sal.get("max"), sal.get("currency"), sal.get("interval")
-                smin, smax = _annual(smin, per), _annual(smax, per)
-                if smax is None:
-                    smax = smin
-                if smax is not None and smax < 10000:  # implausible as annual pay: treat as unknown
-                    smin = smax = cur = None
-                cit = val("citizenship")
-                yoe = val("yoe_min")
-                ysrc = "preferred" if (d.get("yoe_min") or {}).get("preferred") else "stated"
-                if yoe is None:
-                    yoe = yoe_from_title(r["title"])
-                    ysrc = "title" if yoe is not None else None
-                locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
-                conn.execute(
-                    """UPDATE jobs SET workplace_eff=?, pay_min_annual=?, pay_max_annual=?, pay_currency=?,
-                           yoe_min=?, yoe_source=?, visa=?, clearance=?, citizenship=?, degree=?, countries=?,
-                           derived_of=? WHERE uid=?""",
-                    (r["workplace"] or val("workplace"), smin, smax, cur, yoe, ysrc, val("visa"), val("clearance"),
-                     None if cit is None else int(bool(cit)), val("degree"), geo.encode(geo.countries_of(locs)),
-                     key, r["uid"]))
+        _derive_rows(conn, conn.execute(_DERIVE_SELECT + " WHERE j.company_key=? AND j.active=1", (ck,)).fetchall())
+
+
+def derive_claude(conn) -> int:
+    """Reader: re-apply your own Claude extractions on top of the job index (only those rows differ)."""
+    rows = conn.execute(_DERIVE_SELECT + " WHERE j.active=1 AND ce.data IS NOT NULL").fetchall()
+    _derive_rows(conn, rows)
+    return len(rows)
+
+
+def _derive_rows(conn, rows) -> None:
+    from . import classify, geo
+    with conn:
+        for r in rows:
+            key = (f"{classify.DERIVE_VERSION}:{r['content_hash']}:{r['method']}:{r['workplace']}:{r['salary_min']}:"
+                   f"{r['salary_max']}:{r['salary_interval']}:{r['title']}:{r['cluster_locations']}:"
+                   f"{r['departments']}:{r['employment_type']}")
+            if key == r["derived_of"]:
+                continue
+            d = json.loads(r["data"]) if r["data"] else {}
+            val = lambda k: (d.get(k) or {}).get("value")
+            sal = val("salary") or {}
+            if r["salary_min"] is not None or r["salary_max"] is not None:
+                smin, smax, cur, per = r["salary_min"], r["salary_max"], r["salary_currency"], r["salary_interval"]
+            else:
+                smin, smax, cur, per = sal.get("min"), sal.get("max"), sal.get("currency"), sal.get("interval")
+            smin, smax = _annual(smin, per), _annual(smax, per)
+            if smax is None:
+                smax = smin
+            if smax is not None and smax < 10000:  # implausible as annual pay: treat as unknown
+                smin = smax = cur = per = None
+            cit = val("citizenship")
+            yoe = val("yoe_min")
+            ysrc = "preferred" if (d.get("yoe_min") or {}).get("preferred") else "stated"
+            if yoe is None:
+                yoe = yoe_from_title(r["title"])
+                ysrc = "title" if yoe is not None else None
+            locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
+            stated = yoe if ysrc == "stated" else None
+            conn.execute(
+                """UPDATE jobs SET workplace_eff=?, pay_min_annual=?, pay_max_annual=?, pay_currency=?,
+                       pay_interval=?, yoe_min=?, yoe_source=?, visa=?, clearance=?, citizenship=?, degree=?,
+                       countries=?, job_function=?, seniority=?, emp_type=?, skills=?, derived_of=? WHERE uid=?""",
+                (r["workplace"] or val("workplace"), smin, smax, cur, interval_of(per) if smax else None, yoe, ysrc,
+                 val("visa"), val("clearance"), None if cit is None else int(bool(cit)), val("degree"),
+                 geo.encode(geo.countries_of(locs)),
+                 classify.job_function(r["title"], r["departments"] or ""),
+                 classify.seniority(r["title"], stated, ysrc),
+                 classify.employment_type(r["employment_type"], r["title"], val("employment")),
+                 classify.encode_skills(val("skills") or []), key, r["uid"]))
 
 
 def get(conn, content_hash: str) -> tuple[dict, str | None]:
-    r = conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
-    return (json.loads(r["data"]), r["method"]) if r else ({}, None)
+    """Your Claude extraction if you have one, else the free rule-based one."""
+    r = conn.execute("SELECT data, 'claude' AS method FROM claude_extractions WHERE content_hash=?",
+                     (content_hash,)).fetchone()
+    r = r or conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
+    if not r:
+        return {}, None
+    data = json.loads(r["data"]) or {}
+    for f in FIELDS:                 # the published index leaves out fields a posting doesn't mention
+        data.setdefault(f, {"value": None, "evidence": None})
+    return data, r["method"]

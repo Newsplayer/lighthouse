@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 
-from . import __version__, config, db, extract, sponsors
+from . import __version__, classify, config, db, extract, ghost, sponsors
 from . import profile as profile_mod
 from .sanitize import html_to_text
 
@@ -32,6 +32,11 @@ TOOLS = [
          "include_ghosts": {"type": "boolean", "default": False},
          "min_years_asked": {"type": "integer"}, "max_years_asked": {"type": "integer"},
          "include_unstated_years": {"type": "boolean", "default": True},
+         "function": {"type": "string", "enum": classify.FUNCTION_NAMES},
+         "seniority": {"type": "string", "enum": classify.SENIORITY},
+         "employment_type": {"type": "string", "enum": classify.EMP_TYPES},
+         "skills": {"type": "array", "items": {"type": "string"},
+                    "description": "Each must be mentioned, e.g. [\"python\", \"sql\"] (lowercase)"},
          "unjudged_only": {"type": "boolean", "default": False,
                            "description": "Only roles without a fit verdict for the current profile"},
          "limit": {"type": "integer", "default": 20}, "offset": {"type": "integer", "default": 0}}}},
@@ -65,9 +70,11 @@ def _row(r) -> dict:
             "locations": json.loads(r["cluster_locations"] or "[]"), "workplace": r["workplace_eff"],
             "pay_annual": [r["pay_min_annual"], r["pay_max_annual"]] if r["pay_max_annual"] else None,
             "pay_currency": r["pay_currency"], "first_seen": r["effective_first_seen"],
-            "ghost_reasons": json.loads(r["ghost_reasons"] or "[]"),
+            "ghost_reasons": ghost.labels(r["ghost_reasons"] or "[]"),
             "years_asked": r["yoe_min"], "years_asked_source": r["yoe_source"],
-            "ineligible_because": json.loads(r["elig_reasons"] or "[]"), "fit_tier": r["fit_tier"], "url": r["url"]}
+            "ineligible_because": json.loads(r["elig_reasons"] or "[]"), "fit_tier": r["fit_tier"], "url": r["url"],
+            "function": r["job_function"], "seniority": r["seniority"], "employment_type": r["emp_type"],
+            "skills": classify.decode_skills(r["skills"])}
 
 
 def call(conn, cfg, name: str, args: dict):
@@ -79,20 +86,24 @@ def call(conn, cfg, name: str, args: dict):
                        yoe_lo=args.get("min_years_asked"), yoe_hi=args.get("max_years_asked"),
                        yoe_unknown=args.get("include_unstated_years", True),
                        countries=tuple(prof.get("countries") or ()),
-                       ghost_hide_at=cfg.settings.ghost_hide_signals, profile_hash=ph)
+                       ghost_hide_at=cfg.settings.ghost_hide_signals, profile_hash=ph,
+                       profile=prof, yoe_slack=cfg.settings.yoe_slack_years,
+                       function=args.get("function", ""), seniority=args.get("seniority", ""),
+                       emp_type=args.get("employment_type", ""),
+                       skills=tuple(s for s in args.get("skills") or [] if s))
         limit = max(1, min(int(args.get("limit", 20)), 100))
         rows, total = db.list_jobs(conn, f, page=1 + int(args.get("offset", 0)) // limit, per_page=limit)
         items = [_row(r) for r in rows if not (args.get("unjudged_only") and r["fit_tier"])]
         return {"total": total, "jobs": items}
     if name == "get_posting":
-        r = db.get_job(conn, args["uid"])
+        r = db.get_job(conn, args["uid"], prof, cfg.settings.yoe_slack_years)
         if not r:
             raise ValueError("unknown uid")
         data, method = extract.get(conn, r["content_hash"])
         return {"uid": r["uid"], "title": r["title"], "company": r["company"], "url": r["url"],
                 "locations": json.loads(r["cluster_locations"] or "[]"), "active": bool(r["active"]),
                 "first_seen": r["effective_first_seen"], "reposts": r["repost_count"],
-                "ghost_reasons": json.loads(r["ghost_reasons"] or "[]"),
+                "ghost_reasons": ghost.labels(r["ghost_reasons"] or "[]"),
                 "ineligible_because": json.loads(r["elig_reasons"] or "[]"),
                 "extracted": {k: v for k, v in data.items()}, "extraction_method": method,
                 "sponsorship_history": {k: v for k, v in sponsors.history(conn, r["company_key"]).items()
@@ -143,9 +154,9 @@ def handle(conn, cfg, msg: dict) -> dict | None:
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32603, "message": str(exc)}}
 
 
-def serve(db_path=db.DEFAULT_DB) -> None:
-    conn = db.connect(db_path)
+def serve(db_path=None) -> None:
     cfg = config.load()
+    conn = db.connect(db_path or db.app_db(cfg))
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -8,8 +8,15 @@ from __future__ import annotations
 
 import re
 
+from .amazon import AmazonSource
 from .ashby import AshbySource
 from .base import BoardNotFound, Source, SourceError
+from .eightfold import EightfoldSource
+from .jibe import JibeSource
+from .jsonld import JsonLdSource
+from .oracle import OracleSource
+from .phenom import PhenomSource
+from .successfactors import SuccessFactorsSource
 from .greenhouse import GreenhouseSource
 from .lever import LeverSource
 from .recruitee import RecruiteeSource
@@ -19,7 +26,8 @@ from .workday import WorkdaySource
 
 SOURCES: dict[str, type[Source]] = {cls.name: cls for cls in (
     GreenhouseSource, LeverSource, AshbySource, WorkableSource, SmartRecruitersSource, RecruiteeSource,
-    WorkdaySource,
+    WorkdaySource, OracleSource, SuccessFactorsSource, PhenomSource, JibeSource, EightfoldSource, AmazonSource,
+    JsonLdSource,
 )}
 
 # Embedded-board patterns we look for when a careers page is on the company's own domain.
@@ -30,7 +38,9 @@ _EMBED_HINTS = (
     ("workable", r"apply\.workable\.com/([\w-]+)"),
     ("smartrecruiters", r"(?:jobs|careers)\.smartrecruiters\.com/([\w-]+)"),
     ("recruitee", r"([\w-]+)\.recruitee\.com"),
-    ("workday", r"((?:https?://)?[\w-]+\.wd\d+\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?[\w-]+)"),
+    ("workday", r"((?:https?://)?(?:[\w-]+\.wd\d+\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?[\w-]+|"
+                r"wd\d+\.myworkdaysite\.com/(?:[a-z]{2}-[A-Z]{2}/)?recruiting/[\w-]+/[\w-]+))"),
+    ("oracle", r"((?:https?://)?[\w-]+\.fa(?:\.[\w-]+)*\.oraclecloud\.com/hcmUI/CandidateExperience/[a-z]{2}(?:-[A-Za-z]{2})?/sites/[\w-]+)"),
 )
 
 
@@ -52,8 +62,8 @@ def detect_in_html(html: str) -> tuple[str, str] | None:
     for name, pat in _EMBED_HINTS:
         for m in re.finditer(pat, html or "", flags=re.I):
             slug = m.group(1)
-            if name == "workday":
-                slug = SOURCES["workday"].detect(slug)
+            if name in ("workday", "oracle"):
+                slug = SOURCES[name].detect(slug)
                 if slug:
                     return name, slug
                 continue

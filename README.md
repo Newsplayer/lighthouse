@@ -1,8 +1,9 @@
 # Lighthouse
 
-A local job board. Postings come straight from ~500 employers' own applicant-tracking systems,
-with duplicates and reposts collapsed, likely ghost jobs scored, and roles you can't apply to
-filtered out. Optionally, Claude tells you how well each remaining role fits you, with reasons.
+A local job board. Postings come straight from employers' own careers sites: about 700 of the
+largest US employers (the Fortune 500 plus major tech, finance, consulting and health employers)
+and ~500 more boards, with duplicates and reposts collapsed, likely ghost jobs scored, and roles you
+can't apply to filtered out. Optionally, Claude tells you how well each remaining role fits you.
 
 The app runs on your computer and your data stays there. The job data comes from a shared,
 read-only **job index** that a scheduled GitHub Action rebuilds every 6 hours; your copy just
@@ -19,7 +20,7 @@ Needs Python 3.11+ ([python.org](https://www.python.org/downloads/)). Download t
 | macOS | Double-click `start-mac.command` (first time: right-click → Open) |
 | Linux | `./start.sh` |
 
-The first start sets everything up and downloads the job index (a minute or two). After that,
+The first start sets everything up and downloads the job index (a few hundred MB: a few minutes). After that,
 startup takes a couple of seconds and only the changes are downloaded (usually a few MB).
 Your browser opens to the site; close the terminal window to stop it.
 
@@ -30,7 +31,9 @@ Then:
    (see [Claude, two ways](#claude-two-ways)) to get fit tiers.
 
 **Updating Lighthouse:** download the latest version and replace the folder (keep `data/`, which
-holds your profile, marks and verdicts). If the job index ever needs a newer version, the
+holds your profile, marks and verdicts in `data/user.db`). Coming from 0.5 or earlier, your data is
+moved into `user.db` automatically on first start. The old `data/lighthouse.db` is deleted once
+the new index has downloaded. If the job index ever needs a newer version, the
 **Sources** page says so.
 
 ### Manual setup
@@ -46,24 +49,32 @@ python -m lighthouse start
 
 | Step | Where it runs | Who can change it |
 |---|---|---|
-| Fetch ~500 employer boards, de-duplicate, extract fields, score ghosts | GitHub Action, every 6 hours | the maintainer only |
-| Publish the result as files on the repo's `job-index` release | GitHub | the Action only |
-| Download the index; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
+| Find each listed company's job board from its careers page | GitHub Action (re-checked every 3–14 days) | the maintainer only |
+| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 6 hours | the maintainer only |
+| Publish a ready-to-use database on the repo's `job-index` release | GitHub | the Action only |
+| Use that database as downloaded; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
 
-Your copy never contacts job boards and never changes job data. It downloads a full index file
-about once a week and a small "what changed" file after that. Every file is checked against its
-published SHA-256, and descriptions and links are re-checked on import, so a damaged or tampered
-file can't put scripts into your site. If an update fails, the jobs you already have stay and the
-**Sources** page says why.
+Your copy never contacts job boards and does no processing of its own. About once a week it
+downloads a full index, already de-duplicated, analysed and search-indexed, and opens it as is
+(a few seconds). After that it applies a small "what changed" file every few hours. Your own data
+(profile, marks, Claude verdicts) lives in a separate file, `data/user.db`, which a new index
+never touches. Every download is checked against its published SHA-256. A description and its
+links are sanitized again when a page shows them, so a damaged or tampered file can't put scripts
+into your site. If an update fails, the jobs you already have stay and the **Sources** page says why.
 
-**Boards covered:** `config/boards/top-companies.csv`, 926 direct employer boards, each confirmed
-against its live API on 2026-11-03. That's large public companies (NVIDIA, Salesforce, Adobe, Intel,
-Capital One, Citi, Visa, J&J, P&G, Northrop Grumman, RTX, ServiceNow, AbbVie...), well-known private
-companies (OpenAI, Anthropic, Stripe, Databricks, SpaceX, Anduril, Ramp...), trading firms,
-consultancies and growth-stage startups. About 510 are in the index: every non-Workday board with
-25+ open roles plus the 125 most-cited Workday employers. Supported systems: Greenhouse, Lever,
-Ashby, Workable, SmartRecruiters, Recruitee and Workday. Clearly hourly titles (warehouse associate,
-cashier, delivery driver...) are left out.
+**Companies covered:**
+- `config/companies.csv`: about 700 large employers by name and careers page. The Action works out
+  which careers system each one uses and reads it.
+- `config/boards/top-companies.csv`: 926 direct employer boards (about 510 switched on), mostly
+  tech companies, startups and trading firms.
+
+Supported careers systems: Workday, Oracle Recruiting, SAP SuccessFactors, Phenom, iCIMS (Jibe
+sites), Eightfold, Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee and Amazon. Also
+any careers site whose job pages carry standard schema.org JobPosting data (the format Google for
+Jobs reads). The **Sources** page lists every company in the companies list. For each it shows
+whether it's covered, which system it uses, how many open roles it has, and, if it isn't covered,
+why (for example, a careers system Lighthouse can't read yet). Clearly hourly titles (warehouse
+associate, cashier, delivery driver...) are left out.
 
 **Missing a company?** On the **Sources** page, click **Suggest a board**. It opens a pre-filled
 GitHub issue; once the maintainer adds it, it shows up for everyone after the next build.
@@ -97,6 +108,13 @@ as it did before v0.5.
   met, missing or unclear. No 0–100 scores.
 - **Sponsorship history (optional).** Import DOL LCA and USCIS H-1B Employer Data Hub files
   on the **Sponsorship** page; each job shows the employer's filings and approvals, kept separate.
+- **Filters from the description.** Job function (Software Engineering, Data & Analytics, Finance...),
+  seniority (intern to executive), employment type, skills the posting mentions (python, sql, aws,
+  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language. All of it is
+  worked out by free rules in the GitHub Action, so filtering needs no API and no work on your
+  computer.
+- **Every apply link.** When the same role is listed on several sites, the job page links each
+  open copy, with tracking parameters removed.
 
 ## Claude, two ways
 
@@ -125,12 +143,13 @@ judged yet and save a verdict for each". Tools: `search_jobs`, `get_posting`, `g
 No Lighthouse server, no telemetry. Outbound requests are limited in code to the job index's release
 files on `github.com` (served from `*.githubusercontent.com`) and, if you use Claude with a key,
 `api.anthropic.com`; see the **Network** page. Your copy never contacts job boards. Nothing is
-uploaded anywhere: your profile, marks and verdicts live only in `data/lighthouse.db`. The site only answers on 127.0.0.1, rejects foreign
-Host headers, and requires a per-session token on every form.
+uploaded anywhere: your profile, marks and verdicts live only in `data/user.db`. The site only
+answers on 127.0.0.1, rejects foreign Host headers, and requires a per-session token on every form.
 
 ## Speed: doing less work, not just faster work
 
-On your computer the work is a download, a merge and fast local queries. The rest of this table
+On your computer the work is a download and fast local queries: the index arrives ready to
+search, and eligibility is worked out inside each query, only for the rows you're looking at. The rest of this table
 is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.md](MAINTAINING.md)).
 
 | What | How |
@@ -139,7 +158,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Unchanged postings | Each raw description is hashed; only new/edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
 | Countries | The index can be limited to some countries (`LIGHTHOUSE_COUNTRIES`); postings located only elsewhere are skipped before any detail download. Your Profile countries filter the list on top |
 | Hourly roles | Skipped before any per-posting call |
-| Shared index | The fetching and analysis run once, on GitHub, for everyone. Your computer downloads a full file weekly (~1 KB per posting, compressed as a whole: 3× smaller than per-description compression) and a small change file after that |
+| Shared index | The fetching, analysis and search indexing run once, on GitHub, for everyone. Your computer downloads a ready-to-use file weekly and opens it as is (a few seconds), then applies a small change file every few hours |
+| Descriptions on disk | Each is compressed against one shared dictionary of common posting text: about 3× smaller than plain text, and a page still reads only the one it shows |
 | Analysis | Runs on every CPU core; field extraction only scans short windows around keywords ("year", "sponsor"…): 5× faster with identical results |
 | Search | The job list reads one table through partial indexes (marks and filter fields are stored on each row), counts stop at 5,000, dropdown lists are cached until data changes; page loads at 52k postings 17–145 ms (were 240–330 ms) |
 
@@ -152,7 +172,7 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | ~900 boards | Board lists in `config/boards/*.csv`; 16 parallel workers with a per-host limit; dead boards switched off automatically |
 | Duplicates | One-pass MinHash per description + LSH banding per company, so cost grows with postings, not pairs |
 | Re-runs | Only companies whose postings changed are re-clustered and re-extracted; signatures and extractions are cached by description hash |
-| The list | Cluster/filter fields are precomputed and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
+| The list | Cluster/filter fields (function, seniority, skills, pay...) are precomputed by the builder and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
 | Claude spend | Eligibility and ghost filters run first; Batch API; prompt caching; cache by (description, profile); monthly cap |
 | Storage | Descriptions stored zlib-compressed in their own table; search indexes the first 4,000 characters; descriptions of roles closed 180+ days are dropped (history kept); sponsorship data aggregated per employer-year |
 | Schema | Versioned migrations (`PRAGMA user_version`) |
@@ -162,13 +182,14 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 
 | Piece | File |
 |---|---|
+| Company list → job boards | `config/companies.csv`, `lighthouse/discover.py` |
 | ATS adapters | `lighthouse/sources/` |
 | HTTP allowlist + throttle | `lighthouse/net.py` |
 | Storage, migrations, list query | `lighthouse/db.py` |
 | Fetch + post-processing | `lighthouse/fetch.py` |
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
-| Field extraction | `lighthouse/extract.py` |
+| Field extraction; function, seniority, skills | `lighthouse/extract.py`, `lighthouse/classify.py` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |
@@ -189,7 +210,7 @@ python -m lighthouse claude extract|fit|poll [--limit N]
 python -m lighthouse key set|clear
 python -m lighthouse mcp
 python -m lighthouse index status                 # when the job index was built, what it covers
-python -m lighthouse index import [base.db.xz]    # update now, or merge a local index file
+python -m lighthouse index import [FILE.db.xz]   # update now, or merge a local index file
 python -m lighthouse index build --out dist       # what the GitHub Action runs (MAINTAINING.md)
 ```
 

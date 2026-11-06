@@ -66,6 +66,11 @@ class Source:
     def fetch(self, slug: str, known: dict[str, tuple[str, bool]] | None = None) -> list[Job]:
         raise NotImplementedError
 
+    def peek(self, slug: str) -> int | None:
+        """How many openings the board has, from one cheap request (None = can't tell cheaply).
+        Discovery uses it to confirm a board it inferred from a careers page."""
+        return None
+
     # -- helpers ----------------------------------------------------------
     def company_name(self, slug: str, from_payload: str | None = None) -> str:
         return self.company or from_payload or slug.replace("-", " ").replace("_", " ").title()

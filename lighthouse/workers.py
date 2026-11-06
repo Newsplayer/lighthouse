@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor
 
-RULES_VERSION = "rules-v3"   # bump when extract.rules changes so cached results are refreshed once
+RULES_VERSION = "rules-v4"   # bump when extract.rules changes so cached results are refreshed once
 PARALLEL_MIN = 300           # below this many descriptions, a pool costs more than it saves
 BATCH = 2000
 

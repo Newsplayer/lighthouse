@@ -11,9 +11,12 @@
     python -m lighthouse key set|clear      # store / remove your Anthropic API key in the OS keychain
     python -m lighthouse mcp                # MCP server (stdio) for your own Claude app
     python -m lighthouse index status       # shared job index: when it was built, what it covers
-    python -m lighthouse index import [FILE] # update now (or merge a local base.db.xz to test a build)
+    python -m lighthouse index import [FILE] # update now (or merge a local base-*.db.xz to test a build)
+    python -m lighthouse index seed base.db.xz  # builder: start from the published index (cache expired)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
                                             # what the GitHub Action runs (maintainers only)
+    python -m lighthouse discover [--only NAME] [--out FILE]
+                                            # find job boards from config/companies.csv careers pages
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ def _serve(host: str, port: int, open_browser: bool) -> None:
     from .web import create_app
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("Lighthouse only serves on this computer (127.0.0.1).")
-    conn = db.connect()
+    conn = db.connect(db.app_db())
     if not config.load().reader and fetch.needs_reprocess(conn):
         print("Upgrading your job database (one time, takes a moment)...")
         fetch.postprocess(conn)
@@ -64,13 +67,18 @@ def _index(args) -> None:
     import json
     from . import snapshot
     cfg = config.load()
+    if args.action == "seed":   # builder: start from the published base when the Action's cache is gone
+        if not args.file:
+            raise SystemExit("usage: python -m lighthouse index seed base.db.xz [--db data/builder.db]")
+        print(f"Seeded {snapshot.seed_builder(args.file, args.db or snapshot.BUILDER_DB)} postings.")
+        return
     if args.action == "build":
         m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
                            db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
                            published=args.published, full=args.full)
         print(json.dumps(m, indent=2))
         return
-    conn = db.connect()
+    conn = db.connect(db.app_db(cfg))
     if args.action == "status":
         for k, v in snapshot.status(conn, cfg).items():
             print(f"  {k:14} {v}")
@@ -86,6 +94,25 @@ def _index(args) -> None:
         raise SystemExit(f"Job index not updated: {r['error']}")
     st = snapshot.status(conn, cfg)
     print(f"Job index from {st['built_at']}: {st['jobs']} open roles from {st['boards']} boards. {r['updated'] or 'Already up to date.'}")
+
+
+def _discover(args) -> None:
+    import json
+    from . import discover, net
+    cfg_dir = config.DEFAULT_CONFIG.parent
+    companies = discover.load_companies(cfg_dir)
+    client = discover.discovery_client()
+    out = open(args.out, "w", encoding="utf-8") if args.out else None
+
+    def show(r):
+        line = discover.to_json(r)
+        print("DISCOVER " + line, flush=True)
+        if out:
+            out.write(line + "\n")
+    results = discover.run(companies, client, net.BUILDER_AGENT, workers=args.workers, only=args.only, on_result=show)
+    if out:
+        out.close()
+    print("SUMMARY " + json.dumps(discover.summary(results)))
 
 
 def main() -> None:
@@ -114,7 +141,7 @@ def main() -> None:
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     p = sub.add_parser("index", help="the shared job index")
-    p.add_argument("action", choices=["status", "import", "build"])
+    p.add_argument("action", choices=["status", "import", "build", "seed"])
     p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
     p.add_argument("--out", default="dist", help="build: output folder")
     p.add_argument("--db", default=None, help="build: builder database (default data/builder.db)")
@@ -123,6 +150,10 @@ def main() -> None:
                    help="build: description calls per SmartRecruiters/Workday board per run")
     p.add_argument("--published", default=None, help="build: the manifest.json currently published")
     p.add_argument("--full", action="store_true", help="build: write a new base file even if a delta would do")
+    p = sub.add_parser("discover", help="find job boards from the careers pages in config/companies.csv")
+    p.add_argument("--only", default=None, help="only companies whose name contains this")
+    p.add_argument("--out", default=None, help="write one JSON line per company here")
+    p.add_argument("--workers", type=int, default=16)
     args = parser.parse_args()
 
     if args.cmd == "mcp":  # stdout is the protocol channel: log to stderr only
@@ -139,13 +170,13 @@ def main() -> None:
         _serve(args.host, args.port, open_browser=not args.no_browser)
     elif args.cmd == "start":
         cfg = config.load()
-        conn = db.connect()
+        conn = db.connect(db.app_db(cfg))
         if not cfg.reader:
             db.sync_config_boards(conn, cfg.boards)
         empty = not db.stats(conn)["total"]
         conn.close()
         if empty:
-            print("First run: downloading the job index (a minute or two)..." if cfg.reader else
+            print("First run: downloading the job index (a few hundred MB; a few minutes)..." if cfg.reader else
                   "First run: pulling jobs from your boards (this takes a few seconds)...")
             for r in fetch.run() or []:
                 if r.get("error"):
@@ -162,7 +193,7 @@ def main() -> None:
         for item in args.items:
             p = Path(item)
             lines += p.read_text(encoding="utf-8").splitlines() if p.is_file() else [item]
-        conn = db.connect()
+        conn = db.connect(db.app_db(cfg))
         results = add_many(conn, lines, origin="cli", check=not args.no_check)
         for r in results:
             print(f"  ✕ {r['input']}: {r['error']}" if "error" in r else
@@ -173,19 +204,21 @@ def main() -> None:
             print("Fetching the new boards...")
             fetch.run(only=added)
     elif args.cmd == "boards":
-        conn = db.connect()
+        conn = db.connect(db.app_db())
         if not config.load().reader:
             db.sync_config_boards(conn, config.load().boards)
         for b in db.list_boards(conn):
             state = "off" if not b["enabled"] else ("error: " + b["last_error"][:60]) if b["last_error"] else "ok"
             print(f"  {b['ats']:16} {b['slug']:30} {b['job_count'] or 0:>6}  {state}")
     elif args.cmd == "reprocess":
+        if config.load().reader:
+            raise SystemExit("This copy reads the shared job index, which is processed by its GitHub Action.")
         conn = db.connect()
         fetch.postprocess(conn)
         print("Done.")
     elif args.cmd == "visa":
         from . import sponsors
-        conn = db.connect()
+        conn = db.connect(db.app_db())
         results = ([sponsors.import_file(conn, f, force=args.force) for f in args.files]
                    if args.files else sponsors.import_folder(conn))
         for r in results:
@@ -194,7 +227,7 @@ def main() -> None:
         from . import claude_api
         from . import profile as profile_mod
         cfg = config.load()
-        conn = db.connect()
+        conn = db.connect(db.app_db(cfg))
         if args.action == "poll":
             n = claude_api.poll_batches(conn, cfg)
             if n:
@@ -204,7 +237,7 @@ def main() -> None:
         if args.action == "fit":
             prof = profile_mod.load(conn)
             rows = claude_api.fit_candidates(conn, profile_mod.fit_hash(prof), None, args.limit,
-                                             cfg.settings.ghost_hide_signals)
+                                             cfg.settings.ghost_hide_signals, prof, cfg.settings.yoe_slack_years)
         else:
             rows = claude_api.extraction_candidates(conn, None, args.limit)
         print(claude_api.run(conn, cfg, args.action, rows))
@@ -212,6 +245,8 @@ def main() -> None:
             fetch.refresh_derived(conn, cfg)
     elif args.cmd == "index":
         _index(args)
+    elif args.cmd == "discover":
+        _discover(args)
     elif args.cmd == "key":
         from . import claude_api
         if args.action == "set":

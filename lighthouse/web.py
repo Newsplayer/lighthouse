@@ -18,7 +18,8 @@ from markupsafe import Markup
 from werkzeug.utils import secure_filename
 
 from . import boards as boards_mod
-from . import claude_api, config, db, extract, fetch, geo, net, sponsors
+from . import classify, claude_api, config, db, extract, fetch, geo, net, sponsors
+from .sanitize import ensure_safe
 from . import profile as profile_mod
 from .sources import SOURCES
 
@@ -26,9 +27,25 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 PER_PAGE = 50
 
 
-def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = config.DEFAULT_CONFIG,
+_TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
+
+
+def clean_url(url: str | None) -> str:
+    """Only http(s) links, with common tracking parameters removed (the posting is the same)."""
+    from urllib.parse import parse_qsl, urlencode as enc, urlsplit, urlunsplit
+    u = (url or "").strip()
+    if not u.lower().startswith(("https://", "http://")):
+        return ""
+    parts = urlsplit(u)
+    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+         if not k.lower().startswith(_TRACKING[0]) and k.lower() not in _TRACKING[1:]]
+    return urlunsplit(parts._replace(query=enc(q)))
+
+
+def create_app(db_path: Path | str | None = None, config_path: Path | str = config.DEFAULT_CONFIG,
                visa_dir: Path | None = None) -> Flask:
     app = Flask(__name__)
+    db_path = db_path or db.app_db(config.load(config_path))
     app.config["CSRF"] = secrets.token_urlsafe(32)
     app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024  # LCA spreadsheets are big
     visa_dir = Path(visa_dir or sponsors.DATA_DIR)
@@ -84,6 +101,26 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
     def fromjson(value):
         return json.loads(value) if value else []
 
+    @app.template_filter("ghosts")
+    def ghosts_filter(value):
+        from .ghost import labels
+        return labels(value or "[]")
+
+    @app.template_filter("safe_url")
+    def safe_url(value):
+        return clean_url(value)
+
+    @app.template_filter("host")
+    def host_filter(value):
+        from urllib.parse import urlsplit
+        h = (urlsplit(value or "").hostname or "").removeprefix("www.")
+        return h
+
+    @app.template_filter("skills")
+    def skills_filter(value):
+        from .classify import decode_skills
+        return decode_skills(value)
+
     @app.template_filter("money")
     def money(v, cur=None):
         if v is None:
@@ -109,7 +146,10 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
             except ValueError:
                 return None
         prof_set = profile_mod.is_set(prof)
+        skills = tuple(s.strip().lower() for s in args.get("skills", "").replace(";", ",").split(",") if s.strip())
         return db.Filters(
+            function=args.get("function", ""), seniority=args.get("seniority", ""), emp_type=args.get("emp_type", ""),
+            skills=skills[:8], profile=prof if prof_set else None, yoe_slack=settings.yoe_slack_years,
             q=args.get("q", "").strip(), company=args.get("company", ""), source=args.get("source", ""),
             location=args.get("location", "").strip(), workplace=args.get("workplace", ""),
             min_salary=num("min_salary"), yoe_lo=num("yoe_lo", int), yoe_hi=num("yoe_hi", int),
@@ -151,27 +191,39 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
                    profile_set=profile_mod.is_set(prof), settings=s, has_key=bool(claude_api.get_key()),
                    scope=prof.get("countries") or [], scope_names=[dict(geo.CHOICES).get(x, x) for x in prof.get("countries") or []],
                    new_count=db.count_jobs(c, db.Filters(view="new", since=f.since, ghost_hide_at=s.ghost_hide_signals,
-                                                         eligible_only=f.eligible_only, countries=f.countries))
-                   if f.since else 0)
+                                                         eligible_only=f.eligible_only, countries=f.countries,
+                                                         profile=f.profile, yoe_slack=f.yoe_slack))
+                   if f.since else 0,
+                   functions=classify.FUNCTION_NAMES, seniorities=classify.SENIORITY_LABEL,
+                   emp_types=classify.EMP_LABEL)
         c.close()
         return render_template("index.html", **ctx)
 
     @app.get("/job/<path:uid>")
     def job(uid):
         c = conn()
-        row = db.get_job(c, uid)
+        prof = profile_mod.load(c)
+        row = db.get_job(c, uid, prof, cfg().settings.yoe_slack_years)
         if row is None:
             c.close()
             abort(404)
-        prof = profile_mod.load(c)
         members = db.cluster_members(c, row["cluster_id"] or uid)
+        apply_links, seen = [], set()
+        for m in sorted(members, key=lambda m: (m["uid"] != uid, not m["active"])):
+            link = clean_url(m["url"])
+            if m["active"] and link and link not in seen:
+                seen.add(link)
+                apply_links.append({"url": link, "location": m["location"], "source": m["source"]})
         data, method = extract.get(c, row["content_hash"])
         fit = c.execute("SELECT * FROM fit WHERE content_hash=? AND profile_hash=?",
                         (row["content_hash"], profile_mod.fit_hash(prof))).fetchone()
         ctx = dict(job=row, members=members, events=db.events_for(c, [m["uid"] for m in members]),
                    extracted=data, method=method, fit=fit, sponsor=sponsors.history(c, row["company_key"]),
                    mark=db.mark_for_cluster(c, row["cluster_id"] or uid), settings=cfg().settings,
-                   body=Markup(row["content_html"] or ""))  # sanitized with an allow-list at ingest
+                   apply_links=apply_links, seniorities=classify.SENIORITY_LABEL, emp_types=classify.EMP_LABEL,
+                   # sanitized with an allow-list by the index builder, and again here: the index file comes
+                   # from someone else's machine, and this is the one place its HTML is rendered
+                   body=Markup(ensure_safe(row["content_html"] or "")))
         c.close()
         return render_template("job.html", **ctx)
 
@@ -207,8 +259,17 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
         show, q, ats_f = request.args.get("show", "all"), request.args.get("q", "").strip(), request.args.get("ats", "")
         rows = db.list_boards(c, show=show, q=q, ats=ats_f)
         lists = [r[0] for r in c.execute("SELECT DISTINCT list FROM boards WHERE list IS NOT NULL ORDER BY list")]
+        cov_q = request.args.get("cov", "")
+        coverage = [dict(r) for r in c.execute(
+            "SELECT company, grp, careers_url, final_url, ats, status, detail, platforms, openings FROM companies "
+            + ("WHERE status = ? " if cov_q else "") + "ORDER BY status IN ('ok', 'pinned') DESC, company COLLATE NOCASE",
+            [cov_q] if cov_q else [])] if db.has_table(c, "companies") else []
+        cov_counts = {r[0]: r[1] for r in c.execute("SELECT status, COUNT(*) FROM companies GROUP BY status")} \
+            if db.has_table(c, "companies") else {}
         ctx = dict(boards=rows, ats=SOURCES, show=show, q=q, ats_f=ats_f, counts=db.board_counts(c), lists=lists,
-                   db_mb=_db_size_mb(db_path), results=json.loads(request.args.get("r", "[]") or "[]"))
+                   db_mb=_db_size_mb(db_path, db.index_path(c, Path(db_path).parent) if db.is_reader(c) else None),
+                   results=json.loads(request.args.get("r", "[]") or "[]"),
+                   coverage=coverage, cov_counts=cov_counts, cov_q=cov_q)
         from . import snapshot
         ctx["index"] = snapshot.status(c, cfg())
         ctx["suggest"] = snapshot.suggest_url(cfg().index.repo) if cfg().reader else None
@@ -288,8 +349,7 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
             "countries": [c for c in form.getlist("countries") if c in dict(geo.CHOICES)],
         }
         c = conn()
-        profile_mod.save(c, p)
-        profile_mod.recompute(c, None, cfg().settings.yoe_slack_years, force=True)
+        profile_mod.save(c, p)   # eligibility is evaluated when the list is shown: nothing to recompute
         c.close()
         return redirect(url_for("profile_page", saved=1))
 
@@ -308,8 +368,9 @@ def create_app(db_path: Path | str = db.DEFAULT_DB, config_path: Path | str = co
             usage=c.execute("SELECT purpose, model, COUNT(*) n, SUM(cost_usd) usd FROM api_usage "
                             "WHERE at >= ? GROUP BY purpose, model",
                             (datetime.now(timezone.utc).strftime("%Y-%m-01"),)).fetchall(),
-            pending_extract=len(claude_api.extraction_candidates(c, None, 100000)),
-            pending_fit=len(claude_api.fit_candidates(c, ph, None, 100000, k.settings.ghost_hide_signals)),
+            pending_extract=claude_api.extraction_candidates(c, None, 0, count_only=True),
+            pending_fit=claude_api.fit_candidates(c, ph, None, 0, k.settings.ghost_hide_signals, prof,
+                                                  k.settings.yoe_slack_years, count_only=True),
             keyring_ok=_keyring_ok())
         c.close()
         return render_template("claude.html", **ctx)
@@ -386,10 +447,11 @@ def _keyring_ok() -> bool:
         return False
 
 
-def _db_size_mb(path) -> float:
+def _db_size_mb(path, index=None) -> float:
     total = 0
-    for suffix in ("", "-wal"):
-        p = Path(str(path) + suffix)
-        if p.exists():
-            total += p.stat().st_size
+    for base in (path, index):
+        for suffix in ("", "-wal"):
+            p = Path(str(base) + suffix) if base else None
+            if p and p.exists():
+                total += p.stat().st_size
     return round(total / 1e6, 1)

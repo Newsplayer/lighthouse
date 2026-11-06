@@ -22,6 +22,30 @@
 </section>
 {% endif %}
 
+{% if coverage or cov_q %}
+<section class="panel">
+  <h2>Large employers</h2>
+  {% set ok = (cov_counts.get('ok', 0) + cov_counts.get('pinned', 0)) %}
+  {% set total = cov_counts.values()|sum %}
+  <p>{{ ok }} of {{ total }} companies from <code>config/companies.csv</code> are read from their own careers pages.
+    The rest use a careers system Lighthouse can't read yet, or their page couldn't be opened; each row says why.</p>
+  <p class="meta">{% for st, n in cov_counts.items() %}<a href="?cov={{ st }}">{{ st.replace('_', ' ') }}: {{ n }}</a>{% if not loop.last %} · {% endif %}{% endfor %}
+    {% if cov_q %}· <a href="{{ url_for('sources_page') }}">all</a>{% endif %}</p>
+  <table class="grid">
+    <tr><th>Company</th><th>Careers page</th><th>System</th><th>Open roles</th><th>Status</th></tr>
+    {% for r in coverage %}
+    <tr class="{% if r.status not in ('ok', 'pinned') %}dim{% endif %}">
+      <td>{{ r.company }}</td>
+      <td>{% set u = (r.final_url or r.careers_url)|safe_url %}{% if u %}<a href="{{ u }}" target="_blank" rel="noopener noreferrer">{{ u|host }}</a>{% else %}—{% endif %}</td>
+      <td>{{ (ats[r.ats].label if r.ats in ats else r.ats) or ((r.platforms|fromjson)[0] if r.platforms and r.platforms != '[]' else '—') }}</td>
+      <td>{{ r.openings if r.openings is not none else '—' }}</td>
+      <td>{% if r.status in ('ok', 'pinned') %}<span class="ok">covered</span>{% else %}<span title="{{ r.detail or '' }}">{{ r.status.replace('_', ' ') }}{% if r.detail %}: {{ r.detail[:80] }}{% endif %}</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
 {% if not reader %}
 <section class="panel">
   <h2>Add boards</h2>

@@ -41,9 +41,10 @@ def signals(row, max_age_days: int, now: datetime | None = None, text: str | Non
             pipeline_phrase: str | None = None) -> list[str]:
     now = now or datetime.now(timezone.utc)
     reasons = []
-    age = _days_since(row["effective_first_seen"] or row["first_seen"], now)
+    since = row["effective_first_seen"] or row["first_seen"]
+    age = _days_since(since, now)
     if age is not None and age > max_age_days:
-        reasons.append(f"open {age} days")
+        reasons.append(f"open since {since[:10]}")   # a date, not a count: stored reasons don't change daily
     if (row["repost_count"] or 0) > 0:
         n = row["repost_count"]
         reasons.append(f"reposted {n}×" if n > 1 else "reposted")
@@ -57,8 +58,27 @@ def signals(row, max_age_days: int, now: datetime | None = None, text: str | Non
         reasons.append(f"pipeline wording: “{pipeline_phrase}”")
     stale = _days_since(row["updated_at"], now)
     if stale is not None and stale > 2 * max_age_days:
-        reasons.append(f"not updated in {stale} days")
+        reasons.append(f"not updated since {row['updated_at'][:10]}")
     return reasons
+
+
+_SINCE = re.compile(r"^(open|not updated) since (\d{4}-\d{2}-\d{2})$")
+
+
+def label(reason: str, now: datetime | None = None) -> str:
+    """Stored reasons carry dates ("open since 2026-08-26"); people read day counts ("open 71 days")."""
+    m = _SINCE.match(reason or "")
+    if not m:
+        return reason
+    days = _days_since(m.group(2), now or datetime.now(timezone.utc))
+    if days is None:
+        return reason
+    return f"open {days} days" if m.group(1) == "open" else f"not updated in {days} days"
+
+
+def labels(payload, now: datetime | None = None) -> list[str]:
+    items = json.loads(payload) if isinstance(payload, str) else (payload or [])
+    return [label(r, now) for r in items]
 
 
 def ghost_reasons(title: str, posted_at, max_age_days: int) -> list[str]:

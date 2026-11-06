@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,18 +28,34 @@ _lock = threading.Lock()
 STATUS: dict = {"running": False, "done": 0, "total": 0, "started": None, "finished": None, "results": []}
 
 
-def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=None, countries=frozenset()):
-    cls = SOURCES[board["ats"]]
-    src = cls(client=client, max_detail_calls=max_detail, company=board.get("company"))
-    src.skip_title, src.countries, src.known = skip_title, countries, known
-    src.prev_body_hash = board.get("body_hash")
-    try:
-        return src.fetch(board["slug"], known=known), src
-    except Unchanged:
-        return None, src
+BOARD_RETRY_PAUSES = (60, 180)   # a rate-limited board is tried again after these pauses (seconds)
 
 
-def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAULT_DB,
+def _rate_limited(exc: Exception) -> bool:
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) == 429 or bool(re.search(r"\b429\b", str(exc)))
+
+
+def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=None, countries=frozenset(),
+                 detail_stop: float | None = None):
+    for pause in (*BOARD_RETRY_PAUSES, None):
+        cls = SOURCES[board["ats"]]
+        details = 0 if detail_stop is not None and time.monotonic() > detail_stop else max_detail
+        src = cls(client=client, max_detail_calls=details, company=board.get("company"))
+        src.skip_title, src.countries, src.known = skip_title, countries, known
+        src.prev_body_hash = board.get("body_hash")
+        try:
+            return src.fetch(board["slug"], known=known), src
+        except Unchanged:
+            return None, src
+        except Exception as exc:
+            if pause is None or not _rate_limited(exc):
+                raise
+            log.info("%s/%s rate limited; trying again in %d s", board["ats"], board["slug"], pause)
+            time.sleep(pause)
+
+
+def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str | None = None,
         only: list[tuple[str, str]] | None = None, wait: bool = True,
         use_snapshot: bool = True, overrides: dict | None = None) -> list[dict] | None:
     """Fetch all enabled boards (or just `only`). Returns per-board results, or None if a
@@ -58,6 +75,8 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
 
 def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
     cfg = config_mod.load(config_path)
+    if db_path is None:
+        db_path = db.app_db(cfg) if use_snapshot else db.DEFAULT_DB
     s = cfg.settings
     for k, v in (overrides or {}).items():
         if v is not None and hasattr(s, k):
@@ -87,9 +106,10 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
     STATUS["total"] = len(boards)
     hourly = re.compile("|".join(config_mod.HOURLY_TITLE_PATTERNS), re.I) if s.skip_hourly_titles else None
     countries = frozenset(profile.load(conn).get("countries") or [])
+    detail_stop = time.monotonic() + s.detail_minutes * 60 if s.detail_minutes else None
     with ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool:
         futures = {pool.submit(_fetch_board, b, db.known_postings(conn, b["ats"], b["slug"]), client,
-                               s.max_detail_calls_per_board, hourly, countries): b for b in boards}
+                               s.max_detail_calls_per_board, hourly, countries, detail_stop): b for b in boards}
         for fut in as_completed(futures):
             b = futures[fut]
             try:
@@ -140,7 +160,6 @@ def postprocess(conn, cfg=None, company_keys=None) -> None:
         db.set_meta(conn, "ghost_full_rescore", today)
     else:
         ghost.rescore(conn, keys, s.ghost_age_days)
-    profile.recompute(conn, None, s.yoe_slack_years)
     sponsors.refresh_matches(conn, keys)
     _prune(conn, s.inactive_content_retention_days)
     db.bump_generation(conn)
@@ -161,11 +180,12 @@ def _prune(conn, days: int) -> None:
 
 
 def refresh_derived(conn, cfg=None) -> None:
-    """Re-derive filter fields and eligibility after new extractions arrive (no re-clustering)."""
-    cfg = cfg or config_mod.load()
+    """Re-derive filter fields after new Claude extractions arrive (no re-clustering)."""
+    if db.is_reader(conn):   # only rows you have Claude extractions for differ from the index
+        extract.derive_claude(conn)
+        return
     keys = [r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs")]
     extract.derive(conn, keys)
-    profile.recompute(conn, None, cfg.settings.yoe_slack_years)
 
 
 def needs_reprocess(conn) -> bool:
