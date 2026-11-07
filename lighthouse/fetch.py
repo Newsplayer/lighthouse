@@ -79,23 +79,6 @@ def _age_hours(iso_time: str | None) -> float:
     except (TypeError, ValueError):
         return float("inf")
 
-def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=None, countries=frozenset(),
-                 detail_stop: float | None = None):
-    for pause in (*BOARD_RETRY_PAUSES, None):
-        cls = SOURCES[board["ats"]]
-        details = 0 if detail_stop is not None and time.monotonic() > detail_stop else max_detail
-        src = cls(client=client, max_detail_calls=details, company=board.get("company"))
-        src.skip_title, src.countries, src.known = skip_title, countries, known
-        src.prev_body_hash = board.get("body_hash")
-        try:
-            return src.fetch(board["slug"], known=known), src
-        except Unchanged:
-            return None, src
-        except Exception as exc:
-            if pause is None or not _rate_limited(exc):
-                raise
-            log.info("%s/%s rate limited; trying again in %d s", board["ats"], board["slug"], pause)
-            time.sleep(pause)
 
 def order_boards(boards: list[dict], every_hours: float = 6) -> list[dict]:
     """Stalest first: boards not reached (or pushed back) last run lead, so under a time limit every
