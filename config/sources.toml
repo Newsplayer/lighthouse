@@ -28,6 +28,8 @@ max_detail_calls_per_board = 150 # SmartRecruiters/Workday: description calls pe
 disable_after_failures = 2       # switch off a board that reports "not found" this many runs in a row
 skip_hourly_titles = true        # skip clearly hourly/frontline titles (warehouse, cashier, driver...)
 inactive_content_retention_days = 180
+closed_retention_days = 45       # delete postings closed this long ago (once no listing of the same role is open)
+hold_mass_closures = true        # a board suddenly listing < half its 20+ open roles: close only if the next run agrees
 yoe_slack_years = 2              # "asks 5+ years" still counts as eligible with 3
 
 [claude]
@@ -43,6 +45,13 @@ batch_threshold = 20             # this many requests or more use the Batch API 
 repo = "Newsplayer/lighthouse"   # the public repo whose GitHub Action publishes the index
 check_every_hours = 1            # look for a newer index this often while the app is open
 stale_after_hours = 30           # warn on the Sources page when the index is older than this
+# Builder only (the GitHub Action, with an ANTHROPIC_API_KEY secret): Claude reads the postings whose filter
+# fields the rules couldn't settle, and fills only those gaps. No key = rules only. See MAINTAINING.md.
+llm_fill = true
+llm_model = "claude-haiku-5-5"
+llm_monthly_cap_usd = 10.0       # the LIGHTHOUSE_LLM_CAP_USD repository variable overrides this
+llm_max_per_run = 5000
+llm_wait_minutes = 20
 
 [[boards]]
 ats = "greenhouse"

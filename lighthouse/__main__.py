@@ -73,9 +73,15 @@ def _index(args) -> None:
         print(f"Seeded {snapshot.seed_builder(args.file, args.db or snapshot.BUILDER_DB)} postings.")
         return
     if args.action == "build":
+        def num(v):   # the workflow passes repository variables, which may be empty
+            try:
+                return float(v) if v not in (None, "") else None
+            except ValueError:
+                raise SystemExit(f"not a number: {v!r}")
         m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
                            db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
-                           published=args.published, full=args.full)
+                           published=args.published, full=args.full, llm=not args.no_llm,
+                           llm_cap_usd=num(args.llm_cap), llm_wait_minutes=num(args.llm_wait))
         print(json.dumps(m, indent=2))
         return
     conn = db.connect(db.app_db(cfg))
@@ -150,6 +156,9 @@ def main() -> None:
                    help="build: description calls per SmartRecruiters/Workday board per run")
     p.add_argument("--published", default=None, help="build: the manifest.json currently published")
     p.add_argument("--full", action="store_true", help="build: write a new base file even if a delta would do")
+    p.add_argument("--no-llm", action="store_true", help="build: rules only, even if ANTHROPIC_API_KEY is set")
+    p.add_argument("--llm-cap", default=None, help="build: monthly USD cap for Claude gap fills (default from config)")
+    p.add_argument("--llm-wait", default=None, help="build: minutes to wait for the Claude batch (default from config)")
     p = sub.add_parser("discover", help="find job boards from the careers pages in config/companies.csv")
     p.add_argument("--only", default=None, help="only companies whose name contains this")
     p.add_argument("--out", default=None, help="write one JSON line per company here")

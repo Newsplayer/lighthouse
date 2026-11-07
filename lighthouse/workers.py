@@ -10,20 +10,23 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor
 
-RULES_VERSION = "rules-v4"   # bump when extract.rules changes so cached results are refreshed once
+RULES_VERSION = "rules-v5"   # bump when extract.rules changes so cached results are refreshed once
 PARALLEL_MIN = 300           # below this many descriptions, a pool costs more than it saves
 BATCH = 2000
 
 
 def compute(item: tuple) -> tuple:
-    """(content_hash, html, title, location, need_sig, need_rules) -> (content_hash, minhash, rules)."""
+    """(content_hash, html, title, location, need_sig, need_rules[, hints]) ->
+    (content_hash, minhash, rules, unresolved fields). hints: departments + what the ATS already says."""
     from .dedupe import minhash
-    from .extract import rules
+    from .extract import rules, unresolved
     from .sanitize import html_to_text
-    chash, html, title, location, need_sig, need_rules = item
+    chash, html, title, location, need_sig, need_rules = item[:6]
+    hints = item[6] if len(item) > 6 else {}
     text = html_to_text(html or "")
-    return (chash, minhash(text) if need_sig else None,
-            rules(text, title or "", location or "") if need_rules else None)
+    data = rules(text, title or "", location or "") if need_rules else None
+    todo = unresolved(text, data, title or "", hints.get("departments") or "", hints) if data is not None else None
+    return chash, minhash(text) if need_sig else None, data, todo
 
 
 def run(items: list[tuple], workers: int | None = None):

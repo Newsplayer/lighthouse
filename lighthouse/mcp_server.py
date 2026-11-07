@@ -37,6 +37,18 @@ TOOLS = [
          "employment_type": {"type": "string", "enum": classify.EMP_TYPES},
          "skills": {"type": "array", "items": {"type": "string"},
                     "description": "Each must be mentioned, e.g. [\"python\", \"sql\"] (lowercase)"},
+         "posted_within_days": {"type": "integer", "description": "First seen this recently (reposts keep their date)"},
+         "pay_listed": {"type": "boolean", "default": False},
+         "visa": {"type": "string", "enum": ["not_no", "yes", "sponsors"],
+                  "description": "not_no: doesn't rule out sponsorship; yes: posting says it sponsors; "
+                                 "sponsors: posting or filing history"},
+         "max_degree": {"type": "string", "enum": ["none", "bachelors", "masters"]},
+         "clearance": {"type": "string", "enum": ["none", "required"]},
+         "exclude_citizens_only": {"type": "boolean", "default": False},
+         "benefits": {"type": "array", "items": {"type": "string", "enum": classify.BENEFITS},
+                      "description": "Each must be offered"},
+         "little_travel": {"type": "boolean", "default": False},
+         "language": {"type": "string", "description": "'english' = no other language required, or e.g. 'german'"},
          "unjudged_only": {"type": "boolean", "default": False,
                            "description": "Only roles without a fit verdict for the current profile"},
          "limit": {"type": "integer", "default": 20}, "offset": {"type": "integer", "default": 0}}}},
@@ -74,7 +86,10 @@ def _row(r) -> dict:
             "years_asked": r["yoe_min"], "years_asked_source": r["yoe_source"],
             "ineligible_because": json.loads(r["elig_reasons"] or "[]"), "fit_tier": r["fit_tier"], "url": r["url"],
             "function": r["job_function"], "seniority": r["seniority"], "employment_type": r["emp_type"],
-            "skills": classify.decode_skills(r["skills"])}
+            "skills": classify.decode_skills(r["skills"]), "visa": r["visa"], "degree": r["degree"],
+            "clearance": r["clearance"], "citizens_only": bool(r["citizenship"]),
+            "benefits": classify.decode_list(r["benefits"]), "travel": r["travel"],
+            "languages_required": classify.decode_list(r["languages"])}
 
 
 def call(conn, cfg, name: str, args: dict):
@@ -90,7 +105,15 @@ def call(conn, cfg, name: str, args: dict):
                        profile=prof, yoe_slack=cfg.settings.yoe_slack_years,
                        function=args.get("function", ""), seniority=args.get("seniority", ""),
                        emp_type=args.get("employment_type", ""),
-                       skills=tuple(s for s in args.get("skills") or [] if s))
+                       skills=tuple(s for s in args.get("skills") or [] if s),
+                       posted_within=args.get("posted_within_days"), pay_listed=bool(args.get("pay_listed")),
+                       visa=args.get("visa", "") if args.get("visa") in ("not_no", "yes", "sponsors") else "",
+                       degree_max=args.get("max_degree", "") if args.get("max_degree") in ("none", "bachelors", "masters") else "",
+                       clearance=args.get("clearance", "") if args.get("clearance") in ("none", "required") else "",
+                       no_citizenship=bool(args.get("exclude_citizens_only")),
+                       benefits=tuple(b for b in args.get("benefits") or [] if b in classify.BENEFITS),
+                       travel="low" if args.get("little_travel") else "",
+                       language=(args.get("language") or "").strip().lower())
         limit = max(1, min(int(args.get("limit", 20)), 100))
         rows, total = db.list_jobs(conn, f, page=1 + int(args.get("offset", 0)) // limit, per_page=limit)
         items = [_row(r) for r in rows if not (args.get("unjudged_only") and r["fit_tier"])]

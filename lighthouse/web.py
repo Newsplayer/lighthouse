@@ -25,6 +25,7 @@ from .sources import SOURCES
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 PER_PAGE = 50
+POSTED_WITHIN = {1: "Past 24 hours", 3: "Past 3 days", 7: "Past week", 14: "Past 2 weeks", 30: "Past month"}
 
 
 _TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
@@ -147,7 +148,14 @@ def create_app(db_path: Path | str | None = None, config_path: Path | str = conf
                 return None
         prof_set = profile_mod.is_set(prof)
         skills = tuple(s.strip().lower() for s in args.get("skills", "").replace(";", ",").split(",") if s.strip())
+        one_of = lambda name, allowed: args.get(name, "") if args.get(name, "") in allowed else ""
+        posted = num("posted", int)
         return db.Filters(
+            posted_within=posted if posted in POSTED_WITHIN else None, pay_listed=args.get("pay_listed") == "1",
+            degree_max=one_of("degree_max", ("none", "bachelors", "masters")),
+            clearance=one_of("clearance", ("none", "required")), no_citizenship=args.get("no_citizenship") == "1",
+            benefits=tuple(b for b in args.getlist("benefit") if b in classify.BENEFITS),
+            travel=one_of("travel", ("low",)), language=one_of("language", ("english", *classify.LANGUAGES)),
             function=args.get("function", ""), seniority=args.get("seniority", ""), emp_type=args.get("emp_type", ""),
             skills=skills[:8], profile=prof if prof_set else None, yoe_slack=settings.yoe_slack_years,
             q=args.get("q", "").strip(), company=args.get("company", ""), source=args.get("source", ""),
@@ -183,10 +191,10 @@ def create_app(db_path: Path | str | None = None, config_path: Path | str = conf
         f.since = touch_visit(c)
         page = max(1, request.args.get("page", 1, type=int))
         jobs, total = db.list_jobs(c, f, page=page, per_page=PER_PAGE)
-        args = {k: v for k, v in request.args.items() if k != "page"}
+        pairs = [(k, v) for k, v in request.args.items(multi=True) if k != "page"]   # benefit=... repeats
         fc = facets(c, s.ghost_hide_signals)
         ctx = dict(jobs=jobs, total=total, f=f, page=page, pages=max(1, -(-total // PER_PAGE)),
-                   args=args, qs=lambda **kw: "?" + urlencode({**args, **kw}),
+                   qs=lambda **kw: "?" + urlencode([(k, v) for k, v in pairs if k not in kw] + list(kw.items())),
                    companies=fc["companies"], sources=fc["sources"], stats=fc["stats"], marks=db.mark_counts(c),
                    profile_set=profile_mod.is_set(prof), settings=s, has_key=bool(claude_api.get_key()),
                    scope=prof.get("countries") or [], scope_names=[dict(geo.CHOICES).get(x, x) for x in prof.get("countries") or []],
@@ -195,7 +203,10 @@ def create_app(db_path: Path | str | None = None, config_path: Path | str = conf
                                                          profile=f.profile, yoe_slack=f.yoe_slack))
                    if f.since else 0,
                    functions=classify.FUNCTION_NAMES, seniorities=classify.SENIORITY_LABEL,
-                   emp_types=classify.EMP_LABEL)
+                   emp_types=classify.EMP_LABEL, posted_choices=POSTED_WITHIN, benefit_labels=classify.BENEFIT_LABEL,
+                   languages=classify.LANGUAGES,
+                   more_set=bool(f.pay_listed or f.degree_max or f.clearance or f.no_citizenship or f.benefits
+                                 or f.travel or f.language))
         c.close()
         return render_template("index.html", **ctx)
 
@@ -221,6 +232,7 @@ def create_app(db_path: Path | str | None = None, config_path: Path | str = conf
                    extracted=data, method=method, fit=fit, sponsor=sponsors.history(c, row["company_key"]),
                    mark=db.mark_for_cluster(c, row["cluster_id"] or uid), settings=cfg().settings,
                    apply_links=apply_links, seniorities=classify.SENIORITY_LABEL, emp_types=classify.EMP_LABEL,
+                   benefit_labels=classify.BENEFIT_LABEL, travel_labels=classify.TRAVEL_LABEL,
                    # sanitized with an allow-list by the index builder, and again here: the index file comes
                    # from someone else's machine, and this is the one place its HTML is rendered
                    body=Markup(ensure_safe(row["content_html"] or "")))

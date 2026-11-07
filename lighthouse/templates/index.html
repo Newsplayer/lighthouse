@@ -8,6 +8,10 @@
     <button class="btn" type="submit">Filter</button>
   </div>
   <div class="row small">
+    <select name="posted" aria-label="Date posted">
+      <option value="">Any date</option>
+      {% for days, label in posted_choices.items() %}<option value="{{ days }}" {% if f.posted_within == days %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
     <select name="company" aria-label="Company">
       <option value="">All companies</option>
       {% for c in companies %}<option {% if c == f.company %}selected{% endif %}>{{ c }}</option>{% endfor %}
@@ -43,6 +47,7 @@
     <select name="visa" aria-label="Visa sponsorship">
       <option value="">Visa: any</option>
       <option value="not_no" {% if f.visa == 'not_no' %}selected{% endif %}>Doesn't rule out sponsorship</option>
+      <option value="yes" {% if f.visa == 'yes' %}selected{% endif %}>Posting says it sponsors</option>
       <option value="sponsors" {% if f.visa == 'sponsors' %}selected{% endif %}>Sponsors (posting or history)</option>
     </select>
     <select name="tier" aria-label="Fit">
@@ -63,6 +68,37 @@
     {% endif %}
     <label class="check"><input type="checkbox" name="ghosts" value="1" {% if f.show_ghosts %}checked{% endif %}> Show likely ghosts</label>
   </div>
+  <details class="more"{% if more_set %} open{% endif %}>
+    <summary>More filters{% if more_set %} (on){% endif %}</summary>
+    <div class="row small">
+      <label class="check"><input type="checkbox" name="pay_listed" value="1" {% if f.pay_listed %}checked{% endif %}> Pay listed</label>
+      <select name="degree_max" aria-label="Degree asked">
+        <option value="">Any degree asked</option>
+        <option value="none" {% if f.degree_max == 'none' %}selected{% endif %}>No degree asked</option>
+        <option value="bachelors" {% if f.degree_max == 'bachelors' %}selected{% endif %}>At most a bachelor's</option>
+        <option value="masters" {% if f.degree_max == 'masters' %}selected{% endif %}>At most a master's</option>
+      </select>
+      <select name="clearance" aria-label="Security clearance">
+        <option value="">Clearance: any</option>
+        <option value="none" {% if f.clearance == 'none' %}selected{% endif %}>No clearance asked</option>
+        <option value="required" {% if f.clearance == 'required' %}selected{% endif %}>Clearance roles only</option>
+      </select>
+      <label class="check"><input type="checkbox" name="no_citizenship" value="1" {% if f.no_citizenship %}checked{% endif %}> Hide U.S.-citizens-only roles</label>
+      <label class="check"><input type="checkbox" name="travel" value="low" {% if f.travel == 'low' %}checked{% endif %}> Little or no travel</label>
+      <select name="language" aria-label="Languages required">
+        <option value="">Languages: any</option>
+        <option value="english" {% if f.language == 'english' %}selected{% endif %}>No other language required</option>
+        {% for l in languages %}<option value="{{ l }}" {% if f.language == l %}selected{% endif %}>Requires {{ l|capitalize }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="row small" role="group" aria-label="Benefits the posting offers">
+      <span class="meta">Offers</span>
+      {% for k, label in benefit_labels.items() %}
+        <label class="check"><input type="checkbox" name="benefit" value="{{ k }}" {% if k in f.benefits %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </div>
+    <p class="meta">Read from each posting: free rules first, Claude only where they couldn't tell. Roles that don't say are kept, except for “Pay listed” and “Offers”.</p>
+  </details>
 </form>
 
 <nav class="tabs" aria-label="Lists">
@@ -124,6 +160,10 @@
           {% else %}<span class="tag" title="Years of experience the posting asks for">{{ j.yoe_min }}+ yrs</span>{% endif %}
         {% endif %}
         {% if j.visa == 'no' %}<span class="tag">no sponsorship</span>{% elif j.visa == 'yes' %}<span class="tag ok">sponsors visas</span>{% endif %}
+        {% if j.citizenship %}<span class="tag">U.S. citizens only</span>{% endif %}
+        {% if j.clearance %}<span class="tag">{% if j.clearance == 'unspecified' %}clearance required{% else %}{{ j.clearance|replace('_', '/')|upper }} clearance{% endif %}</span>{% endif %}
+        {% for l in j.languages|skills %}<span class="tag">{{ l|capitalize }} required</span>{% endfor %}
+        {% if j.travel == 'frequent' %}<span class="tag">frequent travel</span>{% endif %}
         {% if j.cluster_count > 1 %}<span class="tag" title="Same role listed more than once">listed {{ j.cluster_count }}×</span>{% endif %}
         {% if j.ghost_score >= settings.ghost_flag_signals %}
           <span class="tag warn" title="{{ ghosts|join('; ') }}">⚠ possible ghost: {{ ghosts|join(', ') }}</span>

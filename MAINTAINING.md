@@ -72,6 +72,29 @@ a database or anything personal: `git log --all --stat -- data` should list no `
 makes builds faster and downloads smaller. Leave it unset for everything. Users can always narrow
 further with their Profile countries, but they can't get countries the index left out.
 
+### 5b. Optional: let Claude read what the rules can't
+
+The free rules read every filter field. When a posting clearly talks about one of them but no rule can
+read the answer (sponsorship in unusual wording, years written oddly, a title no rule recognises), the
+build can ask Claude about that posting. Claude only fills that gap, never overrides a rule answer, and
+reads each description at most once. Without a key, the build simply stays rules-only.
+
+1. Create an API key at [platform.claude.com](https://platform.claude.com/), and set a monthly spend limit
+   on its workspace there as a backstop.
+2. **Settings → Secrets and variables → Actions → Secrets → New repository secret:** `ANTHROPIC_API_KEY`.
+   Secrets are only given to workflow runs on this repo (never to pull requests from forks; this
+   workflow doesn't run on pull requests at all).
+3. Optional, **Variables:** `LIGHTHOUSE_LLM_CAP_USD` = the most to spend per calendar month (default `10`).
+
+**What it costs:** Claude Haiku 5.5 through the Batch API (half price). The build estimates about
+$0.0005 per description it sends (deliberately on the high side) and stops sending once the month's
+spend plus open batches would pass the cap. Measured on the Anthropic and Stripe boards, about 1
+description in 7 needs Claude. A 50,000-posting index therefore costs roughly $3–4 to fill once.
+After that it depends on how many new descriptions arrive: 3,000 a day comes to about $6 a month.
+Each build waits up to 20 minutes for its batch (`[index] llm_wait_minutes`). Anything still running
+is collected by the next build. The manifest's `llm` entry shows the month's spend and how many
+descriptions are still waiting.
+
 ### 6. Turn on Issues (for board suggestions)
 
 **Settings → General → Features → Issues** ✓. The app's **Suggest a board** button opens a
@@ -176,8 +199,12 @@ Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthous
 - **You added a migration in `db.py` (schema change):** the next index is built with the new schema,
   and older apps can't read it. They keep the jobs they have, and their Sources page says
   "the job index needs a newer Lighthouse". Tell users to download the new version.
-- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`):** the next build writes a
-  fresh full file by itself (the manifest's rules version no longer matches).
+- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`) or the filter labels
+  (`DERIVE_VERSION` in `classify.py`):** the next build re-reads every description once (not just the
+  boards that changed) and writes a fresh full file by itself (the manifest's rules version no longer
+  matches). Claude's earlier gap fills are kept, not paid for again.
+- **0.7.0** adds filter columns and deletion records (schema v6). Older apps keep reading new indexes
+  (they ignore the new columns and deletions), and 0.7 reads older indexes (it adds the columns, empty).
 - **You changed the published index layout (`INDEX_SCHEMA` in `db.py`):** older apps keep the jobs
   they have and say "needs a newer Lighthouse".
 
@@ -196,8 +223,21 @@ once a week, or when the changes add up to half the base.
 2. **Discover** boards for the companies list (only those due a re-check), **apply the board lists**
    (the CSVs are the truth on the builder), then **fetch** all enabled boards. Unchanged boards and
    postings are skipped by hash. Then the usual steps run: de-duplication, field extraction (pay,
-   years asked, visa, clearance, degree, job function, seniority, employment type, skills) and
-   ghost scoring.
+   years asked, visa, clearance, citizenship, degree, job function, seniority, employment type, skills,
+   benefits, travel, languages) and ghost scoring.
+   - **Closing and deleting.** A posting its board no longer lists is closed. If a board with 20+ open
+     postings suddenly lists fewer than half of them, the closures are held for one build: if the next
+     fetch agrees, they're closed then. A posting closed more than `closed_retention_days` (45) ago is
+     deleted once no other listing in its cluster is open, or after a year regardless. Each deletion
+     leaves a tombstone that the next delta carries, so readers delete it too. Postings you marked
+     yourself (local mode) are never deleted.
+   - **Claude gap fill** (only with the `ANTHROPIC_API_KEY` secret, step 5b). The rules record, per
+     description, which fields the posting talks about but they couldn't settle. Newest open,
+     de-duplicated, non-ghost postings with such gaps go out in one Message Batch, within the monthly
+     cap. Results are merged into the extraction for the empty fields only, marked `"by": "claude"`. If
+     this step fails for any reason, the build publishes the rule answers. The month's spend is written
+     to the manifest and carried over if the cache is lost; descriptions Claude already read are
+     recovered from the published base when seeding.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
    - **new base** (first build, weekly, `full`, a new rules version, changes > half the base, or 40 deltas):
@@ -239,6 +279,9 @@ once a week, or when the changes add up to half the base.
 | Users see "checksum mismatch" | a build was publishing while they downloaded; it fixes itself on the next check |
 | Build is slow or times out | lower `--detail-calls` in the workflow, set `LIGHTHOUSE_COUNTRIES`, or switch big Workday boards off |
 | Many boards fail with HTTP 429 | lower `per_host_requests_per_second` in `config/sources.toml` |
+| Manifest's `llm` entry stays at 0 descriptions | the `ANTHROPIC_API_KEY` secret is missing or misspelled; the *Build* log says `gap fill: ... skipped` |
+| `llm.pending` keeps growing | the monthly cap is reached (raise `LIGHTHOUSE_LLM_CAP_USD`) or batches take longer than the wait; they're collected next build |
+| A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 
 ## Testing a build locally
 

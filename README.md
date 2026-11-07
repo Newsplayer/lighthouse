@@ -51,6 +51,8 @@ python -m lighthouse start
 |---|---|---|
 | Find each listed company's job board from its careers page | GitHub Action (re-checked every 3–14 days) | the maintainer only |
 | Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 6 hours | the maintainer only |
+| Ask Claude about the few postings the free rules couldn't read (optional) | GitHub Action, the maintainer's key, capped monthly | the maintainer only |
+| Close postings that are no longer listed; delete them 45 days later | GitHub Action, every 6 hours | the maintainer only |
 | Publish a ready-to-use database on the repo's `job-index` release | GitHub | the Action only |
 | Use that database as downloaded; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
 
@@ -93,9 +95,16 @@ as it did before v0.5.
 - **Ghost score with reasons.** Signals: open longer than 60 days, reposted, evergreen title,
   talent-pool wording, not updated in months. One signal never flags. Two = "possible ghost".
   Three or more are hidden by default (one click shows them).
-- **Filters.** Salary, workplace, **years of experience asked** (min–max, with or without roles
-  that don't say), countries, visa language, sponsorship history, fit tier, company, location,
-  full-text search. Sort by newest, best fit, highest pay or fewest years asked.
+- **Filters.** Date posted, salary (or only roles that list pay), workplace, **years of experience
+  asked** (min–max, with or without roles that don't say), countries, visa language (doesn't rule out
+  sponsorship / says it sponsors / sponsorship history), degree asked, security clearance, U.S.-citizens-only
+  roles, travel, languages required, benefits offered, fit tier, company, location, full-text search.
+  The less common ones sit under **More filters**. Sort by newest, best fit, highest pay or fewest years asked.
+- **Postings come and go with the employer's site.** Each build adds new postings and closes the ones no
+  longer listed. If a large board suddenly lists less than half of its open roles, that's usually a
+  glitch on their side, so those closures wait one build for confirmation. A posting closed 45 days
+  ago is deleted once no other listing of the same role is open (until then it's what lets a repost keep
+  its original date), and your copy deletes it with the next update.
 - **Years asked** is read from the posting ("5+ years of…", "at least one year", "minimum 2–5
   years"), labelled *preferred* when it sits under "Preferred / Nice to have", and estimated from the
   title only when the posting gives no number (Intern/New Grad → 0, Senior → 5, Staff → 8,
@@ -110,9 +119,14 @@ as it did before v0.5.
   on the **Sponsorship** page; each job shows the employer's filings and approvals, kept separate.
 - **Filters from the description.** Job function (Software Engineering, Data & Analytics, Finance...),
   seniority (intern to executive), employment type, skills the posting mentions (python, sql, aws,
-  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language. All of it is
-  worked out by free rules in the GitHub Action, so filtering needs no API and no work on your
-  computer.
+  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language, degree,
+  clearance, citizenship, travel (none / up to 25% / more), languages other than English that are
+  required, and benefits offered (health, 401(k), equity, bonus, unlimited PTO, parental leave,
+  learning budget, relocation). Free rules read these in the GitHub Action. When a posting clearly
+  talks about one of them but no rule can read the answer (sponsorship in unusual wording, years written
+  oddly, a title no rule recognises), the Action asks Claude about that posting once. Claude's answer only
+  fills that gap and never replaces a rule's answer, and the job page marks it "read by Claude". On real
+  boards that's about 1 posting in 7. Either way, filtering needs no API and no work on your computer.
 - **Every apply link.** When the same role is listed on several sites, the job page links each
   open copy, with tracking parameters removed.
 
@@ -174,7 +188,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Re-runs | Only companies whose postings changed are re-clustered and re-extracted; signatures and extractions are cached by description hash |
 | The list | Cluster/filter fields (function, seniority, skills, pay...) are precomputed by the builder and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
 | Claude spend | Eligibility and ghost filters run first; Batch API; prompt caching; cache by (description, profile); monthly cap |
-| Storage | Descriptions stored zlib-compressed in their own table; search indexes the first 4,000 characters; descriptions of roles closed 180+ days are dropped (history kept); sponsorship data aggregated per employer-year |
+| Storage | Descriptions stored zlib-compressed in their own table; search indexes the first 4,000 characters; postings closed 45+ days are deleted once no open listing of the role remains (deltas carry the deletions to readers); sponsorship data aggregated per employer-year |
+| Claude in the build | Only postings the rules couldn't settle; once per description (cached by hash, kept across reposts); Batch API; monthly cap; a failure never blocks publishing |
 | Schema | Versioned migrations (`PRAGMA user_version`) |
 | New ATS | One subclass of `sources.base.Source` + one line in `sources/__init__.py` |
 
@@ -189,7 +204,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Fetch + post-processing | `lighthouse/fetch.py` |
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
-| Field extraction; function, seniority, skills | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Field extraction; function, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Claude gap fill in the build (postings the rules couldn't settle) | `lighthouse/llm_fill.py` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |

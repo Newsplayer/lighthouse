@@ -88,6 +88,10 @@ textarea { width: 100%; resize: vertical; }
 .filters .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .filters .row.small select, .filters .row.small input { font-size: 13px; padding: 6px 8px; }
 .filters input[type=search] { flex: 1 1 260px; }
+.filters details.more { border-top: 1px solid currentColor; border-color: rgba(127, 127, 127, .25); padding-top: 6px; }
+.filters details.more summary { cursor: pointer; font-size: 13px; }
+.filters details.more .row { margin-top: 8px; }
+.filters details.more .meta { margin: 6px 0 0; }
 .short { flex: 0 1 180px; }
 .tiny { width: 120px; }
 .nano { width: 56px; }

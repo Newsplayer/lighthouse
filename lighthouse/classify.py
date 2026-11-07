@@ -1,15 +1,18 @@
-"""Free, rule-based labels for search filters: job function, seniority, employment type, skills.
+"""Free, rule-based labels for search filters: job function, seniority, employment type, skills,
+benefits, travel, required languages.
 
 All of it runs in the job-index Action (extract.derive), so readers just filter on stored columns.
 Function and seniority come mostly from the title (so they work even for postings whose description
-hasn't been fetched yet); skills come from the description text. Nothing is guessed: no match = None.
+hasn't been fetched yet); the rest come from the description text. Nothing is guessed: no match = None.
+When the rules can't settle a field the posting clearly talks about, the Action asks Claude
+(llm_fill.py) and fills only that gap.
 """
 
 from __future__ import annotations
 
 import re
 
-DERIVE_VERSION = "d1"   # bump when these rules change, so every row is re-labelled once
+DERIVE_VERSION = "d2"   # bump when these rules change, so every row is re-labelled once
 
 # ------------------------------------------------------------------ job function
 # Checked in order; the first match wins ("Machine Learning Engineer" is ML, not Software).
@@ -21,7 +24,7 @@ FUNCTIONS: list[tuple[str, re.Pattern]] = [(n, re.compile(p, re.I)) for n, p in 
                          r"engineer)|statistician|quantitative analyst|quant(itative)? (researcher|developer|trader)|"
                          r"decision scientist|insights analyst|reporting analyst)\b"),
     ("Security", r"\b(security|cyber|infosec|soc analyst|penetration|appsec|threat|vulnerability|identity and access|iam)\b"),
-    ("Design & UX", r"\b(designer|design (lead|manager|director|systems)|ux|ui/ux|user experience|user research(er)?|"
+    ("Design & UX", r"\b(designer|design (lead|manager|director|systems|intern)|product design|ux|ui/ux|user experience|user research(er)?|"
                     r"interaction design|visual design|graphic design|creative director|art director)\b"),
     ("Product Management", r"\b(product (manager|management|owner|lead|director|operations|marketing manager)|"
                            r"(group|senior|principal|staff|technical) product manager|head of product|vp,? product|"
@@ -31,7 +34,7 @@ FUNCTIONS: list[tuple[str, re.Pattern]] = [(n, re.compile(p, re.I)) for n, p in 
                              r"infrastructure|systems|application|java|python|\.net|embedded software|firmware|qa|test|"
                              r"automation|build|release|solutions?) engineer(ing)?|engineering manager|swe|sdet|devops|"
                              r"site reliability|member of technical staff|technical lead|tech lead)\b"),
-    ("IT & Infrastructure", r"\b(it (support|specialist|manager|director|analyst|administrator|technician|operations)|"
+    ("IT & Infrastructure", r"\b(it (support|specialist|manager|director|analyst|administrator|technician|operations)|(business )?systems analyst|"
                             r"help ?desk|service desk|desktop support|system administrator|sysadmin|network "
                             r"(engineer|administrator|technician)|database administrator|dba|erp|sap (consultant|"
                             r"analyst|developer)|salesforce (administrator|developer)|servicenow|technical support)\b"),
@@ -44,16 +47,16 @@ FUNCTIONS: list[tuple[str, re.Pattern]] = [(n, re.compile(p, re.I)) for n, p in 
                                                        r"engineer|project engineer|design engineer|engineer)\b"),
     ("Science & Research", r"\b(scientist|research(er)? associate|postdoc|chemist|biologist|biostatistician|"
                            r"laboratory|lab (technician|manager)|clinical research|research and development|r&d|"
-                           r"physicist|toxicologist|pharmacologist)\b"),
+                           r"physicist|toxicologist|pharmacologist|economist)\b"),
     ("Healthcare & Clinical", r"\b(nurse|rn|lpn|cna|physician|doctor|md|pharmacist|pharmacy|therapist|clinical|"
                               r"medical (assistant|director|technologist)|radiolog|sonograph|phlebotom|surgeon|"
                               r"dentist|dental|veterinar|paramedic|emt|caregiver|patient care|health coach|dietitian)\b"),
-    ("Sales", r"\b(sales|account (executive|manager|director)|business development representative|bdr|sdr|"
+    ("Sales", r"\b(sales|account (executive|manager|director|management)|renewals|business development representative|bdr|sdr|"
               r"inside sales|territory manager|sales engineer|solutions consultant|presales|pre-sales|"
               r"relationship manager|client advisor|financial advisor|wealth advisor|broker)\b"),
     ("Business Development & Partnerships", r"\b(business development|partnerships?|alliances|channel manager|"
                                             r"corporate development|m&a)\b"),
-    ("Marketing & Communications", r"\b(marketing|brand|communications|public relations|pr manager|social media|"
+    ("Marketing & Communications", r"\b(marketing|brand|communications|community (manager|engagement|lead)|public relations|pr manager|social media|"
                                    r"content (strategist|marketing|manager)|seo|sem|growth|demand generation|"
                                    r"advertising|media (planner|buyer)|copywriter|events? (manager|coordinator))\b"),
     ("Customer Success & Support", r"\b(customer (success|support|service|experience|care)|client (success|services|"
@@ -66,7 +69,7 @@ FUNCTIONS: list[tuple[str, re.Pattern]] = [(n, re.compile(p, re.I)) for n, p in 
     ("Legal & Compliance", r"\b(legal|counsel|attorney|lawyer|paralegal|compliance|regulatory affairs|privacy|"
                            r"contracts? (manager|specialist|administrator)|general counsel|aml|kyc|risk (manager|"
                            r"analyst|management))\b"),
-    ("People & Recruiting", r"\b(recruit|talent (acquisition|partner|sourcer)|sourcer|human resources|hr |hrbp|"
+    ("People & Recruiting", r"\b(recruit\w*|talent (acquisition|partner|sourcer)|sourcer|human resources|hr |hrbp|"
                             r"people (partner|operations|business partner)|benefits|compensation|learning and "
                             r"development|l&d|diversity|chro|chief people officer)\b"),
     ("Consulting & Strategy", r"\b(consultant|consulting|strategy|strategic|management analyst|transformation|"
@@ -266,3 +269,146 @@ def encode_skills(items: list[str]) -> str | None:
 
 def decode_skills(value: str | None) -> list[str]:
     return [x for x in (value or "").split(",") if x]
+
+
+# Lists stored as ",a,b," (indexed LIKE '%,a,%' matches) use the same encoding as skills.
+encode_list, decode_list = encode_skills, decode_skills
+
+
+def _clause_at(text: str, start: int, end: int, limit: int = 200) -> str:
+    a = max(text.rfind(d, 0, start) for d in ".;\n") + 1
+    bs = [i for i in (text.find(d, end) for d in ".;\n") if i != -1]
+    b = min(bs) if bs else len(text)
+    return text[max(a, start - limit): min(b, end + limit)]
+
+
+# ------------------------------------------------------------------ benefits
+# What the posting explicitly offers. Each pattern only runs when one of its keywords is in the text.
+BENEFITS = ["health", "retirement", "equity", "bonus", "unlimited_pto", "parental_leave", "learning", "relocation"]
+BENEFIT_LABEL = {"health": "Health insurance", "retirement": "401(k) / pension", "equity": "Equity / stock",
+                 "bonus": "Bonus", "unlimited_pto": "Unlimited / flexible PTO", "parental_leave": "Paid parental leave",
+                 "learning": "Learning budget / tuition", "relocation": "Relocation help"}
+_BENEFITS = [(k, keys, re.compile(p, re.I)) for k, keys, p in (
+    ("health", ("health", "medical", "dental"),
+     r"\b(health|medical)( and dental)?,? (insurance|coverage|benefits|plans?)\b|\bmedical,? dental\b|"
+     r"\bdental,? (and |& )?vision\b|\bhealth, dental\b|\bhealth ?care (coverage|benefits|plans?)\b"),
+    ("retirement", ("401", "403", "pension", "retirement", "rrsp", "superannuation"),
+     r"\b40[13] ?\(?[kb]\)?|\bpension\b|\bretirement (plan|savings|benefits?|contributions?|program|account)s?\b|"
+     r"\bRRSP\b|\bsuperannuation\b"),
+    # Not "diversity, equity and inclusion", "pay equity", "private equity" or "equity research": only grants.
+    ("equity", ("stock", "rsu", "equity", "espp", "ownership"),
+     r"\b(stock options?|RSUs?|restricted stock( units?)?|employee stock purchase|ESPP|stock (grants?|awards?|"
+     r"purchase plan)|equity (compensation|grants?|awards?|package|stake|incentives?|refreshers?|plan)|"
+     r"(salary|cash|base pay|compensation|bonus)\s*(,|\+|and|&|plus)\s*(meaningful |generous |competitive )?"
+     r"(equity|stock)\b(?! and inclusion)|equity in the company|ownership stake|"
+     r"(includes?|including):?\s+(\w+ ){0,2}equity\b(?! and inclusion| donation| research| analyst))"),
+    ("bonus", ("bonus", "incentive"),
+     r"\b(annual|performance|target|sign[- ]?on|signing|year[- ]end|quarterly|discretionary|incentive|"
+     r"referral|company|cash) bonus(es)?\b|\bbonus (eligib\w*|potential|program|plan|opportunit\w*|target)\b|"
+     r"\beligible for (an? )?(annual |performance |discretionary )?bonus\b|\bincentive (compensation|plan|pay)\b|"
+     r"\bcommissions?/bonus(es)?\b"),
+    ("unlimited_pto", ("pto", "time off", "vacation", "holiday"),
+     r"\b(unlimited|flexible|open|uncapped|discretionary) (pto|paid time off|vacation( policy)?|time off)\b"),
+    ("parental_leave", ("leave",),
+     r"\b(paid )?(parental|maternity|paternity) leave\b|\bpaid family leave\b|\bpaid leave for (new )?parents\b"),
+    ("learning", ("tuition", "stipend", "budget", "allowance", "reimburse", "fund"),
+     r"\btuition (reimbursement|assistance|support)\b|\beducation(al)? (stipend|reimbursement|assistance|allowance)\b|"
+     r"\b(learning|development|professional development|l&d|training|learning and development) "
+     r"(stipend|budget|allowance|fund)\b"),
+    ("relocation", ("relocat",),
+     r"\brelocation (assistance|package|support|bonus|benefits?|stipend|allowance|reimbursement|"
+     r"is (available|offered|provided))\b|\b(offer|provide|cover)s? relocation\b|\brelocation and visa\b"),
+)]
+_NEGATED = re.compile(r"\b(no|not|unable|cannot|can.t|isn.t|aren.t|won.t|without|ineligible|n/a)\b", re.I)
+# The benefit is the work, not the perk: "experience with equity compensation matters", "managing pension
+# plans", "Health Insurance Portability and Accountability Act", "Incentive Compensation Management".
+_DUTY_BEFORE = re.compile(r"\b(experience (with|in|managing|administering|of)|knowledge of|familiarity with|"
+                          r"expertise (in|with)|understanding of|managing|administer(ing)?|advis(e|ing) on|"
+                          r"teams? on)\b[^.\n]{0,40}$", re.I)
+_DUTY_AFTER = re.compile(r"\W{0,3}(matters|management|portability|administration|accounting|"   # used with .match(text, pos)
+                         r"programs? (management|design))\b", re.I)
+
+
+def benefits(text: str) -> list[str]:
+    """Benefits the posting offers, in BENEFITS order. 'Relocation is not available' doesn't count."""
+    low = (text or "").lower()
+    found = []
+    for key, keys, pat in _BENEFITS:
+        if not any(k in low for k in keys):
+            continue
+        for m in pat.finditer(text):
+            if key in ("relocation", "bonus", "equity") and _NEGATED.search(_clause_at(text, m.start(), m.end(), 60)):
+                continue
+            if _DUTY_BEFORE.search(text[max(0, m.start() - 80): m.start()]) or _DUTY_AFTER.match(text, m.end()):
+                continue
+            found.append(key)
+            break
+    return found
+
+
+# ------------------------------------------------------------------ travel
+TRAVEL = ["none", "occasional", "frequent"]
+TRAVEL_LABEL = {"none": "No travel", "occasional": "Some travel (up to 25%)", "frequent": "Frequent travel (over 25%)"}
+_PCT = r"(\d{1,3})(?:\s*%?\s*(?:-|–|to)\s*(\d{1,3}))?\s*(?:%|percent)"
+_TRAVEL_PCT = [re.compile(r"\btravel\w*\b[^.\n;]{0,45}?" + _PCT, re.I),
+               re.compile(_PCT + r"[^.\n;]{0,30}?\btravel", re.I)]
+_TRAVEL_NONE = re.compile(r"\b(no (business |overnight )?travel( is)?( required| expected| involved)?|travel( is)? not "
+                          r"(required|expected)|(does not|doesn.t) require (any )?travel)\b", re.I)
+_TRAVEL_FREQ = re.compile(r"\b(extensive|frequent|significant|substantial|heavy|regular|considerable|constant) "
+                          r"(domestic |international |business |overnight |national )?travel\b|"
+                          r"\btravel(ing|ling)? (extensively|frequently|regularly)\b", re.I)
+_TRAVEL_SOME = re.compile(r"\b(occasional|some|minimal|limited|light|infrequent|periodic|minor) "
+                          r"(domestic |international |business |overnight |national )?travel\b|"
+                          r"\btravel(ing|ling)? (occasionally|periodically)\b|\boccasionally travel\b", re.I)
+
+
+def travel(text: str) -> tuple[str, str] | None:
+    """(none | occasional | frequent, evidence) when the posting says how much travel the role needs."""
+    if "travel" not in (text or "").lower():
+        return None
+    for pat in _TRAVEL_PCT:
+        m = pat.search(text)
+        if m:
+            nums = [int(x) for x in m.groups() if x and x.isdigit()]
+            top = max(nums) if nums else None
+            if top is not None and top <= 100:
+                return ("none" if top == 0 else "occasional" if top <= 25 else "frequent"), m.group(0).strip()
+    for value, pat in (("none", _TRAVEL_NONE), ("frequent", _TRAVEL_FREQ), ("occasional", _TRAVEL_SOME)):
+        m = pat.search(text)
+        if m:
+            return value, m.group(0).strip()
+    return None
+
+
+# ------------------------------------------------------------------ required languages (besides English)
+LANGUAGES = ["spanish", "french", "german", "italian", "portuguese", "dutch", "mandarin", "cantonese", "japanese",
+             "korean", "arabic", "hindi", "russian", "polish", "swedish", "norwegian", "danish", "finnish", "turkish",
+             "hebrew", "vietnamese", "thai", "indonesian", "czech", "hungarian", "greek", "romanian", "ukrainian",
+             "tagalog", "malay", "bengali", "urdu", "punjabi", "tamil", "farsi"]
+_LANG_ALIAS = {"chinese": "mandarin", "persian": "farsi", "filipino": "tagalog"}
+_LANG_WORD = re.compile(r"\b(" + "|".join(LANGUAGES + list(_LANG_ALIAS)) + r")\b", re.I)
+_LANG_NEED = re.compile(r"\b(fluen(t|cy)|proficien(t|cy)|native|bilingual|business[- ]level|professional[- ]level|"
+                        r"working (knowledge|proficiency)|(written|spoken|verbal) (and|&) (written|spoken|verbal)|"
+                        r"speak(er|ers|ing)?|language skills|command of|mastery)\b", re.I)
+_LANG_AUDIENCE = re.compile(r"[- ]speaking (customers|clients|markets?|countries|regions?|population|community|world|"
+                            r"users|patients|audiences?)", re.I)
+_LANG_PREFERRED = re.compile(r"\b(prefer\w*|nice[- ]to[- ]have|a plus|bonus|ideally|desirable|advantage|asset|helpful|"
+                             r"beneficial)\b", re.I)
+
+
+def languages(text: str) -> tuple[list[str], str] | None:
+    """Languages other than English the posting requires (not 'a plus'), with the sentence that says so."""
+    if not text or not _LANG_WORD.search(text):
+        return None
+    found, evidence = [], None
+    for m in _LANG_WORD.finditer(text):
+        clause = _clause_at(text, m.start(), m.end())
+        if not _LANG_NEED.search(clause) or _LANG_PREFERRED.search(clause):
+            continue
+        if _LANG_AUDIENCE.match(text, m.end()):
+            continue    # "Spanish-speaking customers" is the audience, not a requirement
+        lang = _LANG_ALIAS.get(m.group(1).lower(), m.group(1).lower())
+        if lang not in found:
+            found.append(lang)
+            evidence = evidence or clause.strip()
+    return (found, evidence) if found else None

@@ -91,11 +91,12 @@ def _sha256(path: Path) -> str:
 
 def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | str = BUILDER_DB,
           detail_calls: int | None = None, published: Path | str | None = None, full: bool = False,
-          discover_companies: bool = True) -> dict:
+          discover_companies: bool = True, llm: bool = True, llm_cap_usd: float | None = None,
+          llm_wait_minutes: float | None = None) -> dict:
     """Find boards for the listed companies, fetch every enabled board into the builder database,
-    then write the index files."""
+    let Claude fill the fields the rules couldn't settle (when a key is set), then write the index files."""
     from . import config as config_mod
-    from . import fetch, net
+    from . import fetch, llm_fill, net
     config_path = Path(config_path or config_mod.DEFAULT_CONFIG)
     conn = db.connect(db_path)
     if db.has_fts(conn):   # the published index gets its own search index; the builder needs none
@@ -121,6 +122,13 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     conn = db.connect(db_path)
     if retired:   # boards switched off in the list: their postings were closed, re-cluster those companies
         fetch.postprocess(conn, cfg, retired)
+    if llm:
+        try:
+            if published and Path(published).exists():
+                llm_fill.carry_spend(conn, json.loads(Path(published).read_text(encoding="utf-8")))
+            llm_fill.run(conn, cfg, cap_usd=llm_cap_usd, wait_minutes=llm_wait_minutes)
+        except Exception as exc:   # optional step: publish the rule answers whatever happens here
+            log.warning("gap fill skipped: %s", exc)
     _company_openings(conn)
     conn.close()
     return export(db_path, out_dir, countries=p["countries"], published=published, full=full)
@@ -235,7 +243,21 @@ def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> in
         with conn:
             conn.execute(f"INSERT OR REPLACE INTO jobs ({', '.join(cols)}) SELECT {', '.join(cols)} FROM s.jobs")
             conn.execute("INSERT OR REPLACE INTO job_content (uid, html) SELECT uid, zpack(unz(html)) FROM s.job_content")
-            conn.execute("INSERT OR REPLACE INTO extractions SELECT content_hash, method, data, model, at FROM s.extractions")
+            # model 'seeded': the next build re-runs the rules (which also records what they left unsettled)
+            conn.execute("INSERT OR REPLACE INTO extractions (content_hash, method, data, model, at) "
+                         "SELECT content_hash, method, data, 'seeded', at FROM s.extractions")
+            # Claude's gap fills are in the published extractions ("by": "claude"): keep them as already
+            # asked, so a lost cache never pays for the same descriptions twice.
+            now = _now()
+            for chash, data in conn.execute("SELECT content_hash, data FROM s.extractions WHERE data LIKE "
+                                            "'%\"by\":%'").fetchall():
+                try:
+                    filled = {k: v for k, v in json.loads(data).items() if isinstance(v, dict) and v.get("by") == "claude"}
+                except ValueError:
+                    continue
+                if filled:
+                    conn.execute("INSERT OR IGNORE INTO llm_extractions (content_hash, data, model, at) "
+                                 "VALUES (?, ?, 'seeded', ?)", (chash, json.dumps(filled, ensure_ascii=False), now))
             conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY id")
             conn.execute(f"INSERT OR REPLACE INTO boards ({', '.join(bcols)}) SELECT {', '.join(bcols)} FROM s.boards")
             conn.execute(f"INSERT OR REPLACE INTO companies ({', '.join(ccols)}) SELECT {', '.join(ccols)} FROM s.companies")
@@ -466,9 +488,24 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
                      SELECT j.uid, j.title, j.company, COALESCE(j.location, ''), fts_text(c.html), p.fts_changed_at
                      FROM src.jobs j JOIN temp.pick p ON p.uid = j.uid LEFT JOIN src.job_content c ON c.uid = j.uid
                      WHERE j.active = 1 AND p.fts""")
+        # Postings deleted since: readers delete them too (a reader on an older version ignores this table
+        # and keeps them, closed and out of every list, until its next base).
+        c.execute("CREATE TABLE main.tombstones (uid TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)")
+        if c.execute("SELECT 1 FROM src.sqlite_master WHERE name = 'tombstones'").fetchone():
+            c.execute("INSERT INTO main.tombstones (uid, deleted_at) SELECT uid, deleted_at FROM src.tombstones "
+                      "WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM src.jobs)", (since,))
         c.executemany("INSERT INTO main.index_meta(key, value) VALUES (?, ?)",
                       [(k, json.dumps(v)) for k, v in meta.items()])
     return _finish(c, plain, out_path)
+
+
+def _deleted_since(db_path, since: str | None) -> int:
+    conn = db.connect(db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM tombstones WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM jobs)",
+                            (since or "",)).fetchone()[0]
+    finally:
+        conn.close()
 
 
 def export(db_path: Path | str, out_dir: Path | str, countries=(), published=None, full: bool = False) -> dict:
@@ -491,6 +528,8 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
     since = state.get("built_at")
     pending = conn.execute("SELECT COUNT(*) FROM export_sig WHERE changed_at > ?", (since or "",)).fetchone()[0]
     coverage = _coverage(conn)
+    from . import llm_fill
+    llm = llm_fill.summary(conn)
     conn.close()
     chain = [d for d in (pub or {}).get("deltas") or [] if d.get("base_built_at") == since]
     reason = ("asked for" if full else "first build" if not since
@@ -509,18 +548,20 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
         conn = db.connect(db_path)
         db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
         conn.close()
+        deleted = 0
     else:
         base = pub["base"]
         prev = chain[-1]["built_at"] if chain else since       # the last build readers can have
-        if changed:
+        deleted = _deleted_since(db_path, prev)
+        if changed or deleted:
             chain = chain + [{**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", prev,
                                              {**meta, "base_built_at": since, "since": prev}),
                               "built_at": now, "since": prev, "base_built_at": since}]
     manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
                 "countries": list(countries), "jobs": _active_total(db_path), "boards": _board_total(db_path),
-                "changed_this_run": changed, "switched_off": _switched_off(db_path), "coverage": coverage,
-                "base": base, "deltas": chain}
+                "changed_this_run": changed, "deleted_this_run": deleted, "switched_off": _switched_off(db_path),
+                "coverage": coverage, "llm": llm, "base": base, "deltas": chain}
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -656,6 +697,7 @@ def install_base(conn, path: Path) -> None:
     conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
     db._tune(conn, "idx")
     db.load_zdicts(conn, "idx")
+    db.ensure_index_columns(conn)
     cleanup(conn, keep=Path(path))
     if old and old.name != "index-empty.db" and old.resolve() != Path(path).resolve():
         _unlink_db(old)
@@ -709,7 +751,14 @@ def apply_delta(conn, path: Path, since: str | None = None) -> dict:
         updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "uid")
         bcols = ", ".join(c for c in _cols(conn, "boards", "d") if c in set(_cols(conn, "boards", "idx")))
         ccols = ", ".join(c for c in _cols(conn, "companies", "d") if c in set(_cols(conn, "companies", "idx")))
+        tomb = conn.execute("SELECT 1 FROM d.sqlite_master WHERE name = 'tombstones'").fetchone() is not None
         with conn:
+            deleted = 0
+            if tomb:   # postings the builder deleted for good (closed long ago): first, so a re-listing below wins
+                gone = "SELECT uid FROM d.tombstones WHERE uid NOT IN (SELECT uid FROM d.jobs)"
+                deleted = conn.execute(f"DELETE FROM idx.jobs WHERE uid IN ({gone})").rowcount
+                conn.execute(f"DELETE FROM idx.job_content WHERE uid IN ({gone})")
+                conn.execute(f"DELETE FROM idx.events WHERE uid IN ({gone})")
             new = conn.execute("SELECT COUNT(*) FROM d.jobs WHERE uid NOT IN (SELECT uid FROM idx.jobs)").fetchone()[0]
             conn.execute(f"INSERT INTO idx.jobs ({', '.join(cols)}) SELECT {select} FROM d.jobs WHERE true "
                          f"ON CONFLICT(uid) DO UPDATE SET {updates}")
@@ -742,7 +791,7 @@ def apply_delta(conn, path: Path, since: str | None = None) -> dict:
             changed = conn.execute("SELECT COUNT(*) FROM d.jobs").fetchone()[0]
     finally:
         conn.execute("DETACH DATABASE d")
-    return {"postings": changed, "new": new}
+    return {"postings": changed, "new": new, "deleted": deleted}
 
 
 def _personal_refresh(conn) -> None:

@@ -126,7 +126,8 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
                 else:
                     # Postings whose locations only became known from detail calls (Workday) get the country check now.
                     kept = [j for j in jobs if src.wanted(j)]
-                    counts = db.upsert_board(conn, b["ats"], b["slug"], kept, keep_alive=src.dropped)
+                    counts = db.upsert_board(conn, b["ats"], b["slug"], kept, keep_alive=src.dropped,
+                                             hold_mass_closures=s.hold_mass_closures)
                     counts["filtered_out"] = len(src.dropped)
                     touched |= counts.pop("touched")
                     counts.pop("changed")
@@ -135,11 +136,19 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
                     results.append({"source": b["ats"], "board": b["slug"], **counts})
             STATUS["done"] += 1
             STATUS["results"] = results
-    postprocess(conn, cfg, touched)
+    # After an upgrade (new rules, filter fields or schema), every company is reprocessed once, not just the
+    # ones whose boards changed this run, so the next index carries the new fields everywhere.
+    postprocess(conn, cfg, None if db.get_meta(conn, "processed_versions") != processed_versions() else touched)
     db.set_meta(conn, "last_fetch", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     conn.execute("PRAGMA optimize")  # keep the query planner's statistics fresh
     conn.close()
     return results
+
+
+def processed_versions() -> dict:
+    """What a full postprocess brings every row up to (stored in meta after one)."""
+    from .classify import DERIVE_VERSION
+    return {"rules": workers.RULES_VERSION, "derive": DERIVE_VERSION, "schema": db.SCHEMA_VERSION}
 
 
 def postprocess(conn, cfg=None, company_keys=None) -> None:
@@ -162,6 +171,11 @@ def postprocess(conn, cfg=None, company_keys=None) -> None:
         ghost.rescore(conn, keys, s.ghost_age_days)
     sponsors.refresh_matches(conn, keys)
     _prune(conn, s.inactive_content_retention_days)
+    n = db.purge_closed(conn, s.closed_retention_days)
+    if n:
+        log.info("deleted %d postings that closed more than %d days ago", n, s.closed_retention_days)
+    if company_keys is None:
+        db.set_meta(conn, "processed_versions", processed_versions())
     db.bump_generation(conn)
 
 
@@ -232,18 +246,22 @@ def precompute(conn, company_keys=None) -> int:
         items = []
         for chash in batch:
             n = need[chash]
-            r = conn.execute("SELECT j.title, j.location, unz(c.html) FROM jobs j JOIN job_content c ON c.uid = j.uid "
-                             "WHERE j.uid = ?", (n["uid"],)).fetchone()
+            r = conn.execute("SELECT j.title, j.location, unz(c.html), j.departments, "
+                             "j.salary_min IS NOT NULL OR j.salary_max IS NOT NULL, j.workplace "
+                             "FROM jobs j JOIN job_content c ON c.uid = j.uid WHERE j.uid = ?", (n["uid"],)).fetchone()
             if r:
-                items.append((chash, r[2], r[0], r[1], n["sig"], n["rules"]))
+                items.append((chash, r[2], r[0], r[1], n["sig"], n["rules"],
+                              {"departments": r[3] or "", "salary": bool(r[4]), "workplace": r[5]}))
+        llm = extract.llm_for(conn, [h for h in batch if need[h]["rules"]])   # Claude gap fills survive new rules
         with conn:
-            for chash, sig, data in workers.run(items):
+            for chash, sig, data, todo in workers.run(items):
                 if need[chash]["sig"]:
                     conn.executemany("UPDATE jobs SET minhash=?, minhash_of=? WHERE uid=?",
                                      [(sig, chash, u) for u in need[chash]["uids"]])
                 if data is not None:
-                    conn.execute("INSERT OR REPLACE INTO extractions(content_hash, method, data, model, at) "
-                                 "SELECT ?, 'rules', ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM extractions "
+                    conn.execute("INSERT OR REPLACE INTO extractions(content_hash, method, data, model, at, unresolved) "
+                                 "SELECT ?, 'rules', ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM extractions "
                                  "WHERE content_hash = ? AND method = 'claude')",
-                                 (chash, json.dumps(data, ensure_ascii=False), workers.RULES_VERSION, utcnow(), chash))
+                                 (chash, json.dumps(extract.merge_llm(data, llm.get(chash)), ensure_ascii=False),
+                                  workers.RULES_VERSION, utcnow(), ",".join(todo or []) or None, chash))
     return len(hashes)

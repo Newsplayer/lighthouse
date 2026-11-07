@@ -62,16 +62,23 @@
       {% if job.elig is none %}<p class="meta">Set up your <a href="{{ url_for('profile_page') }}">profile</a> to check.</p>
       {% elif inelig %}<ul class="plain">{% for r in inelig %}<li class="bad">✕ {{ r }}</li>{% endfor %}</ul>
       {% else %}<p class="ok">✓ Nothing in the posting rules you out.</p>{% endif %}
-      <h3>Extracted from the posting <span class="meta">({{ method or 'not yet' }})</span></h3>
+      {% set filled = extracted.values()|selectattr('by', 'defined')|list %}
+      <h3>Extracted from the posting <span class="meta">({{ method or 'not yet' }}{% if filled and method != 'claude' %}; Claude filled {{ filled|length }} the rules couldn't tell{% endif %})</span></h3>
       <dl class="facts">
         {% set labels = {'salary': 'Salary', 'workplace': 'Workplace', 'yoe_min': 'Years asked', 'clearance': 'Clearance',
-                         'citizenship': 'Citizenship', 'degree': 'Degree', 'visa': 'Visa sponsorship'} %}
+                         'citizenship': 'Citizenship', 'degree': 'Degree', 'visa': 'Visa sponsorship',
+                         'travel': 'Travel', 'languages': 'Languages required', 'benefits': 'Benefits offered'} %}
         {% for key, label in labels.items() %}
           {% set fld = extracted.get(key) or {} %}
           <dt>{{ label }}</dt>
-          <dd>{% if fld.value is none %}<span class="meta">unknown</span>
+          <dd>{% if fld.value is none or fld.value == [] %}<span class="meta">unknown</span>
               {% elif key == 'salary' %}{{ fld.value.min|money(fld.value.currency) }}–{{ fld.value.max|money(fld.value.currency) }} / {{ fld.value.interval }}
+              {% elif key == 'benefits' %}{% for b in fld.value %}{{ benefit_labels.get(b, b) }}{% if not loop.last %}, {% endif %}{% endfor %}
+              {% elif key == 'travel' %}{{ travel_labels.get(fld.value, fld.value) }}
+              {% elif key == 'languages' %}{{ fld.value|map('capitalize')|join(', ') }}
               {% elif fld.value is sameas true %}required{% else %}{{ fld.value }}{% endif %}
+              {% if key == 'yoe_min' and fld.preferred %} <span class="meta">(preferred)</span>{% endif %}
+              {% if fld.by == 'claude' %} <span class="meta" title="The rules couldn't tell from the text; Claude read the posting">· read by Claude</span>{% endif %}
               {% if fld.evidence %}<br><q class="evidence">{{ fld.evidence }}</q>{% endif %}</dd>
         {% endfor %}
       </dl>

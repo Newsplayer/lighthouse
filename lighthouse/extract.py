@@ -1,9 +1,12 @@
 """Structured fields from a posting: salary, workplace, years of experience, clearance,
-citizenship, degree, visa-sponsorship language, pipeline wording.
+citizenship, degree, visa-sponsorship language, pipeline wording, benefits, travel, required languages.
 
-Two tiers, both cached by description hash so identical text is never processed twice:
-  rules  — free regexes, run on every new description during fetch
-  claude — optional, more accurate (claude_api.py); replaces the rules result when present
+Tiers, all cached by description hash so identical text is never processed twice:
+  rules    — free regexes, run on every new description during fetch
+  gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
+             rules can't settle it (unresolved()), Claude reads it once and fills that gap. Rule answers
+             are never overwritten; filled fields carry "by": "claude".
+  claude   — optional, your own key (claude_api.py); replaces the rules result when present
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
 matches the value is None ("unknown"), never a guess.
@@ -20,7 +23,7 @@ from .models import utcnow
 from .sanitize import html_to_text
 
 FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
-          "skills", "employment")
+          "skills", "employment", "benefits", "travel", "languages", "job_function", "seniority")
 
 _PREFERRED = re.compile(r"\b(prefer|preferred|nice to have|nice-to-have|bonus|a plus|plus if|ideally|desirable)\b", re.I)
 
@@ -37,9 +40,9 @@ _NUMWORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "se
              "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "a": 1}
 _N = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen)"
 # "5+ years of (relevant, hands-on...) experience", "4+ years’ experience", "3-5 yrs of industry experience"
-_YOE = re.compile(_N + r"\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?"
+_YOE = re.compile(_N + r"(?:\s*\(\d{1,2}\+?\))?\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?"
                   r"(?:(?:total|full|professional|relevant|combined|overall)\s+)?(?:years?|yrs?)\b['’]?(?:\s+of)?"
-                  r"(?:\s+[\w/&,.'’()-]+){0,8}?\s+(?:experience|exp\b|work(?:ing)?\b|industry|background)", re.I)
+                  r"(?:\s+[\w/&,.'’()+-]+){0,8}?\s+(?:experience|exp\b|work(?:ing)?\b|industry|background)", re.I)
 # "minimum 2-5 years", "at least one year", "minimum of 3 years"
 _YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)\s+(?:of\s+)?" + _N +
                       r"(?:\s*(?:-|–|to)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b", re.I)
@@ -67,8 +70,8 @@ _VISA_YES = re.compile(
     r"sponsorship (is )?available|offer(s|ing)? (visa |immigration )?sponsorship|relocation and visa support)", re.I)
 _CAVEAT = re.compile(r"\b(every|all roles|each role|always|every candidate)\b", re.I)
 _DEGREES = [
-    ("bachelors", re.compile(r"\b(bachelor'?s|bachelors|B\.?S\.?c?\b|B\.?A\.?\b|BS/BA|BA/BS|undergraduate degree|4-year degree|four-year degree)", re.I)),
-    ("masters", re.compile(r"\b(master'?s|masters|M\.?S\.?c?\b|MBA\b)", re.I)),
+    ("bachelors", re.compile(r"\b(bachelor['’]?s|bachelors|B\.?S\.?c?\b|B\.?A\.?\b|BS/BA|BA/BS|undergraduate degree|4-year degree|four-year degree)", re.I)),
+    ("masters", re.compile(r"\b(master['’]?s|masters|M\.?S\.?c?\b|MBA\b)", re.I)),
     ("phd", re.compile(r"\b(Ph\.?D|doctorate|doctoral)", re.I)),
 ]
 _REMOTE = re.compile(r"\b(fully remote|100% remote|remote-first|remote first|work from anywhere|this (role|position) is remote|remote (role|position))\b", re.I)
@@ -267,26 +270,134 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
     emp = classify.employment_from_text(text)
     if emp:
         out["employment"] = _f(emp)
+    found = classify.benefits(text)
+    if found:
+        out["benefits"] = _f(found)
+    tr = classify.travel(text)
+    if tr:
+        out["travel"] = _f(tr[0], tr[1])
+    langs = classify.languages(text)
+    if langs:
+        out["languages"] = _f(langs[0], langs[1])
     return out
+
+
+# ---------------------------------------------------------------- what the rules couldn't settle
+# A field is "unresolved" when the posting clearly talks about it (the gate matches) but the rules found
+# no answer. Only those postings go to Claude, so a posting that simply never mentions sponsorship
+# (most of them) costs nothing. Each gate is behind a cheap substring check.
+_GATES: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
+    "salary": (("$", "£", "€", "usd", "eur", "gbp", "cad", "salary", "compensation", "pay", "wage"), re.compile(
+        r"[$£€]\s?\d|\b(?:usd|eur|gbp|cad|aud)\s?\d|\b(?:salary|compensation|pay|wage|ote)\b[^.\n]{0,80}?"
+        r"\d{2,3}(?:,\d{3}|\s?k\b)", re.I)),
+    # A number has to be there: "years of experience will correlate with level" has no answer to find.
+    "yoe_min": (("year", "yr"), re.compile(
+        _N + r"\b[^.\n;]{0,12}\b(?:years?|yrs?)\b[^.\n;]{0,60}\bexperience\b|"
+        r"\bexperience\b[^.\n;]{0,40}\b" + _N + r"\b[^.\n;]{0,12}\b(?:years?|yrs?)\b", re.I)),
+    # Sponsorship of a visa, not an "executive sponsor" or "sponsored media".
+    "visa": (("sponsor", "visa", "authoriz", "authoris", "right to work", "eligible to work", "h-1b", "h1b", "permit",
+              "immigration"),
+             re.compile(r"\b(?:visas?|h-?1b|work permits?|work authori[sz]ation|authori[sz]ed to work|right to work|"
+                        r"eligible to work|employment authori[sz]ation)\b|\bsponsor\w*\b[^.\n]{0,40}\b(?:visa|immigration|"
+                        r"employment|work)\b|\b(?:visa|immigration|employment|work)\b[^.\n]{0,40}\bsponsor\w*", re.I)),
+    # A requirement on the candidate, not export control as subject matter.
+    "citizenship": (("citizen", "itar", "export", "u.s. person", "us person"), re.compile(
+        r"\b(?:u\.?s\.?|united states|american)\s+citizen(?:s|ship)?\b(?!\s+status)|\bu\.?s\.? persons?\b|"
+        r"\b(?:itar|export control)\b[^.\n]{0,60}\b(?:must|eligib\w*|citizen\w*|persons?|green card)\b", re.I)),
+    "clearance": (("clearance", "polygraph", "secret", "public trust"), re.compile(
+        r"\b(?:clearance|polygraph|top secret|ts/sci|secret (?:level|clearance)|public trust)\b", re.I)),
+    # Only the levels we record (a law degree or "a degree" alone has no level to read).
+    "degree": (("bachelor", "master", "phd", "ph.d", "doctor", "bs/", "ba/", "ms/"), re.compile(
+        r"\b(?:bachelor['’]?s?|master['’]?s|ph\.?d|doctorate|bs/ba|ba/bs|bs/ms|ms/phd)\b", re.I)),
+    # How the role itself is worked, not "in-person meetings" or "onsite interviews".
+    "workplace": (("remote", "hybrid", "office", "home", "telecommut", "site"), re.compile(
+        r"\b(?:remote|hybrid|work from home|wfh|telecommut\w*)\b|\b(?:fully|100%|five days)\s+(?:in[- ]office|"
+        r"on-?site|in[- ]person)\b|\bin[- ]office (?:expectations?|requirements?|policy|days?)\b|"
+        r"\b\d\s*days?\s*(?:a|per|each)\s*week\b[^.\n]{0,30}\boffice\b|\bon-?site (?:role|position|requirement)\b", re.I)),
+    "travel": (("travel",), re.compile(
+        r"\btravel\w*\b[^.\n;]{0,50}(?:required|requirement|up to|%|percent|willing|ability|expected|must|may)|"
+        r"\b(?:willing|able|ability|required|expected|must be able)\b[^.\n;]{0,25}\btravel", re.I)),
+}
+_LANG_GATE = re.compile(r"\b(?:bilingual|fluen(?:t|cy)|proficien(?:t|cy) in|native speaker|language skills)\b", re.I)
+
+
+def unresolved(text: str, data: dict, title: str = "", departments: str = "", ats: dict | None = None) -> list[str]:
+    """Fields the posting talks about that the rules (and the ATS's own fields) couldn't settle."""
+    from . import classify
+    ats = ats or {}
+    low = (text or "").lower()
+    val = lambda k: (data.get(k) or {}).get("value")
+    out = []
+    for field, (keys, pat) in _GATES.items():
+        if val(field) not in (None, [], ""):
+            continue
+        if field == "salary" and ats.get("salary"):
+            continue
+        if field == "workplace" and ats.get("workplace"):
+            continue
+        if any(k in low for k in keys) and pat.search(text):
+            out.append(field)
+    if val("languages") in (None, []) and _LANG_GATE.search(text or "") and classify._LANG_WORD.search(text or ""):
+        out.append("languages")
+    if classify.job_function(title, departments) is None and text:
+        out.append("job_function")
+    return out
+
+
+def merge_llm(data: dict, llm: dict | None) -> dict:
+    """Fill the gaps in a rule extraction from Claude's reading; a rule answer always stays."""
+    if not llm:
+        return data
+    out = dict(data)
+    for k, v in llm.items():
+        if not isinstance(v, dict) or v.get("value") in (None, [], ""):
+            continue
+        cur = out.get(k) if isinstance(out.get(k), dict) else {}
+        if cur.get("value") in (None, [], ""):
+            out[k] = {**v, "by": "claude"}
+    return out
+
+
+def llm_for(conn, hashes) -> dict[str, dict]:
+    """Claude gap-fill readings (builder / local database only) for these description hashes."""
+    hashes = [h for h in hashes if h]
+    if not hashes:
+        return {}
+    try:
+        rows = []
+        for i in range(0, len(hashes), 500):
+            part = hashes[i:i + 500]
+            rows += conn.execute(f"SELECT content_hash, data FROM llm_extractions WHERE content_hash IN "
+                                 f"({','.join('?' * len(part))})", part).fetchall()
+    except Exception:   # a reader's database has no such table
+        return {}
+    return {r[0]: json.loads(r[1]) for r in rows if r[1]}
 
 
 def ensure_rules(conn, company_keys) -> int:
     """Run the free extractor on any description hash that has no extraction yet."""
+    from .workers import RULES_VERSION
     n = 0
     for ck in company_keys:
         rows = conn.execute(
-            """SELECT j.content_hash, unz(c.html) AS content_html, j.title, j.location FROM jobs j
+            """SELECT j.content_hash, unz(c.html) AS content_html, j.title, j.location, j.departments,
+                      j.salary_max IS NOT NULL OR j.salary_min IS NOT NULL AS ats_salary, j.workplace FROM jobs j
                JOIN job_content c ON c.uid = j.uid
                LEFT JOIN extractions e ON e.content_hash = j.content_hash
                WHERE j.company_key=? AND j.active=1 AND e.content_hash IS NULL AND length(c.html) > 0
                GROUP BY j.content_hash""", (ck,)).fetchall()
+        llm = llm_for(conn, [r["content_hash"] for r in rows])
         with conn:
             for r in rows:
-                data = rules(html_to_text(r["content_html"]), r["title"], r["location"] or "")
-                from .workers import RULES_VERSION
-                conn.execute("INSERT OR IGNORE INTO extractions(content_hash, method, data, model, at) "
-                             "VALUES (?, 'rules', ?, ?, ?)",
-                             (r["content_hash"], json.dumps(data, ensure_ascii=False), RULES_VERSION, utcnow()))
+                text = html_to_text(r["content_html"])
+                data = rules(text, r["title"], r["location"] or "")
+                todo = unresolved(text, data, r["title"], r["departments"] or "",
+                                  {"salary": bool(r["ats_salary"]), "workplace": r["workplace"]})
+                conn.execute("INSERT OR IGNORE INTO extractions(content_hash, method, data, model, at, unresolved) "
+                             "VALUES (?, 'rules', ?, ?, ?, ?)",
+                             (r["content_hash"], json.dumps(merge_llm(data, llm.get(r["content_hash"])),
+                                                            ensure_ascii=False),
+                              RULES_VERSION, utcnow(), ",".join(todo) or None))
                 n += 1
     return n
 
@@ -305,7 +416,8 @@ def _annual(v, per):
 
 _DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
        j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
-       j.employment_type, COALESCE(ce.data, e.data) AS data, CASE WHEN ce.data IS NOT NULL THEN 'claude' ELSE e.method END AS method
+       j.employment_type, COALESCE(ce.data, e.data) AS data, CASE WHEN ce.data IS NOT NULL THEN 'claude' ELSE e.method END AS method,
+       COALESCE(ce.at, e.at) AS data_at
 FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
 LEFT JOIN claude_extractions ce ON ce.content_hash = j.content_hash"""
 
@@ -328,8 +440,9 @@ def _derive_rows(conn, rows) -> None:
     from . import classify, geo
     with conn:
         for r in rows:
-            key = (f"{classify.DERIVE_VERSION}:{r['content_hash']}:{r['method']}:{r['workplace']}:{r['salary_min']}:"
-                   f"{r['salary_max']}:{r['salary_interval']}:{r['title']}:{r['cluster_locations']}:"
+            # data_at changes whenever the extraction is rewritten (new rules, a Claude gap fill)
+            key = (f"{classify.DERIVE_VERSION}:{r['content_hash']}:{r['method']}:{r['data_at']}:{r['workplace']}:"
+                   f"{r['salary_min']}:{r['salary_max']}:{r['salary_interval']}:{r['title']}:{r['cluster_locations']}:"
                    f"{r['departments']}:{r['employment_type']}")
             if key == r["derived_of"]:
                 continue
@@ -353,17 +466,24 @@ def _derive_rows(conn, rows) -> None:
                 ysrc = "title" if yoe is not None else None
             locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
             stated = yoe if ysrc == "stated" else None
+            pick = lambda v, allowed: v if v in allowed else None   # a Claude value must be one we know
+            travel = pick(val("travel"), classify.TRAVEL)
+            langs = [x for x in (val("languages") or []) if isinstance(x, str)]
             conn.execute(
                 """UPDATE jobs SET workplace_eff=?, pay_min_annual=?, pay_max_annual=?, pay_currency=?,
                        pay_interval=?, yoe_min=?, yoe_source=?, visa=?, clearance=?, citizenship=?, degree=?,
-                       countries=?, job_function=?, seniority=?, emp_type=?, skills=?, derived_of=? WHERE uid=?""",
+                       countries=?, job_function=?, seniority=?, emp_type=?, skills=?, benefits=?, travel=?,
+                       languages=?, derived_of=? WHERE uid=?""",
                 (r["workplace"] or val("workplace"), smin, smax, cur, interval_of(per) if smax else None, yoe, ysrc,
                  val("visa"), val("clearance"), None if cit is None else int(bool(cit)), val("degree"),
                  geo.encode(geo.countries_of(locs)),
-                 classify.job_function(r["title"], r["departments"] or ""),
-                 classify.seniority(r["title"], stated, ysrc),
-                 classify.employment_type(r["employment_type"], r["title"], val("employment")),
-                 classify.encode_skills(val("skills") or []), key, r["uid"]))
+                 classify.job_function(r["title"], r["departments"] or "")
+                 or pick(val("job_function"), classify.FUNCTION_NAMES),
+                 classify.seniority(r["title"], stated, ysrc) or pick(val("seniority"), classify.SENIORITY),
+                 classify.employment_type(r["employment_type"], r["title"], pick(val("employment"), classify.EMP_TYPES)),
+                 classify.encode_skills(val("skills") or []),
+                 classify.encode_list([b for b in (val("benefits") or []) if b in classify.BENEFITS]),
+                 travel, classify.encode_list(langs), key, r["uid"]))
 
 
 def get(conn, content_hash: str) -> tuple[dict, str | None]:
