@@ -65,11 +65,15 @@ a database or anything personal: `git log --all --stat -- data` should list no `
 - **Fork pull request workflows:** "Require approval for all outside collaborators". This workflow
   doesn't run on pull requests anyway, so a pull request can never publish an index.
 
-### 5. Optional: limit the index to some countries
+### 5. Countries in the index
 
-**Settings → Secrets and variables → Actions → Variables → New repository variable:**
-`LIGHTHOUSE_COUNTRIES` = `US` (or `US,CA,GB`). Postings located only elsewhere are skipped, which
-makes builds faster and downloads smaller. Leave it unset for everything. Users can always narrow
+The index covers the **US, Canada and Mexico** (`US,CA,MX`). Postings located only elsewhere are
+skipped before any description download, which makes builds faster and downloads smaller. A
+posting with no recognisable country ("Remote", "Multiple locations") is kept. A bare city name is
+never placed abroad when a North American city has that name too.
+
+To change the scope, add a repository variable under **Settings → Secrets and variables →
+Actions → Variables**: `LIGHTHOUSE_COUNTRIES` = e.g. `US` or `US,CA,MX,GB`. Users can narrow
 further with their Profile countries, but they can't get countries the index left out.
 
 ### 6. Turn on Issues (for board suggestions)

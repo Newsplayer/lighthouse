@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-DERIVE_VERSION = "d1"   # bump when these rules change, so every row is re-labelled once
+DERIVE_VERSION = "d2"   # bump when these rules change, so every row is re-labelled once
 
 # ------------------------------------------------------------------ job function
 # Checked in order; the first match wins ("Machine Learning Engineer" is ML, not Software).

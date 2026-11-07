@@ -156,7 +156,7 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 |---|---|
 | Unchanged boards | The whole response is hashed; byte-identical to last run → nothing is parsed or written (16 ms instead of ~3 s for a 1,700-posting board) |
 | Unchanged postings | Each raw description is hashed; only new/edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
-| Countries | The index can be limited to some countries (`LIGHTHOUSE_COUNTRIES`); postings located only elsewhere are skipped before any detail download. Your Profile countries filter the list on top |
+| Countries | The index covers the US, Canada and Mexico; postings located only elsewhere are skipped before any detail download. Locations are read without any API, using a built-in list of 77k city names (GeoNames, CC BY 4.0). Your Profile countries filter the list on top |
 | Hourly roles | Skipped before any per-posting call |
 | Shared index | The fetching, analysis and search indexing run once, on GitHub, for everyone. Your computer downloads a ready-to-use file weekly and opens it as is (a few seconds), then applies a small change file every few hours |
 | Descriptions on disk | Each is compressed against one shared dictionary of common posting text: about 3× smaller than plain text, and a page still reads only the one it shows |
@@ -223,3 +223,8 @@ Auto-apply, resume rewriting, LinkedIn scraping, contact harvesting, chat coach.
 ```bash
 pip install pytest && pytest
 ```
+
+## Credits
+
+City names for location matching: [GeoNames](https://www.geonames.org/) (CC BY 4.0), compacted into
+`lighthouse/data/cities.tsv.gz` by `scripts/make_cities.py`.

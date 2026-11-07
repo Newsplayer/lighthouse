@@ -5,8 +5,9 @@ large employers' own careers systems and publishes a ready-to-use job index on t
 release. Each user's local app (a **reader**) downloads that index and adds personal data:
 profile, eligibility, fit, saved/applied/hidden.
 
-**Goal:** the most effective free job board. Every real, open role at the employers we list,
-once (no duplicates), with ghost jobs flagged. Each user should see which roles they are eligible
+**Goal:** the most effective free job board. Every real, open role at the employers we list in
+the US, Canada and Mexico, once (no duplicates), updated as close to continuously as polite
+crawling allows, with ghost jobs flagged. Each user should see which roles they are eligible
 for and fit strongly, and apply on the employer's own site.
 
 **Before starting work, read `docs/ROADMAP.md`.** It describes how the product differs from that
@@ -14,16 +15,26 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## Hard constraints
 
-- **No paid services and no required API keys.** Every feature must work without an account or
-  key. Claude is the one optional, opt-in extra: the user's own API key, or their Claude app via
-  MCP. Free tiers that need a key (Gemini, Groq, OpenRouter...) are out. GitHub Models was shut down
-  on 2026-07-30. Free LLM options that work are listed in `docs/ROADMAP.md` §4.
+- **No paid services, and users never need a key or account.**
+  - Every user feature must work with nothing set up.
+  - Optional extras need no sign-in: a local AI app reached on `127.0.0.1` only (Ollama, LM
+    Studio, llama.cpp), Chrome's built-in model, or the user's own Claude (API key or Claude app
+    via MCP).
+  - **The builder may use a free-tier LLM API** (e.g. Gemini) with the maintainer's key, stored
+    as a repo secret, to create filter fields.
+    - It sends only public posting text.
+    - It's skipped when no key is set, and stops when the quota runs out.
+    - The build must always succeed on rules alone.
+  - GitHub Models was shut down on 2026-07-30. Options are in `docs/ROADMAP.md` §5.
 - **Personal data never leaves the user's machine.** Published index files are built by whitelist
   (`snapshot.py` export) and a test checks it. Never add a table or column to them without
   checking it's job data.
-- **The builder is the only writer of job data.** Readers don't fetch boards. The only reader-side
-  job-data writes are re-deriving fields from the user's own Claude extractions
-  (`extract.derive_claude`).
+- **The builder is the only writer of job data.** Readers never crawl boards.
+  - The one planned exception (ROADMAP P1-1): when the user opens a job, the app fetches that one
+    posting's full description from the employer's public endpoint.
+  - The published index ships excerpts/summaries, not full descriptions.
+  - The only reader-side job-data writes are re-deriving fields from the user's own Claude
+    extractions (`extract.derive_claude`).
 - **Be a polite crawler.** Respect robots.txt, identify as `BUILDER_AGENT`, use only public
   JSON/structured-data endpoints the careers sites themselves load, and stay within the rate
   limits in `net.py`. No LinkedIn or Indeed scraping, no logins, no CAPTCHA solving, no paid
@@ -44,6 +55,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Schema, migrations, filters, list queries, attaching the index | `lighthouse/db.py` |
 | Builder build/export (base + delta chain); reader sync/install/apply | `lighthouse/snapshot.py` |
 | Rule extraction (pay, YOE, visa, clearance...) / classification (function, seniority, skills) | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Location → country (rules + GeoNames city list; rebuild with `scripts/make_cities.py`) | `lighthouse/geo.py`, `lighthouse/data/cities.tsv.gz` |
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
@@ -63,7 +75,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (92 pass at v0.6) before every commit. No CI runs them yet
+- **Tests:** run `python -m pytest -q` (93 pass at v0.6) before every commit. No CI runs them yet
   (ROADMAP P0-4). Add a test for each
   behaviour you change. Fakes for each careers system live in `tests/conftest.py` and
   `tests/test_enterprise.py`.
@@ -77,7 +89,9 @@ goal, the prioritized work, and the decisions waiting on the owner.
   4. Add an empty `probe/run-build` file to run a full test build instead. It publishes nothing.
 - **Measure before and after** any change to the builder, index format or queries: build time,
   base/delta size, pages in ms. Record the numbers in the PR. Real-data baselines are in
-  `docs/ROADMAP.md` §2.
+  `docs/ROADMAP.md` §2, and how updates reach users is in §3.
+- **Freshness matters:** job boards change all day. Never make a change that makes users download
+  more per update or wait longer for new postings without saying so in the PR.
 - **Branches:** work on a branch, never commit to `main`, and open a PR with a short summary.
 - **Decisions:** keep them brief and informative. Note each one in the PR. If the claude.ai
   Projects tool is available, also add an entry to `claude/lighthouse-decisions.md` (read it

@@ -71,7 +71,7 @@ jobs:
       - name: Build
         run: >
           python -m lighthouse index build --out dist --published prev/manifest.json
-          --detail-calls 400 --countries "${{ vars.LIGHTHOUSE_COUNTRIES }}"
+          --detail-calls 400 --countries "${{ vars.LIGHTHOUSE_COUNTRIES || 'US,CA,MX' }}"
           ${{ inputs.full && '--full' || '' }}
 
       - name: Publish
