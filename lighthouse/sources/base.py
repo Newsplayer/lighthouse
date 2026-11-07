@@ -22,8 +22,73 @@ class BoardNotFound(SourceError):
     pass
 
 
+class Blocked(SourceError):
+    """The site answered with a bot check, a block page, 403 or a run of rate-limit/edge errors instead
+    of data. That is a request to stop: no retries this run, and the site's other boards wait too."""
+
+
 class Unchanged(Exception):
     """The board's response is byte-identical to last run: nothing to parse or write."""
+
+
+# Status codes that mean "stop asking" rather than "this board is broken": forbidden, rate limited
+# (after the client's own backoff), and CDN-edge errors that bot protection answers with.
+BLOCK_STATUS = frozenset({403, 429, 520, 521, 522, 523, 524, 525, 526, 530})
+
+
+def json_body(r, label: str):
+    """r.json(), but a page that isn't JSON (a bot check or block page served with 200) or a blocking
+    status raises Blocked, with what came back, instead of a bare JSON error."""
+    if r.status_code in BLOCK_STATUS:
+        raise Blocked(f"{label}: HTTP {r.status_code}")
+    r.raise_for_status()
+    try:
+        return r.json()
+    except ValueError:
+        ctype = (r.headers.get("content-type") or "no content type").split(";")[0]
+        raise Blocked(f"{label}: HTTP {r.status_code} {ctype} ({len(r.content)} bytes) instead of JSON") from None
+
+
+def looks_blocked(exc: Exception) -> bool:
+    """A failure that means the site is pushing back (stop for this run) rather than a broken board."""
+    if isinstance(exc, Blocked):
+        return True
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status in BLOCK_STATUS:
+        return True
+    text = str(exc)
+    return "too many 5" in text or any(f"{code} Server Error" in text for code in BLOCK_STATUS if code >= 500)
+
+
+class RunGate:
+    """Shared by every board in one fetch run: a time limit for starting new work, and the groups of
+    boards (one ATS host, or one Workday data center) that pushed back. After `strikes` block-like
+    answers from a group, nothing more is sent to it this run; its boards are tried first next run."""
+
+    def __init__(self, deadline: float | None = None, strikes: int = 3):
+        import threading
+        self.deadline = deadline          # time.monotonic() value; None = no limit
+        self.strikes = strikes
+        self._hits: dict[str, int] = {}
+        self.blocked: dict[str, str] = {}  # group -> first reason
+        self._lock = threading.Lock()
+
+    def out_of_time(self) -> bool:
+        import time
+        return self.deadline is not None and time.monotonic() > self.deadline
+
+    def is_blocked(self, group: str | None) -> bool:
+        return bool(group) and group in self.blocked
+
+    def strike(self, group: str | None, why: str) -> bool:
+        """Record one block-like answer. True when the group is (now) blocked for this run."""
+        if not group:
+            return False
+        with self._lock:
+            self._hits[group] = self._hits.get(group, 0) + 1
+            if self._hits[group] >= self.strikes and group not in self.blocked:
+                self.blocked[group] = why
+            return group in self.blocked
 
 
 class Source:
@@ -32,6 +97,12 @@ class Source:
     # Regexes with a named group `slug`, matched against "host/path".
     url_patterns: ClassVar[tuple[str, ...]] = ()
     reserved_slugs: ClassVar[frozenset[str]] = frozenset({"api", "j", "embed", "v0", "v1", "jobs", "careers", "o"})
+    # A posting the board stops listing is closed after this many successful listings in a row without
+    # it. Paged listings (most ATSs) can skip a posting when the order shifts between pages; boards that
+    # answer in one response (single_response = True) are exact, so one miss is enough there.
+    single_response: ClassVar[bool] = False
+    # Every company's board is on one API host (Greenhouse, Lever...): pushing back there applies to all of them.
+    shared_host: ClassVar[bool] = False
 
     def __init__(self, client: Client | None = None, max_detail_calls: int = 400,
                  company: str | None = None):
@@ -44,6 +115,29 @@ class Source:
         self.prev_body_hash: str | None = None   # last run's response hash (single-request boards)
         self.body_hash: str | None = None
         self.dropped: set[str] = set()           # uids skipped by title/country filters this run
+        self.gate: RunGate | None = None         # the run's time limit and blocked groups (fetch.py)
+        self.slug: str = ""
+
+    @property
+    def close_after_misses(self) -> int:
+        return 1 if self.single_response else 2
+
+    @classmethod
+    def group(cls, slug: str) -> str | None:
+        """Boards that share one rate limit or bot protection (one API host). None = the board's own
+        site, which pushing back affects only itself."""
+        return cls.name if cls.shared_host else None
+
+    def out_of_time(self) -> bool:
+        """Stop starting per-posting description calls: the run's time is up, or this board's group
+        pushed back. Postings left title-only are filled in on a later run."""
+        g = self.gate
+        return bool(g) and (g.out_of_time() or g.is_blocked(self.group(self.slug)))
+
+    def pushed_back(self, exc: Exception) -> None:
+        """A description call got a block-like answer: count it against the group."""
+        if self.gate and looks_blocked(exc):
+            self.gate.strike(self.group(self.slug) or f"{self.name}:{self.slug}", str(exc)[:200])
 
     def keep(self, uid: str, title: str, locations) -> bool:
         """Title and country filters, checked on raw fields before any parsing or detail call."""
@@ -79,12 +173,14 @@ class Source:
         r = self.client.get(url, **kw)
         if r.status_code == 404:
             raise BoardNotFound(f"{self.label}: board not found")
+        if r.status_code in BLOCK_STATUS:
+            raise Blocked(f"{self.label}: HTTP {r.status_code}")
         r.raise_for_status()
         if board:  # whole-board response: skip everything if it's identical to last time
             self.body_hash = hashlib.blake2b(r.content, digest_size=16).hexdigest()
             if self.prev_body_hash and self.prev_body_hash == self.body_hash:
                 raise Unchanged()
-        return r.json()
+        return json_body(r, self.label)
 
     @classmethod
     def detect(cls, url: str) -> str | None:

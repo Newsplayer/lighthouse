@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
-from .base import BoardNotFound, Source, workplace
+from .base import BoardNotFound, Source, json_body, workplace
 
 PAGE = 20  # the API rejects larger pages
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
@@ -59,6 +59,13 @@ class WorkdaySource(Source):
     label = "Workday"
 
     @classmethod
+    def group(cls, slug: str) -> str | None:
+        # Each data center (wd1, wd5, ...) answers for every company on it, and its bot protection
+        # pushes back for all of them at once.
+        m = _SLUG.match(slug.strip())
+        return f"workday:{m['dc'].lower()}" if m else "workday"
+
+    @classmethod
     def detect(cls, url: str) -> str | None:
         m = _URL.search(url or "") or _SITE_URL.search(url or "")
         if not m or m["site"].lower() in _RESERVED_SITES:
@@ -80,8 +87,7 @@ class WorkdaySource(Source):
                                  headers={"Accept": "application/json"})
             if r.status_code in (404, 422):
                 raise BoardNotFound("Workday: site not found (check tenant, wdN and site name)")
-            r.raise_for_status()
-            page = r.json()
+            page = json_body(r, "Workday")
             if total is None:
                 total = int(page.get("total") or 0)  # only the first page carries the total
             batch = page.get("jobPostings") or []
@@ -102,11 +108,13 @@ class WorkdaySource(Source):
         return jobs
 
     def _detail(self, api: str, job: Job) -> dict | None:
+        if self.out_of_time():
+            return None
         try:
             r = self.client.get(f"{api}{job.detail_marker}", headers={"Accept": "application/json"})
-            r.raise_for_status()
-            return r.json()
-        except Exception:
+            return json_body(r, "Workday")
+        except Exception as exc:
+            self.pushed_back(exc)
             return None  # stays title-only; retried next run
 
     @staticmethod

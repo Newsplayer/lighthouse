@@ -1,6 +1,6 @@
 [project]
 name = "lighthouse"
-version = "0.6.0"
+version = "0.8.0"
 description = "Local, de-duplicated job aggregator across public ATS job boards"
 requires-python = ">=3.11"
 dependencies = ["flask>=3.0", "requests>=2.31", "keyring>=25.0", "openpyxl>=3.1"]

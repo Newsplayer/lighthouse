@@ -76,6 +76,31 @@ To change the scope, add a repository variable under **Settings → Secrets and 
 Actions → Variables**: `LIGHTHOUSE_COUNTRIES` = e.g. `US` or `US,CA,MX,GB`. Users can narrow
 further with their Profile countries, but they can't get countries the index left out.
 
+### 5b. Optional: let Claude read what the rules can't
+
+The free rules read every filter field. When a posting clearly talks about one of them but no rule can
+read the answer (sponsorship in unusual wording, years written oddly, a title no rule recognises), the
+build can ask Claude about that posting. Claude only fills that gap, never overrides a rule answer, and
+reads each description at most once. Without a key, the build simply stays rules-only.
+
+1. Create an API key at [platform.claude.com](https://platform.claude.com/), and set a monthly spend limit
+   on its workspace there as a backstop. API use is billed per token to that account; a Claude Pro or
+   Max subscription doesn't cover it, and a GitHub Action can't use one.
+   To store it without pasting it anywhere else: `gh secret set ANTHROPIC_API_KEY` (it asks for the value).
+2. **Settings → Secrets and variables → Actions → Secrets → New repository secret:** `ANTHROPIC_API_KEY`.
+   Secrets are only given to workflow runs on this repo (never to pull requests from forks; this
+   workflow doesn't run on pull requests at all).
+3. Optional, **Variables:** `LIGHTHOUSE_LLM_CAP_USD` = the most to spend per calendar month (default `10`).
+
+**What it costs:** Claude Haiku 5.5 through the Batch API (half price). The build estimates about
+$0.0005 per description it sends (deliberately on the high side) and stops sending once the month's
+spend plus open batches would pass the cap. Measured on the Anthropic and Stripe boards, about 1
+description in 7 needs Claude. A 50,000-posting index therefore costs roughly $3–4 to fill once.
+After that it depends on how many new descriptions arrive: 3,000 a day comes to about $6 a month.
+Each build waits up to 5 minutes for its batch (`[index] llm_wait_minutes`), so a build stays near an
+hour. Anything still running is collected by the next build and ships with it. The manifest's `llm` entry shows the month's spend and how many
+descriptions are still waiting.
+
 ### 6. Turn on Issues (for board suggestions)
 
 **Settings → General → Features → Issues** ✓. The app's **Suggest a board** button opens a
@@ -83,11 +108,13 @@ pre-filled issue here.
 
 ### 7. Run the first build
 
-**Actions → Job index → Run workflow → Run workflow.** The first run fetches everything (30–60 min;
-big Workday sites fill in their descriptions over the next few runs). When it's green:
+**Actions → Job index → Run workflow → Run workflow.** The first run fetches for 40 minutes and
+publishes what it has (about an hour in all). Boards it didn't reach go first in the next run, and big
+Workday sites fill in their descriptions over the next few days. When it's green:
 - **Releases → Job index** (tag `job-index`) has `manifest.json` and a `base-<time>.db.xz`. Each build's
   files get their own names; the manifest says which are current, and older ones are removed after it's uploaded.
-- The *Publish* step's last line reads like `48213 open roles from 509 boards; new base 41.2 MB`.
+- The *Publish* step's summary reads like `468707 open roles from 852 boards; new base-….db.xz: …`,
+  then how full each filter column is (`Filled for this % of open roles`) and the `jobs.csv.gz` row count.
 
 After that it runs every 6 hours by itself, plus whenever you push a change under `config/`.
 
@@ -116,6 +143,15 @@ GitHub's network; read its output in the run's log. Add an empty `probe/run-buil
 full test build instead. Nothing is published either way. Delete the branch when done.
 
 ## Day to day
+
+### Look at the data
+
+- **As a spreadsheet:** download `jobs.csv.gz` from **Releases → Job index**. One row per open role,
+  one column per filter (the column list is in the README).
+- **As a database:** your app's `data/index/index-*.db` is the published index. Open it in DB
+  Browser for SQLite and browse the `postings` view (same columns), or query `jobs` directly.
+- **How complete it is:** the manifest's `fill` entry says, per filter, the share of open roles it's
+  known for, and how many have a description. Many postings simply don't mention a field.
 
 ### Add a large employer by its careers page
 
@@ -187,8 +223,17 @@ Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthous
 - **You added a migration in `db.py` (schema change):** the next index is built with the new schema,
   and older apps can't read it. They keep the jobs they have, and their Sources page says
   "the job index needs a newer Lighthouse". Tell users to download the new version.
-- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`):** the next build writes a
-  fresh full file by itself (the manifest's rules version no longer matches).
+- **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`) or the filter labels
+  (`DERIVE_VERSION` in `classify.py`):** the next build re-reads every description once (not just the
+  boards that changed) and writes a fresh full file by itself (the manifest's rules version no longer
+  matches). Claude's earlier gap fills are kept, not paid for again.
+- **0.8.0** (schema v7, builder only): two misses to close a posting on paged listings, a role's
+  places on its canonical row only, one description per role in the published index, a 40-minute
+  fetch limit, and the `postings` view plus `jobs.csv.gz`. The first build after the upgrade
+  re-clusters everything once and writes a fresh base. Older apps keep reading the index; on them, a
+  duplicate listing's own page shows no description (its role's main listing does).
+- **0.7.0** adds filter columns and deletion records (schema v6). Older apps keep reading new indexes
+  (they ignore the new columns and deletions), and 0.7 reads older indexes (it adds the columns, empty).
 - **You changed the published index layout (`INDEX_SCHEMA` in `db.py`):** older apps keep the jobs
   they have and say "needs a newer Lighthouse".
 
@@ -206,21 +251,51 @@ once a week, or when the changes add up to half the base.
    (`python -m lighthouse index seed`).
 2. **Discover** boards for the companies list (only those due a re-check), **apply the board lists**
    (the CSVs are the truth on the builder), then **fetch** all enabled boards. Unchanged boards and
-   postings are skipped by hash. Then the usual steps run: de-duplication, field extraction (pay,
-   years asked, visa, clearance, degree, job function, seniority, employment type, skills) and
-   ghost scoring.
+   postings are skipped by hash.
+   - **Within the hour.** 48 boards run in parallel, stalest first (whatever wasn't reached last
+     time), and among those the biggest first. After 40 minutes (`--fetch-minutes`, or the
+     `LIGHTHOUSE_FETCH_MINUTES` variable) no new board or description call is started; boards not
+     reached keep their postings and lead the next run. Workday boards are fetched every other run
+     (11 hours apart), and each Workday data center gets 3 requests a second.
+   - **Pushing back is respected.** A bot-check page, 403, 429 after backoff or a run of CDN edge
+     errors counts against the board's group: one Workday data center (wd1, wd5...), one shared API
+     host (Greenhouse, Lever...), or the board's own site. After three, the group is left alone for the
+     rest of the run: its other boards wait, their postings stay open, and they go first next run.
+     Nothing is retried around a block, and the user agent always says what the builder is. Then the usual steps run: de-duplication, field extraction (pay,
+   years asked, visa, clearance, citizenship, degree, job function, seniority, employment type, skills,
+   benefits, travel, languages) and ghost scoring.
+   - **Closing and deleting.** A posting its board no longer lists is closed: at once on boards that
+     answer in one response (Greenhouse, Lever, Ashby, Workable, Recruitee, sitemaps), and on paged
+     listings (Workday, Oracle, SmartRecruiters...) once it's missing two runs in a row, since a shifting
+     order can skip a posting between pages. If a board with 20+ open
+     postings suddenly lists fewer than half of them, the closures are held for one build: if the next
+     fetch agrees, they're closed then. A posting closed more than `closed_retention_days` (45) ago is
+     deleted once no other listing in its cluster is open, or after a year regardless. Each deletion
+     leaves a tombstone that the next delta carries, so readers delete it too. Postings you marked
+     yourself (local mode) are never deleted.
+   - **Claude gap fill** (only with the `ANTHROPIC_API_KEY` secret, step 5b). The rules record, per
+     description, which fields the posting talks about but they couldn't settle. Newest open,
+     de-duplicated, non-ghost postings with such gaps go out in one Message Batch, within the monthly
+     cap. Results are merged into the extraction for the empty fields only, marked `"by": "claude"`. If
+     this step fails for any reason, the build publishes the rule answers. The month's spend is written
+     to the manifest and carried over if the cache is lost; descriptions Claude already read are
+     recovered from the published base when seeding.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
    - **new base** (first build, weekly, `full`, a new rules version, changes > half the base, or 40 deltas):
      a ready-to-use database → `base-<time>.db.xz`. Every posting, a search index (index only, no second
-     copy of the text), the list indexes, and each description compressed against a dictionary of its
-     board's common text: the company's "About us", benefits and EEO text (~5x smaller than plain
-     text, still readable one row at a time).
+     copy of the text), the list indexes, the `postings` view, and one description per role (its
+     canonical listing's; duplicate listings show the same text), each compressed against a dictionary
+     of its board's common text: the company's "About us", benefits and EEO text (~5x smaller than
+     plain text, still readable one row at a time). A role's places are stored once, on its canonical
+     row, and its search entry covers all of them. Compressed with `xz` on every core.
    - **otherwise:** postings changed since the previous build → `delta-<time>.db.xz`, added to the
      chain of deltas the manifest lists. A user downloads only the deltas they haven't applied, in
      order. If they missed so many that the deltas would outweigh the base, they get the base
      instead. Descriptions and search text are included only where they changed. If nothing
      changed, no file is written.
+
+   - **`jobs.csv.gz`:** every open role with a column per filter (the `postings` view), replaced each build.
 
    The files are written by whitelist (jobs, boards, rule extractions, history, coverage), so nothing
    personal can be in them. Ghost reasons are stored as dates ("open since 2026-08-26"), not day
@@ -234,7 +309,7 @@ once a week, or when the changes add up to half the base.
 
 | Limit | Value | When it matters |
 |---|---|---|
-| Job run time | 6 h max (`timeout-minutes: 340`) | first build of a large list; later runs only fetch what changed |
+| Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
 | Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
@@ -248,8 +323,13 @@ once a week, or when the changes add up to half the base.
 | Users see "no job index published there yet" | the first build hasn't finished, or the repo is private (step 3) |
 | Users see "needs a newer Lighthouse" | expected after a schema change; they need the new version |
 | Users see "checksum mismatch" | a build was publishing while they downloaded; it fixes itself on the next check |
-| Build is slow or times out | lower `--detail-calls` in the workflow, set `LIGHTHOUSE_COUNTRIES`, or switch big Workday boards off |
+| Build is slow or times out | lower `LIGHTHOUSE_FETCH_MINUTES` (default 40), set `LIGHTHOUSE_COUNTRIES`, or switch big boards off |
+| Many Workday boards fail with "Pushed back" | Workday's bot protection answered with block pages; that data center was left alone for the run and goes first next time. If it lasts for days, lower `SHARED_LIMITS` in `net.py` or raise `WORKDAY_REFRESH_HOURS` in `snapshot.py`. Don't work around it |
+| The log says "time limit (40 min) reached: N boards not started" | normal on a first build or after a block; they go first next run |
 | Many boards fail with HTTP 429 | lower `per_host_requests_per_second` in `config/sources.toml` |
+| Manifest's `llm` entry stays at 0 descriptions | the `ANTHROPIC_API_KEY` secret is missing or misspelled; the *Build* log says `gap fill: ... skipped` |
+| `llm.pending` keeps growing | the monthly cap is reached (raise `LIGHTHOUSE_LLM_CAP_USD`) or batches take longer than the wait; they're collected next build |
+| A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 
 ## Testing a build locally
 

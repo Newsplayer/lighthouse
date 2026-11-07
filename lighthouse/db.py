@@ -17,6 +17,7 @@ import json
 import sqlite3
 import zlib
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import Job, company_key, iso, parse_dt, utcnow
@@ -323,12 +324,65 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE jobs SET derived_of = NULL")   # derive the new fields once
 
 
+# Filter fields added in v6 (benefits/languages are ",a,b," lists like skills; travel is none|occasional|frequent).
+_JOB_COLUMNS_V6 = [("benefits", "TEXT"), ("travel", "TEXT"), ("languages", "TEXT")]
+
+LIFECYCLE = """
+-- Claude's reading of postings the rules couldn't settle (builder only; merged into extractions.data
+-- for the fields the rules left empty). Kept by description hash, so a repost never costs twice.
+CREATE TABLE IF NOT EXISTS llm_extractions (
+    content_hash TEXT PRIMARY KEY,
+    data         TEXT NOT NULL,     -- JSON, same shape as extractions.data ({} = asked, nothing usable)
+    model        TEXT,
+    at           TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS llm_pending (   -- sent in a batch that hasn't finished yet
+    content_hash TEXT PRIMARY KEY,
+    batch_id     TEXT NOT NULL,
+    at           TEXT NOT NULL
+);
+-- Postings deleted for good (closed long enough). Deltas carry them so readers delete them too.
+CREATE TABLE IF NOT EXISTS tombstones (
+    uid        TEXT PRIMARY KEY,
+    deleted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tombstones_at ON tombstones(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_closed ON jobs(closed_at) WHERE active = 0;
+CREATE INDEX IF NOT EXISTS idx_extractions_unresolved ON extractions(content_hash) WHERE unresolved IS NOT NULL;
+"""
+
+
+def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
+    """New filter fields, which rule fields each description left unsettled, Claude gap fills,
+    held mass closures and deletion records."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+    for name, decl in _JOB_COLUMNS_V6:
+        if name not in have:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+    if "unresolved" not in {r[1] for r in conn.execute("PRAGMA table_info(extractions)")}:
+        conn.execute("ALTER TABLE extractions ADD COLUMN unresolved TEXT")   # comma list, e.g. "visa,yoe_min"
+    if "held_closures" not in {r[1] for r in conn.execute("PRAGMA table_info(boards)")}:
+        conn.execute("ALTER TABLE boards ADD COLUMN held_closures INTEGER NOT NULL DEFAULT 0")
+    conn.executescript(LIFECYCLE)
+    conn.execute("UPDATE jobs SET derived_of = NULL")
+
+
+def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
+    """Closures need two misses in a row on paged listings (missed counts them); the role's count and
+    places move to its canonical row (dedupe), so every company is re-clustered once."""
+    if "missed" not in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}:
+        conn.execute("ALTER TABLE jobs ADD COLUMN missed INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE jobs SET cluster_id = NULL")
+
+
 MIGRATIONS = [
     lambda c: c.executescript(V1),  # 0 -> 1
     _migrate_1_to_2,                # 1 -> 2
     _migrate_2_to_3,                # 2 -> 3
     _migrate_3_to_4,                # 3 -> 4
     _migrate_4_to_5,                # 4 -> 5
+    _migrate_5_to_6,                # 5 -> 6
+    _migrate_6_to_7,                # 6 -> 7
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -588,6 +642,23 @@ def attach_index(conn, folder: Path) -> None:
     conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
     _tune(conn, "idx")
     load_zdicts(conn, "idx")
+    ensure_index_columns(conn)
+
+
+def ensure_index_columns(conn, schema: str = "idx") -> None:
+    """An index built by an older Lighthouse lacks the newest filter columns: add them, empty, so this
+    version's queries work until the next base arrives (adding a NULL column doesn't rewrite the file)."""
+    try:
+        have = {r[1] for r in conn.execute(f"PRAGMA {schema}.table_info(jobs)")}
+        if not have:
+            return
+        for name, decl in _JOB_COLUMNS_V6:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {schema}.jobs ADD COLUMN {name} {decl}")
+        ensure_postings_view(conn, schema)
+        conn.commit()
+    except sqlite3.OperationalError:   # read-only copy (never the case for a downloaded index, which deltas write to)
+        pass
 
 
 def attached_index(conn) -> Path | None:
@@ -642,7 +713,7 @@ def create_empty_index(path: Path) -> None:
 
 # Job columns that never go into a published index: personal (eligibility is computed per reader),
 # or builder-only (near-duplicate signatures).
-INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of"}
+INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of", "missed"}
 
 INDEX_TABLES = """
 CREATE TABLE IF NOT EXISTS job_content (uid TEXT PRIMARY KEY, html TEXT NOT NULL);
@@ -681,11 +752,67 @@ INDEX_FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(title, comp
              "tokenize = 'porter unicode61', content = '', detail = none)")
 
 
+# One row per open role (duplicate listings collapsed into the role), one column per filter, in plain
+# words: what you browse in a SQLite viewer (DB Browser for SQLite, Datasette...) and what jobs.csv.gz
+# holds. Lists are comma-separated; pay is per year (hourly x 2080) with pay_stated_per saying how
+# the posting gave it. Built-in SQL only, so any SQLite tool can read it.
+POSTINGS_SELECT = """SELECT
+    j.uid AS id, j.title, j.company,
+    j.location,
+    (SELECT group_concat(value, ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))) AS all_locations,
+    replace(trim(j.countries, ','), ',', ', ') AS countries,
+    j.workplace_eff AS workplace,
+    j.emp_type AS employment_type,
+    j.seniority,
+    j.job_function,
+    j.yoe_min AS years_experience,
+    j.yoe_source AS years_experience_source,
+    j.degree,
+    j.visa AS visa_sponsorship,
+    j.clearance,
+    j.citizenship AS us_citizens_only,
+    CAST(j.pay_min_annual AS INTEGER) AS pay_min_per_year,
+    CAST(j.pay_max_annual AS INTEGER) AS pay_max_per_year,
+    j.pay_currency,
+    j.pay_interval AS pay_stated_per,
+    replace(trim(j.skills, ','), ',', ', ') AS skills,
+    replace(trim(j.benefits, ','), ',', ', ') AS benefits,
+    j.travel,
+    replace(trim(j.languages, ','), ',', ', ') AS languages_required,
+    (SELECT group_concat(value, ', ') FROM json_each(COALESCE(j.departments, '[]'))) AS departments,
+    substr(j.posted_at, 1, 10) AS posted_on,
+    substr(j.effective_first_seen, 1, 10) AS first_seen_on,
+    j.cluster_count AS times_listed,
+    j.repost_count AS reposts,
+    j.ghost_score,
+    (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))) AS ghost_signals,
+    EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid) AS has_description,
+    (SELECT group_concat(f.key, ', ') FROM extractions e, json_each(e.data) f
+      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') = 'claude') AS filled_by_claude,
+    j.url,
+    j.source AS ats,
+    j.source_board AS board
+FROM jobs j
+WHERE j.active = 1 AND j.is_canonical = 1"""
+POSTINGS_VIEW = "CREATE VIEW postings AS\n" + POSTINGS_SELECT
+
+
+def ensure_postings_view(conn, schema: str = "main") -> None:
+    """Create (or bring up to date) the postings view in an index file."""
+    row = conn.execute(f"SELECT sql FROM {schema}.sqlite_master WHERE type = 'view' AND name = 'postings'").fetchone()
+    if row and row[0] == POSTINGS_VIEW:
+        return
+    if row:
+        conn.execute(f"DROP VIEW {schema}.postings")
+    conn.execute(POSTINGS_VIEW.replace("CREATE VIEW postings", f"CREATE VIEW {schema}.postings", 1))
+
+
 def create_index_tables(conn, job_columns: list[tuple[str, str]], fts: bool = True, indexes: bool = True) -> None:
     """The published index layout. job_columns: (name, declared type) of the shipped job columns."""
     cols = ",\n    ".join(f"{n} {t or ''}{' PRIMARY KEY' if n == 'uid' else ''}" for n, t in job_columns)
     conn.execute(f"CREATE TABLE IF NOT EXISTS jobs (\n    {cols}\n)")
     conn.executescript(INDEX_TABLES)
+    ensure_postings_view(conn)
     if indexes:
         conn.executescript(INDEX_INDEXES)
     if fts:
@@ -820,13 +947,24 @@ def board_result(conn, ats: str, slug: str, *, error: str | None = None, count: 
     return disabled
 
 
-def board_unchanged(conn, ats: str, slug: str) -> None:
-    """Board answered with exactly the same bytes as last run: just mark it seen."""
+def board_unchanged(conn, ats: str, slug: str) -> set[str]:
+    """Board answered with exactly the same bytes as last run: mark it seen. Postings that run had
+    already left out (held closures) are still left out, so they close now. Returns the companies
+    whose postings closed (to re-cluster)."""
     now = utcnow()
+    gone = [r[0] for r in conn.execute("SELECT uid FROM jobs WHERE source=? AND source_board=? AND active=1 "
+                                       "AND missed >= 1", (ats, slug))]
+    touched = set()
+    if gone:
+        touched = {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE source=? AND "
+                                              "source_board=? AND active=1 AND missed >= 1", (ats, slug))}
+        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
+        conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?, 'closed', ?)", [(u, now) for u in gone])
     conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1", (now, ats, slug))
-    conn.execute("UPDATE boards SET last_fetch=?, last_ok=?, last_error=NULL, fail_count=0 WHERE ats=? AND slug=?",
-                 (now, now, ats, slug))
+    conn.execute("UPDATE boards SET last_fetch=?, last_ok=?, last_error=NULL, fail_count=0, held_closures=0 "
+                 "WHERE ats=? AND slug=?", (now, now, ats, slug))
     conn.commit()
+    return touched
 
 
 def board_counts(conn) -> dict:
@@ -856,11 +994,21 @@ def _row_sig(j: Job, chash: str, marker: str) -> str:
     return hashlib.blake2b(repr(parts).encode(), digest_size=12).hexdigest()
 
 
+MASS_CLOSE_MIN = 20       # boards with at least this many open postings...
+MASS_CLOSE_SHARE = 0.5    # ...that suddenly stop listing more than this share of them: hold, confirm next run
+
+
 def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[Job],
-                 keep_alive: set[str] | None = None) -> dict:
+                 keep_alive: set[str] | None = None, hold_mass_closures: bool = True,
+                 close_after: int = 1) -> dict:
     """Write one board's fresh listing. Returns counts plus which uids/companies changed.
 
-    Postings that are no longer listed are marked inactive (kept for history).
+    Postings that are no longer listed are marked inactive (kept for history; purge_closed deletes
+    them later) once `close_after` successful listings in a row have left them out (paged listings
+    skip postings when the order shifts between pages); until then they stay open with last_seen
+    untouched. If a board that had 20+ open postings suddenly lists fewer than half of them, that
+    is far more often an API hiccup than mass closure: the closures are held (the postings stay open)
+    and only carried out if the next successful fetch agrees.
     An empty content_html never overwrites a stored copy (sources that need a detail
     call per posting only fetch new/changed ones).
     Rows whose fields are identical to last time (row_sig) are not rewritten; one UPDATE at
@@ -871,8 +1019,9 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
     now = utcnow()
     keep_alive = keep_alive or set()
     existing = {r["uid"]: r for r in conn.execute(
-        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig FROM jobs "
+        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig, missed FROM jobs "
         "WHERE source=? AND source_board=?", (source, board))}
+    held_before = conn.execute("SELECT held_closures FROM boards WHERE ats=? AND slug=?", (source, board)).fetchone()
     fts = has_fts(conn)
     seen, changed, touched = set(), set(), set()
     events = []
@@ -893,6 +1042,8 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
             sig = _row_sig(j, chash, marker)
             if old is not None and old["active"] and not is_changed and (
                     old["row_sig"] == sig or (j.partial and old["url"] == j.url)):
+                if old["missed"]:
+                    conn.execute("UPDATE jobs SET missed=0 WHERE uid=?", (j.uid,))
                 continue  # nothing new: no write (last_seen is refreshed for the board below)
             conn.execute(
                 """INSERT INTO jobs (uid, fingerprint, source, source_board, external_id, title, company,
@@ -916,7 +1067,7 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                        salary_min=excluded.salary_min, salary_max=excluded.salary_max,
                        salary_currency=excluded.salary_currency, salary_interval=excluded.salary_interval,
                        locations=CASE WHEN ? THEN jobs.locations ELSE excluded.locations END,
-                       row_sig=excluded.row_sig""",
+                       row_sig=excluded.row_sig, missed=0""",
                 (j.uid, j.fingerprint, j.source, j.source_board, j.external_id, j.title, j.company,
                  company_key(j.company), j.location, j.url, chash,
                  json.dumps(j.departments), iso(j.posted_at), iso(j.updated_at), now, now,
@@ -926,14 +1077,30 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
             if j.content_html and (old is None or old["content_hash"] != chash or not old["active"]):
                 conn.execute("INSERT INTO job_content(uid, html) VALUES (?, ?) "
                              "ON CONFLICT(uid) DO UPDATE SET html=excluded.html", (j.uid, pack(j.content_html)))
+            if old is None:
+                conn.execute("DELETE FROM tombstones WHERE uid=?", (j.uid,))   # deleted once, listed again
             if is_changed:
                 changed.add(j.uid)
                 touched.add(company_key(j.company))
                 if fts and j.content_html:
                     _fts_put(conn, j.uid, j.title, j.company, j.location, j.content_html)
-        conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1", (now, source, board))
-        gone = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive]
-        conn.executemany("UPDATE jobs SET active=0, closed_at=? WHERE uid=?", [(now, u) for u in gone])
+        unseen = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive]
+        was_open = sum(1 for r in existing.values() if r["active"])
+        held = 0
+        need = max(1, close_after)
+        if (hold_mass_closures and held_before is not None and not held_before[0]
+                and was_open >= MASS_CLOSE_MIN and len(unseen) > was_open * MASS_CLOSE_SHARE):
+            held, need = len(unseen), max(need, 2)   # closed only if the next run agrees
+        if held_before is not None:
+            conn.execute("UPDATE boards SET held_closures=? WHERE ats=? AND slug=?", (int(bool(held)), source, board))
+        gone = [u for u in unseen if (existing[u]["missed"] or 0) + 1 >= need]
+        closing = set(gone)
+        missed = [u for u in unseen if u not in closing]
+        conn.executemany("UPDATE jobs SET missed=missed + 1 WHERE uid=?", [(u,) for u in missed])
+        # last_seen: what the board listed this time (postings it left out keep theirs)
+        conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1 AND missed=0",
+                     (now, source, board))
+        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
         events += [(u, "closed", now) for u in gone]
         conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?,?,?)", events)
         if gone:
@@ -941,7 +1108,57 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                 f"SELECT DISTINCT company_key FROM jobs WHERE uid IN ({','.join('?' * len(gone))})", gone)}
     new = sum(1 for e in events if e[1] == "new")
     return {"new": new, "updated": len(changed) - new, "unchanged": len(seen) - len(changed),
-            "closed": len(gone), "changed": changed, "touched": touched}
+            "closed": len(gone), "missed": len(missed), "held": held, "changed": changed, "touched": touched}
+
+
+def _stamp() -> str:
+    # Microseconds, like the index builder's build times: tombstones are compared against them.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+PURGE_ANYWAY_DAYS = 365   # closed this long: deleted even while another listing of the role is open
+
+
+def purge_closed(conn, days: int) -> int:
+    """Delete postings that closed more than `days` ago, once no other listing in their cluster is
+    still open (until then they carry the role's repost history), or after a year regardless.
+    Rows you marked (local mode keeps marks in the same file) are kept. Each deletion leaves a
+    tombstone, so the next index delta tells readers to delete it as well. Returns rows deleted."""
+    if days <= 0:
+        return 0
+    now = datetime.now(timezone.utc)
+    cut = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    hard = (now - timedelta(days=max(days, PURGE_ANYWAY_DAYS))).isoformat(timespec="seconds")
+    uids = [r[0] for r in conn.execute(
+        """SELECT j.uid FROM jobs j WHERE j.active = 0 AND j.closed_at < ?
+               AND (j.closed_at < ? OR j.cluster_id IS NULL OR NOT EXISTS (
+                    SELECT 1 FROM jobs k WHERE k.cluster_id = j.cluster_id AND k.active = 1))
+               AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.uid = j.uid)""", (cut, hard))]
+    if not uids:
+        return 0
+    fts = has_fts(conn)
+    sig = has_table(conn, "export_sig")
+    stamp = _stamp()
+    with conn:
+        for i in range(0, len(uids), 500):
+            part = uids[i:i + 500]
+            q = ",".join("?" * len(part))
+            if fts:
+                for u in part:
+                    fts_delete(conn, u)
+            for table in ("job_content", "events", *(["export_sig"] if sig else [])):
+                conn.execute(f"DELETE FROM {table} WHERE uid IN ({q})", part)
+            conn.execute(f"DELETE FROM jobs WHERE uid IN ({q})", part)
+            conn.executemany("INSERT OR REPLACE INTO tombstones(uid, deleted_at) VALUES (?, ?)", [(u, stamp) for u in part])
+        # Rule extractions nothing refers to any more; Claude readings are kept a while longer (a role
+        # reposted with the same text reuses them at no cost).
+        conn.execute("DELETE FROM extractions WHERE method = 'rules' AND NOT EXISTS "
+                     "(SELECT 1 FROM jobs j WHERE j.content_hash = extractions.content_hash)")
+        old = (now - timedelta(days=180)).isoformat(timespec="seconds")
+        conn.execute("DELETE FROM llm_extractions WHERE at < ? AND NOT EXISTS "
+                     "(SELECT 1 FROM jobs j WHERE j.content_hash = llm_extractions.content_hash)", (old,))
+        conn.execute("DELETE FROM tombstones WHERE deleted_at < ?", ((now - timedelta(days=30)).isoformat(),))
+    return len(uids)
 
 
 # ---------------------------------------------------------------- marks
@@ -1005,6 +1222,14 @@ class Filters:
     seniority: str = ""          # intern | entry | mid | senior | lead | manager | director | executive
     emp_type: str = ""           # full_time | part_time | contract | internship | temporary
     skills: tuple = ()           # every one must be mentioned, e.g. ("python", "sql")
+    posted_within: int | None = None   # days: first seen (repost-aware) this recently
+    pay_listed: bool = False     # only roles that state pay
+    degree_max: str = ""         # "" | none (no degree asked) | bachelors | masters (at most this asked)
+    clearance: str = ""          # "" | none (no clearance asked) | required
+    no_citizenship: bool = False # leave out roles limited to U.S. citizens
+    benefits: tuple = ()         # every one must be offered, e.g. ("equity", "unlimited_pto")
+    travel: str = ""             # "" | low (leave out frequent travel)
+    language: str = ""           # "" | english (no other language required) | a language, e.g. "german"
 
 
 class Count(int):
@@ -1013,11 +1238,13 @@ class Count(int):
 
 
 COUNT_CAP = 5000
-_LIST_COLS = """j.uid, j.title, j.company, j.company_key, j.location, j.cluster_locations, j.cluster_count,
+_DEGREE_RANK = {"bachelors": 1, "masters": 2, "phd": 3}
+_DEGREE_SQL = "CASE j.degree WHEN 'bachelors' THEN 1 WHEN 'masters' THEN 2 WHEN 'phd' THEN 3 ELSE 0 END"
+_LIST_COLS ="""j.uid, j.title, j.company, j.company_key, j.location, j.cluster_locations, j.cluster_count,
     j.url, j.source, j.departments, j.posted_at, j.first_seen, j.effective_first_seen, j.content_hash,
     j.repost_count, j.ghost_score, j.ghost_reasons, j.workplace_eff, j.pay_min_annual, j.pay_max_annual,
     j.pay_currency, j.pay_interval, j.yoe_min, j.yoe_source, j.visa, j.citizenship, j.clearance, j.degree,
-    j.job_function, j.seniority, j.emp_type, j.skills, j.mark AS mrank"""
+    j.job_function, j.seniority, j.emp_type, j.skills, j.benefits, j.travel, j.languages, j.mark AS mrank"""
 
 
 def _fts_query(q: str) -> str:
@@ -1066,6 +1293,8 @@ def _where(conn, f: Filters) -> tuple[list[str], list, bool]:
         args += [f"%,{c},%" for c in f.countries]
     if f.visa == "not_no":
         where.append("(j.visa IS NULL OR j.visa <> 'no')")
+    elif f.visa == "yes":
+        where.append("j.visa = 'yes'")
     elif f.visa == "sponsors":
         where.append("(j.visa = 'yes' OR EXISTS (SELECT 1 FROM sponsor_match s WHERE s.company_key = j.company_key "
                      "AND (s.lca_recent > 0 OR s.uscis_recent > 0)))")
@@ -1077,6 +1306,29 @@ def _where(conn, f: Filters) -> tuple[list[str], list, bool]:
         where.append("j.emp_type = ?"); args.append(f.emp_type)
     for sk in f.skills:
         where.append("j.skills LIKE ?"); args.append(f"%,{sk.strip().lower()},%")
+    if f.posted_within:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(f.posted_within))
+        where.append("j.effective_first_seen >= ?"); args.append(cutoff.isoformat(timespec="seconds"))
+    if f.pay_listed:
+        where.append("j.pay_max_annual IS NOT NULL")
+    if f.degree_max == "none":
+        where.append("j.degree IS NULL")
+    elif f.degree_max in _DEGREE_RANK:
+        where.append(f"(j.degree IS NULL OR {_DEGREE_SQL} <= ?)"); args.append(_DEGREE_RANK[f.degree_max])
+    if f.clearance == "none":
+        where.append("(j.clearance IS NULL OR j.clearance = '')")
+    elif f.clearance == "required":
+        where.append("(j.clearance IS NOT NULL AND j.clearance <> '')")
+    if f.no_citizenship:
+        where.append("(j.citizenship IS NULL OR j.citizenship = 0)")
+    for b in f.benefits:
+        where.append("j.benefits LIKE ?"); args.append(f"%,{b},%")
+    if f.travel == "low":
+        where.append("(j.travel IS NULL OR j.travel <> 'frequent')")
+    if f.language == "english":
+        where.append("(j.languages IS NULL OR j.languages = '')")
+    elif f.language:
+        where.append("j.languages LIKE ?"); args.append(f"%,{f.language.strip().lower()},%")
     if f.eligible_only and f.profile:
         from .profile import eligibility_sql
         clause = eligibility_sql(conn, f.profile, f.yoe_slack)
@@ -1154,7 +1406,14 @@ def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe
 
 
 def content(conn, uid: str) -> str:
+    """A posting's description. The published index keeps one per role (its canonical listing), so a
+    duplicate listing shows its role's: the same text if any listing has it, else the canonical's."""
     r = conn.execute("SELECT html FROM job_content WHERE uid=?", (uid,)).fetchone()
+    if r is None:
+        r = conn.execute("""SELECT c.html FROM jobs j JOIN jobs k ON k.cluster_id = j.cluster_id
+                            JOIN job_content c ON c.uid = k.uid WHERE j.uid = ?
+                            ORDER BY k.content_hash = j.content_hash DESC, k.is_canonical DESC LIMIT 1""",
+                         (uid,)).fetchone()
     return unpack(r[0]) if r else ""
 
 

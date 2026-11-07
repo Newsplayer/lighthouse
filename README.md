@@ -50,7 +50,9 @@ python -m lighthouse start
 | Step | Where it runs | Who can change it |
 |---|---|---|
 | Find each listed company's job board from its careers page | GitHub Action (re-checked every 3–14 days) | the maintainer only |
-| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 6 hours | the maintainer only |
+| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 6 hours (about an hour each) | the maintainer only |
+| Ask Claude about the few postings the free rules couldn't read (optional) | GitHub Action, the maintainer's key, capped monthly | the maintainer only |
+| Close postings that are no longer listed; delete them 45 days later | GitHub Action, every 6 hours | the maintainer only |
 | Publish a ready-to-use database on the repo's `job-index` release | GitHub | the Action only |
 | Use that database as downloaded; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
 
@@ -83,6 +85,23 @@ GitHub issue; once the maintainer adds it, it shows up for everyone after the ne
 [MAINTAINING.md](MAINTAINING.md). Without an `[index] repo` set, Lighthouse fetches boards itself,
 as it did before v0.5.
 
+## The jobs as one table
+
+Every build also publishes **`jobs.csv.gz`** on the repo's `job-index` release: every open role
+(duplicate listings collapsed into one row), with one column per filter and the apply link:
+
+`id, title, company, location, all_locations, countries, workplace, employment_type, seniority,
+job_function, years_experience, years_experience_source, degree, visa_sponsorship, clearance,
+us_citizens_only, pay_min_per_year, pay_max_per_year, pay_currency, pay_stated_per, skills, benefits,
+travel, languages_required, departments, posted_on, first_seen_on, times_listed, reposts, ghost_score,
+ghost_signals, has_description, filled_by_claude, url, ats, board`
+
+Empty means the posting doesn't say. Pay is per year (hourly × 2080; `pay_stated_per` says how the
+posting gave it). Open it in a spreadsheet or pandas. The same table is the `postings` view inside
+the index file your copy downloads (`data/index/index-*.db`), which any SQLite viewer (DB Browser for
+SQLite, Datasette...) can browse, sort and filter. `python -m lighthouse index csv` writes the CSV
+from your copy.
+
 ## What you get
 
 - **One row per role.** Exact duplicates (same company, title, location) and near-duplicates
@@ -93,9 +112,18 @@ as it did before v0.5.
 - **Ghost score with reasons.** Signals: open longer than 60 days, reposted, evergreen title,
   talent-pool wording, not updated in months. One signal never flags. Two = "possible ghost".
   Three or more are hidden by default (one click shows them).
-- **Filters.** Salary, workplace, **years of experience asked** (min–max, with or without roles
-  that don't say), countries, visa language, sponsorship history, fit tier, company, location,
-  full-text search. Sort by newest, best fit, highest pay or fewest years asked.
+- **Filters.** Date posted, salary (or only roles that list pay), workplace, **years of experience
+  asked** (min–max, with or without roles that don't say), countries, visa language (doesn't rule out
+  sponsorship / says it sponsors / sponsorship history), degree asked, security clearance, U.S.-citizens-only
+  roles, travel, languages required, benefits offered, fit tier, company, location, full-text search.
+  The less common ones sit under **More filters**. Sort by newest, best fit, highest pay or fewest years asked.
+- **Postings come and go with the employer's site.** Each build adds new postings and closes the ones no
+  longer listed. Most large employers' systems list jobs page by page, which can skip a posting when
+  the order shifts, so there a posting closes once it's missing two builds in a row. If a large board
+  suddenly lists less than half of its open roles, that's usually a
+  glitch on their side, so those closures wait one build for confirmation. A posting closed 45 days
+  ago is deleted once no other listing of the same role is open (until then it's what lets a repost keep
+  its original date), and your copy deletes it with the next update.
 - **Years asked** is read from the posting ("5+ years of…", "at least one year", "minimum 2–5
   years"), labelled *preferred* when it sits under "Preferred / Nice to have", and estimated from the
   title only when the posting gives no number (Intern/New Grad → 0, Senior → 5, Staff → 8,
@@ -110,9 +138,14 @@ as it did before v0.5.
   on the **Sponsorship** page; each job shows the employer's filings and approvals, kept separate.
 - **Filters from the description.** Job function (Software Engineering, Data & Analytics, Finance...),
   seniority (intern to executive), employment type, skills the posting mentions (python, sql, aws,
-  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language. All of it is
-  worked out by free rules in the GitHub Action, so filtering needs no API and no work on your
-  computer.
+  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language, degree,
+  clearance, citizenship, travel (none / up to 25% / more), languages other than English that are
+  required, and benefits offered (health, 401(k), equity, bonus, unlimited PTO, parental leave,
+  learning budget, relocation). Free rules read these in the GitHub Action. When a posting clearly
+  talks about one of them but no rule can read the answer (sponsorship in unusual wording, years written
+  oddly, a title no rule recognises), the Action asks Claude about that posting once. Claude's answer only
+  fills that gap and never replaces a rule's answer, and the job page marks it "read by Claude". On real
+  boards that's about 1 posting in 7. Either way, filtering needs no API and no work on your computer.
 - **Every apply link.** When the same role is listed on several sites, the job page links each
   open copy, with tracking parameters removed.
 
@@ -169,12 +202,14 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 |---|---|
 | Many boards | Thread pool (`fetch_workers`), shared per-host rate limit, retries with backoff; one failing board never stops a run |
 | Big boards | SmartRecruiters/Workday descriptions fetched only for new postings, capped per run; hourly titles dropped before any detail call |
-| ~900 boards | Board lists in `config/boards/*.csv`; 16 parallel workers with a per-host limit; dead boards switched off automatically |
+| ~900 boards | Board lists in `config/boards/*.csv`; 48 parallel workers in the build with a per-host limit; fetching stops starting new work after 40 minutes (boards not reached go first next run); dead boards switched off automatically |
+| Sites that push back | A bot check, 403 or run of edge errors from a site (or a Workday data center, or a shared API host) leaves it alone for the rest of the build, never worked around; its postings stay as they were and it goes first next build. Workday sites share a limit per data center and are refreshed every other build |
 | Duplicates | One-pass MinHash per description + LSH banding per company, so cost grows with postings, not pairs |
 | Re-runs | Only companies whose postings changed are re-clustered and re-extracted; signatures and extractions are cached by description hash |
 | The list | Cluster/filter fields (function, seniority, skills, pay...) are precomputed by the builder and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
 | Claude spend | Eligibility and ghost filters run first; Batch API; prompt caching; cache by (description, profile); monthly cap |
-| Storage | Descriptions stored zlib-compressed in their own table; search indexes the first 4,000 characters; descriptions of roles closed 180+ days are dropped (history kept); sponsorship data aggregated per employer-year |
+| Storage | Descriptions stored zlib-compressed in their own table; the published index keeps one per role (its duplicate listings show the same text) and stores a role's places once, on its main listing; search indexes the first 4,000 characters; postings closed 45+ days are deleted once no open listing of the role remains (deltas carry the deletions to readers); sponsorship data aggregated per employer-year |
+| Claude in the build | Only postings the rules couldn't settle; once per description (cached by hash, kept across reposts); Batch API; monthly cap; a failure never blocks publishing |
 | Schema | Versioned migrations (`PRAGMA user_version`) |
 | New ATS | One subclass of `sources.base.Source` + one line in `sources/__init__.py` |
 
@@ -189,7 +224,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Fetch + post-processing | `lighthouse/fetch.py` |
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
-| Field extraction; function, seniority, skills | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Field extraction; function, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Claude gap fill in the build (postings the rules couldn't settle) | `lighthouse/llm_fill.py` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |
@@ -212,6 +248,7 @@ python -m lighthouse mcp
 python -m lighthouse index status                 # when the job index was built, what it covers
 python -m lighthouse index import [FILE.db.xz]   # update now, or merge a local index file
 python -m lighthouse index build --out dist       # what the GitHub Action runs (MAINTAINING.md)
+python -m lighthouse index csv [--out FILE]      # every open role, one column per filter (jobs.csv.gz)
 ```
 
 ## Not doing

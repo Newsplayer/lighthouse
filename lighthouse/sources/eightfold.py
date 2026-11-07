@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
-from .base import BoardNotFound, Source
+from .base import BoardNotFound, Source, json_body
 
 PAGE = 100
 _LINK = re.compile(r"https://([\w-]+\.eightfold\.ai|explore\.jobs\.netflix\.net)/careers[^\"'\s<>]*?domain=([\w.-]+)", re.I)
@@ -85,10 +85,12 @@ class EightfoldSource(Source):
         return jobs
 
     def _detail(self, host, domain, job):
+        if self.out_of_time():
+            return None
         try:
             r = self.client.get(f"https://{host}/api/apply/v2/jobs/{job.external_id}?domain={domain}",
                                 headers={"Accept": "application/json"})
-            r.raise_for_status()
-            return r.json()
-        except Exception:
+            return json_body(r, "Eightfold")
+        except Exception as exc:
+            self.pushed_back(exc)
             return None

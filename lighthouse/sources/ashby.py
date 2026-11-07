@@ -14,6 +14,8 @@ API = "https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=
 class AshbySource(Source):
     name = "ashby"
     label = "Ashby"
+    single_response = True
+    shared_host = True
     url_patterns = (
         r"jobs\.ashbyhq\.com/(?P<slug>[\w.%-]+)",
         r"api\.ashbyhq\.com/posting-api/job-board/(?P<slug>[\w.%-]+)",

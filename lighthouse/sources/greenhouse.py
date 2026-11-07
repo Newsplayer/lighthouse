@@ -14,6 +14,8 @@ API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
 class GreenhouseSource(Source):
     name = "greenhouse"
     label = "Greenhouse"
+    single_response = True
+    shared_host = True
     url_patterns = (
         r"(?:job-)?boards(?:-api)?\.greenhouse\.io/(?:v1/boards/)?(?P<slug>[\w-]+)",
         r"(?:job-)?boards\.greenhouse\.io/embed/job_board\?for=(?P<slug>[\w-]+)",

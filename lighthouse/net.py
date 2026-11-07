@@ -4,7 +4,8 @@
   BlockedHost, unless the user explicitly asked for that one URL (careers-page probe).
 - Per-host politeness: a minimum gap between requests to the same host, shared by
   all worker threads, so fetching many boards in parallel never hammers one API.
-- Hosts that share a rate limit (every company's Workday site sits behind one) share one budget.
+- Hosts that share a rate limit share one budget: every company's Workday site on one data center
+  (wd1, wd5, ...) sits behind one front end, whose bot protection pushes back for all of them at once.
   A 429 slows that host or group down for every thread (and honours Retry-After); it speeds back
   up gradually as requests succeed.
 - Retries with backoff on 429/5xx.
@@ -53,8 +54,10 @@ def host_allowed(host: str) -> bool:
     return any(fnmatch.fnmatch(host, pat) for pat in ALLOWED_HOSTS)
 
 
-# Host suffixes whose sites share one rate limit, and the requests per second they share.
-SHARED_LIMITS = (("myworkdayjobs.com", 8.0), ("myworkdaysite.com", 8.0))
+# Host suffixes whose sites share one rate limit per data center (the label before the suffix:
+# acme.wd5.myworkdayjobs.com -> wd5), and the requests per second each data center gets. Workday's
+# bot protection started answering with block pages after about an hour at ~3.5/s per data center.
+SHARED_LIMITS = (("myworkdayjobs.com", 3.0), ("myworkdaysite.com", 3.0))
 MAX_INTERVAL = 4.0          # slowest pace after repeated 429s: one request per 4 s
 RATE_LIMIT_TRIES = 6
 
@@ -73,7 +76,9 @@ class _HostThrottle:
     def key(self, host: str) -> tuple[str, float]:
         for suffix, rps in SHARED_LIMITS:
             if host == suffix or host.endswith("." + suffix):
-                return suffix, 1.0 / rps
+                head = host[: -len(suffix)].rstrip(".")
+                dc = head.rsplit(".", 1)[-1]
+                return (f"{dc}.{suffix}" if dc else suffix), 1.0 / rps
         return host, self.min_interval
 
     def wait(self, host: str) -> None:

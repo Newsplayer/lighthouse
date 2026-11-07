@@ -48,8 +48,18 @@ class Settings:
     max_detail_calls_per_board: int = 150   # SmartRecruiters/Workday description calls per board per run
     detail_minutes: float = 0        # boards started after this many minutes make no description calls this
                                      # run (0 = no limit); keeps a first build of a big list inside the time limit
+    fetch_minutes: float = 0         # no board or description call is started after this many minutes (0 = no
+                                     # limit). Boards not reached are fetched first next run; nothing is lost.
+    workday_refresh_hours: float = 0  # a Workday board fetched OK more recently than this is skipped this run
+                                     # (0 = every run). Every Workday site shares one rate limit per data center.
     disable_after_failures: int = 2   # a board that reports "not found" this many runs in a row is switched off
     inactive_content_retention_days: int = 180
+    # A posting no longer listed is closed at once; it's deleted (and readers drop it) this many days
+    # after it closed, once no other listing of the same role is open (repost history needs it until then).
+    closed_retention_days: int = 45
+    # A board that suddenly lists less than half of its open postings (20+) is more likely a glitch than
+    # mass closure: those postings are closed only if the next run agrees.
+    hold_mass_closures: bool = True
     skip_hourly_titles: bool = True
     # eligibility
     yoe_slack_years: int = 2
@@ -76,6 +86,13 @@ class IndexSettings:
     repo: str = ""                   # "owner/name" of the public repo that publishes the index
     check_every_hours: float = 1     # how often to look for a newer index while the app is open
     stale_after_hours: float = 30    # warn when the newest index is older than this
+    # Builder only (`index build`, i.e. the GitHub Action): postings whose filter fields the rules
+    # couldn't settle are read by Claude. Runs only when ANTHROPIC_API_KEY is set; readers ignore these.
+    llm_fill: bool = True
+    llm_model: str = "claude-haiku-5-5"
+    llm_monthly_cap_usd: float = 10.0  # hard stop for the month (estimated before sending; batches reserve)
+    llm_max_per_run: int = 5000        # newest first; the rest wait for the next run
+    llm_wait_minutes: float = 5        # wait this long for the batch; anything later ships with the next build
 
 
 @dataclass

@@ -12,6 +12,8 @@ API = "https://{slug}.recruitee.com/api/offers/"
 class RecruiteeSource(Source):
     name = "recruitee"
     label = "Recruitee"
+    single_response = True
+    shared_host = True
     url_patterns = (r"(?P<slug>[\w-]+)\.recruitee\.com",)
     reserved_slugs = Source.reserved_slugs | {"www", "app", "support", "blog"}
 

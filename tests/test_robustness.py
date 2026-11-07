@@ -171,16 +171,19 @@ def test_whole_response_is_bounded(monkeypatch):
         c.get("https://slow.example.com/", deadline=300)
 
 
-def test_workday_sites_share_one_adaptive_budget(monkeypatch):
+def test_workday_sites_share_one_adaptive_budget_per_data_center(monkeypatch):
     t = net._HostThrottle(0.25)
-    assert t.key("acme.wd5.myworkdayjobs.com") == t.key("other.wd1.myworkdayjobs.com") == ("myworkdayjobs.com", 1 / 8)
+    assert t.key("acme.wd5.myworkdayjobs.com") == t.key("other.wd5.myworkdayjobs.com") == ("wd5.myworkdayjobs.com", 1 / 3)
+    assert t.key("other.wd1.myworkdayjobs.com") == ("wd1.myworkdayjobs.com", 1 / 3)
+    assert t.key("wd3.myworkdaysite.com") == ("wd3.myworkdaysite.com", 1 / 3)
     assert t.key("api.lever.co") == ("api.lever.co", 0.25)
     t.slow_down("acme.wd5.myworkdayjobs.com", pause=0)
-    t.slow_down("other.wd1.myworkdayjobs.com", pause=0)
-    assert t._interval["myworkdayjobs.com"] == 0.5                     # every Workday site slows down together
+    t.slow_down("other.wd5.myworkdayjobs.com", pause=0)
+    assert t._interval["wd5.myworkdayjobs.com"] == pytest.approx(4 / 3)  # every wd5 site slows down together
+    assert "wd1.myworkdayjobs.com" not in t._interval                     # other data centers don't
     for _ in range(50):
         t.ok("acme.wd5.myworkdayjobs.com")
-    assert t._interval["myworkdayjobs.com"] == pytest.approx(0.4)     # and eases back as answers come in
+    assert t._interval["wd5.myworkdayjobs.com"] == pytest.approx(4 / 3 * 0.8)   # and eases back
 
     c = net.open_network(net.Client(timeout=5, per_host_rps=0))
     answers = iter([429, 429, 200])
