@@ -1,13 +1,36 @@
 # Lighthouse
 
-A local job board. Postings come straight from employers' own careers sites: about 700 of the
-largest US employers (the Fortune 500 plus major tech, finance, consulting and health employers)
-and ~500 more boards, with duplicates and reposts collapsed, likely ghost jobs scored, and roles you
-can't apply to filtered out. Optionally, Claude tells you how well each remaining role fits you.
+A free job board. Postings come straight from employers' own careers sites: about 700 of the largest
+US employers (the Fortune 500 plus major tech, finance, consulting and health employers) and ~500
+more boards, in the US, Canada and Mexico. Duplicates and reposts are collapsed, likely ghost jobs
+are flagged, and roles you can't apply to are filtered out.
 
-The app runs on your computer and your data stays there. The job data comes from a shared,
-read-only **job index** that a scheduled GitHub Action rebuilds every 6 hours; your copy just
-downloads it. No account, no server, no API key needed (Claude is optional).
+## Use it: the website
+
+**[newsplayer.github.io/lighthouse](https://newsplayer.github.io/lighthouse/)**: nothing to install,
+no account.
+- **Search and filters:** keyword, location, company, function, level, type, workplace, pay, years
+  asked, visa, citizenship, clearance, degree, travel, languages and benefits.
+- **"New since your last visit".**
+- **Your profile:** leaves out roles you can't apply to, each with the reason.
+- **Saved / Applied / Hidden lists.**
+- **Your data:** your profile and lists stay in your browser, and nothing is sent anywhere. "Save my
+  data to a file" moves them to another browser.
+- **Updates:** the job list is refreshed by a GitHub Action every few hours. The page checks for a
+  newer one every 15 minutes and downloads only what changed.
+- **Applying:** you apply on the employer's own site. The page shows an excerpt of each posting and
+  every place it's listed.
+
+Measured on a real 73k-role list:
+- First visit: 1.7 MB, including a search and opening three jobs.
+- Results in under 0.4 s; filtering in under 10 ms.
+- A visit after an hourly update: 0.07 MB.
+
+## The local app (optional)
+
+The same job data in an app on your computer, for working offline or using Claude to judge how
+well each role fits you. It downloads a read-only **job index** that the same GitHub Action
+publishes. It gets bug fixes only; new features go to the website.
 
 ## Quick start
 
@@ -232,7 +255,8 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | MCP server | `lighthouse/mcp_server.py` |
 | Job index: build, download, merge | `lighthouse/snapshot.py`, `.github/workflows/job-index.yml` |
 | Scheduler | `lighthouse/scheduler.py` |
-| Website | `lighthouse/web.py`, `templates/` |
+| Website (GitHub Pages): generator / page | `lighthouse/site.py` / `site/` (`logic.js` has no DOM: Node tests it) |
+| Local app UI | `lighthouse/web.py`, `templates/` |
 
 ## CLI
 
@@ -249,6 +273,7 @@ python -m lighthouse index status                 # when the job index was built
 python -m lighthouse index import [FILE.db.xz]   # update now, or merge a local index file
 python -m lighthouse index build --out dist       # what the GitHub Action runs (MAINTAINING.md)
 python -m lighthouse index csv [--out FILE]      # every open role, one column per filter (jobs.csv.gz)
+python -m lighthouse site --out site_out         # the website's files, from the builder database
 ```
 
 ## Not doing
@@ -260,6 +285,10 @@ Auto-apply, resume rewriting, LinkedIn scraping, contact harvesting, chat coach.
 ```bash
 pip install pytest && pytest
 ```
+
+The website's tests also run its JavaScript: in Node (filters, eligibility and search words must
+match the Python versions exactly) and in Chromium via Playwright (`pip install playwright &&
+playwright install chromium`). Each is skipped when not installed.
 
 ## Credits
 

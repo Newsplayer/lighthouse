@@ -32,11 +32,11 @@ Work top to bottom.
 | A new posting reaches users | ≤ 2 h | ≤ 6 h + up to 1 h (builds every 6 h, app checks hourly) |
 | A posting that closes leaves the default list | ≤ 6 h; instantly when the user opens it | ≤ 7 h (but see P0-1) |
 | Wrongly hidden as "not eligible" (the worst error) | ≤ 3% on the eval set | not measured |
-| Install / download needed | nothing (website) | a local app plus a weekly index download (267 MB worldwide with full text) |
-| First visit to the website | ≤ 6 MB | prototype on real data: ~1.4 MB per 68k jobs, so ~5 MB for ~255k |
-| Each later visit / update | ≤ 0.5 MB | prototype: only the jobs changed since the last visit |
-| Filtering and sorting in the page | < 50 ms | not built (expected 10–30 ms for 255k rows in JS) |
-| Opening a job | < 300 ms | not built (one ~25 KB file) |
+| Install / download needed | nothing (website) | website built (P1-1 ✓); goes live with the first build after merge |
+| First visit to the website | ≤ 6 MB | 1.7 MB for 73k roles, including a search and opening 3 jobs (≈ 6 MB at 255k) |
+| Each later visit / update | ≤ 0.5 MB | 0.07 MB after an update of 1,361 changed + 334 closed roles |
+| Filtering and sorting in the page | < 50 ms | 2–7 ms on 73k roles |
+| Opening a job | < 300 ms | 59 ms (local server) |
 | Money / keys users need | none | none ✓ |
 
 ## 2. Where v0.6 is
@@ -72,6 +72,27 @@ Work top to bottom.
   - A delta with 2,000 changed postings (half with new descriptions) is 2.5 MB. An update with one
     change is 42 KB. Exporting a delta takes 8 s.
   - Installing the index takes 6 s; pages load in 2–50 ms.
+- **Website (P1-1, built 2026-11-07; branch `website`):**
+  - Measured on the real 124k-posting builder database: 72,812 roles in scope.
+    - Generated in 37 s; the site is 50 MB.
+    - The job list is 8.6 MB, 1.66 MB gzip.
+  - In Chromium on a local server:
+
+    | Measure | Result |
+    |---|---|
+    | First results | 0.38 s |
+    | Filter or sort | 2–7 ms |
+    | Opening a job | 59 ms |
+    | First visit (search + 3 jobs) | 1.71 MB gzip |
+    | Return visit after a 2% update | 0.07 MB |
+  - Tests: Node runs the page logic against the Python logic (19 filter combinations; eligibility
+    reasons for 120 jobs × 40 profiles; search words), and a Chromium test drives the page.
+- **Owner's changes on `main` (2026-11-07):**
+  - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
+    the postings whose filter fields the rules couldn't settle (`llm_fill.py`).
+  - **Mass-closure hold:** this is P0-1.
+  - **Old postings deleted:** after 45 days closed.
+  - **Builds of about an hour:** a 40-minute fetch limit, stalest boards first.
 - **Static-site prototype** (measured 2026-11-07 on the real 124k index): 68,365 jobs after
   de-duplication and the US/CA/MX scope.
   - Everything needed to list and filter them (title, company, location, dates, function,
@@ -185,7 +206,7 @@ means. Keep every change incremental and measured (§2 baselines).
 
 ### P0: working and correct
 
-1. **Shrink guard ("kill and fill").** In `db.upsert_board` (the closing logic near its end), when a
+1. **✓ Done on `main` (owner, `hold_mass_closures`).** Shrink guard ("kill and fill"). In `db.upsert_board` (the closing logic near its end), when a
    board that answered successfully lists < 50% of its open postings (and ≥ 20 are missing), or
    zero:
    - Don't close them. Record `boards.shrink_seen_at`.
@@ -213,7 +234,8 @@ means. Keep every change incremental and measured (§2 baselines).
 
 ### P1: the website (GitHub Pages; nothing to install)
 
-1. **Static site built by the Action.**
+1. **✓ Built (branch `website`): static site built by the Action.** The design below is what was
+   built. Measurements are in §2.
    - **Generator:** new `lighthouse/site.py`, run after each build: `python -m lighthouse site
      --out site`. It reads `data/builder.db` and writes plain static files, so there is no server
      and no build tool. Start from `scripts/site_prototype.py`, which measured §2.
@@ -319,7 +341,10 @@ means. Keep every change incremental and measured (§2 baselines).
 
 ### P3: richer filters
 
-1. **Filter fields from a free-tier LLM in the builder** (maintainer's key only).
+1. **Filter fields from an LLM in the builder** (maintainer's key only).
+   - **Partly done on `main`:** the owner chose Claude Haiku via the Batch API, capped monthly
+     (`llm_fill.py`). It fills only the fields the rules couldn't settle.
+   - What's left: summaries and the extra fields below. Gemini's free tier remains an alternative.
    - New builder step `lighthouse/enrich.py`. It's skipped when the `LLM_API_KEY` secret is unset,
      and stops when the day's quota or a 60-minute cap is used.
    - Provider settings: `LLM_BASE_URL`, `LLM_MODEL`; Gemini's OpenAI-compatible endpoint by
@@ -377,7 +402,8 @@ means. Keep every change incremental and measured (§2 baselines).
 | D3 | Community ghost/closed reports? | **Not for now** |
 | D4 | AI on the user's computer? | **Yes, linked locally** (loopback, no sign-in or key), **but deferred** with AI fit |
 | D5 | Paid/keyed APIs? | **Users: none. Builder: free-tier LLM API with the maintainer's key** for filter fields (P3-1) |
-| D6 | Hosting? | **A website on GitHub Pages; users download nothing** (P1). The local app is frozen. |
+| D6 | Hosting? | **A website on GitHub Pages; users download nothing** (P1, built). The local app is frozen. |
+| D8 | LLM in the builder? | **Claude Haiku with the maintainer's key, capped at $10/month** (owner, on `main`), for fields the rules couldn't settle |
 | D7 | Priority? | **A functional, effective aggregator first; AI fit later** |
 | — | Update frequency | **As close to constant as polite crawling allows** (P2-1) |
 

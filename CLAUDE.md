@@ -25,15 +25,16 @@ goal, the prioritized work, and the decisions waiting on the owner.
   - Optional extras need no sign-in: a local AI app reached on `127.0.0.1` only (Ollama, LM
     Studio, llama.cpp), Chrome's built-in model, or the user's own Claude (API key or Claude app
     via MCP).
-  - **The builder may use a free-tier LLM API** (e.g. Gemini) with the maintainer's key, stored
-    as a repo secret, to create filter fields.
+  - **The builder may use an LLM API with the maintainer's key**, stored as a repo secret, to fill
+    filter fields. Today that's Claude Haiku via `llm_fill.py`, capped monthly; a free tier such as
+    Gemini would also fit.
     - It sends only public posting text.
     - It's skipped when no key is set, and stops when the quota runs out.
     - The build must always succeed on rules alone.
   - GitHub Models was shut down on 2026-07-30. Options are in `docs/ROADMAP.md` §5.
 - **Personal data never leaves the user's machine.**
-  - Published files (index and website) are built by whitelist (`snapshot.py` export, the planned
-    `site.py`), and a test checks it. Never add a table or column to them without checking it's
+  - Published files (index and website) are built by whitelist (`snapshot.py` export, `site.py`),
+    and a test checks it. Never add a table or column to them without checking it's
     job data.
   - On the website, personal data lives only in the browser's `localStorage`.
 - **The builder is the only writer of job data.** The website and the local app never contact
@@ -65,7 +66,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
-| Website generator and page (planned, ROADMAP P1-1) | `lighthouse/site.py`, `site/` |
+| Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
 | Builder workflow / network probe | `.github/workflows/job-index.yml`, `.github/workflows/network-probe.yml` |
 | Maintainer guide | `MAINTAINING.md` |
@@ -82,8 +83,11 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (93 pass at v0.6) before every commit. No CI runs them yet
-  (ROADMAP P0-4). Add a test for each
+- **Tests:** run `python -m pytest -q` (127 pass) before every commit. No CI runs them yet
+  (ROADMAP P0-4).
+  - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
+  - Filters, eligibility and search words must give exactly the same results as the Python code.
+    Change both sides together. Add a test for each
   behaviour you change. Fakes for each careers system live in `tests/conftest.py` and
   `tests/test_enterprise.py`.
 - **Network:** your sandbox usually can't reach careers sites or GitHub release downloads. To try
