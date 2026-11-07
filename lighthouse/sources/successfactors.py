@@ -25,6 +25,7 @@ _TRAILING_PLACE = re.compile(r"\s*\(([^()]*,[^()]*)\)\s*$")
 class SuccessFactorsSource(Source):
     name = "successfactors"
     label = "SAP SuccessFactors"
+    single_response = True
 
     @classmethod
     def detect(cls, url: str) -> str | None:

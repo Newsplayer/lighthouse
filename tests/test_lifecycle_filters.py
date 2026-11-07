@@ -217,6 +217,31 @@ def test_gap_fills_ship_in_the_index_and_survive_a_lost_cache(tmp_path, monkeypa
     assert claude_api.month_spend(s) == pytest.approx(m["llm"]["spent_usd"], abs=1e-4)
 
 
+def test_a_description_claude_found_nothing_in_is_not_paid_for_again(tmp_path, monkeypatch):
+    b = Builder(tmp_path)
+    b.ingest("acme", [posting(1, "Data Analyst", "Must be authorized to work in the U.S. without the need for "
+                                                 "employer support.")])
+    conn = db.connect(b.path)
+    monkeypatch.setattr(llm_fill, "POLL_SECONDS", 0)
+    api = BatchAPI(lambda params: {})                         # Claude read it and had nothing to add
+    monkeypatch.setattr(claude_api, "default_client", lambda: api)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    llm_fill.run(conn, b.cfg, wait_minutes=1)
+    ch = conn.execute("SELECT content_hash FROM jobs").fetchone()[0]
+    assert "claude_read" in json.loads(conn.execute("SELECT data FROM extractions").fetchone()[0])
+    conn.close()
+    b.export(full=True)
+    seeded = tmp_path / "seeded.db"
+    snapshot.seed_builder(base_file(b), seeded)               # the Actions cache is gone
+    s = db.connect(seeded)
+    assert s.execute("SELECT data FROM llm_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "{}"
+    assert llm_fill.candidates(s, 100, 99) == []              # nothing to send again
+    r, rcfg = reader(tmp_path)
+    snapshot.import_file(r, rcfg, base_file(b), full=True)
+    data = extract.get(r, ch)[0]
+    assert not [v for v in data.values() if isinstance(v, dict) and v.get("by")]   # the job page shows no fills
+
+
 # ---------------------------------------------------------------- lifecycle
 
 def test_builder_reprocesses_everything_once_after_an_upgrade(tmp_path, monkeypatch):
@@ -342,7 +367,8 @@ def test_an_older_index_gains_the_new_columns(tmp_path):
     b.export()
     path = unpacked(base_file(b), tmp_path)
     c = sqlite3.connect(path)
-    for col in ("benefits", "travel", "languages"):    # what a 0.6 builder published
+    c.execute("DROP VIEW postings")                     # what a 0.6 builder published: no view,
+    for col in ("benefits", "travel", "languages"):    # none of these columns
         c.execute(f"ALTER TABLE jobs DROP COLUMN {col}")
     c.commit()
     c.close()

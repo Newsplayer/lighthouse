@@ -182,7 +182,12 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
                             locs.append(l)
                 locs_json = json.dumps(locs)
                 for r in members:
-                    new = (cid, int(r["uid"] == canonical), len(active), locs_json, eff, reposts)
+                    # The role's count and places live on the listing that represents it (every list and
+                    # filter reads canonical rows only). The other listings keep just their own location
+                    # (cluster_locations NULL), so one opening or closing rewrites one row, not the whole
+                    # cluster: a 2,000-store role used to store 2,000 copies of a 2,000-place list.
+                    lead = r["uid"] == canonical
+                    new = (cid, int(lead), len(active) if lead else 1, locs_json if lead else None, eff, reposts)
                     old = (r["cluster_id"], r["is_canonical"], r["cluster_count"], r["cluster_locations"],
                            r["effective_first_seen"], r["repost_count"])
                     if new != old:

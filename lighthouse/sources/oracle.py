@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
-from .base import BoardNotFound, Source, workplace
+from .base import BoardNotFound, Source, json_body, workplace
 
 PAGE = 100
 LIST = ("https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?onlyData=true"
@@ -70,8 +70,7 @@ class OracleSource(Source):
                                 headers={"Accept": "application/json"})
             if r.status_code in (400, 404):
                 raise BoardNotFound("Oracle: site not found")
-            r.raise_for_status()
-            items = (r.json().get("items") or [{}])
+            items = (json_body(r, "Oracle").get("items") or [{}])
             page = items[0] if items else {}
             if total is None:
                 total = int(page.get("TotalJobsCount") or 0)
@@ -93,13 +92,15 @@ class OracleSource(Source):
         return jobs
 
     def _detail(self, host, site, job):
+        if self.out_of_time():
+            return None
         try:
             r = self.client.get(DETAIL.format(host=host, site=quote(site), id=quote(job.external_id)),
                                 headers={"Accept": "application/json"})
-            r.raise_for_status()
-            items = r.json().get("items") or []
+            items = json_body(r, "Oracle").get("items") or []
             return items[0] if items else None
-        except Exception:
+        except Exception as exc:
+            self.pushed_back(exc)
             return None
 
     @staticmethod

@@ -20,7 +20,7 @@ from . import db, dedupe, extract, ghost, profile, sponsors, workers
 from .config import DEFAULT_CONFIG
 from .net import default_client
 from .sources import SOURCES, BoardNotFound
-from .sources.base import Unchanged
+from .sources.base import RunGate, Unchanged, looks_blocked
 
 log = logging.getLogger("lighthouse.fetch")
 
@@ -36,23 +36,67 @@ def _rate_limited(exc: Exception) -> bool:
     return getattr(resp, "status_code", None) == 429 or bool(re.search(r"\b429\b", str(exc)))
 
 
+DEFERRED = "deferred"            # _fetch_board: not started (time is up, or its group pushed back)
+
+
+def board_group(board: dict) -> str:
+    """Boards that share one rate limit or bot protection (a Workday data center, one API host); a
+    board on its own site is its own group."""
+    group = getattr(SOURCES[board["ats"]], "group", None)
+    return (group(board["slug"]) if group else None) or f"{board['ats']}:{board['slug']}"
+
+
 def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=None, countries=frozenset(),
-                 detail_stop: float | None = None):
+                 detail_stop: float | None = None, gate: RunGate | None = None):
+    cls = SOURCES[board["ats"]]
+    group = board_group(board)
     for pause in (*BOARD_RETRY_PAUSES, None):
-        cls = SOURCES[board["ats"]]
+        if gate and (gate.out_of_time() or gate.is_blocked(group)):
+            return DEFERRED, None
         details = 0 if detail_stop is not None and time.monotonic() > detail_stop else max_detail
         src = cls(client=client, max_detail_calls=details, company=board.get("company"))
         src.skip_title, src.countries, src.known = skip_title, countries, known
         src.prev_body_hash = board.get("body_hash")
+        src.gate, src.slug = gate, board["slug"]
         try:
             return src.fetch(board["slug"], known=known), src
         except Unchanged:
             return None, src
         except Exception as exc:
-            if pause is None or not _rate_limited(exc):
+            # A bot check, 403 or a run of edge errors counts against the board's group. After a few,
+            # the group is left alone for the rest of the run. Nothing is retried around a block.
+            if gate and looks_blocked(exc):
+                gate.strike(group, f"{board['ats']}/{board['slug']}: {exc}"[:300])
+            if pause is None or not _rate_limited(exc) or (gate and gate.is_blocked(group)):
                 raise
             log.info("%s/%s rate limited; trying again in %d s", board["ats"], board["slug"], pause)
             time.sleep(pause)
+
+
+def _age_hours(iso_time: str | None) -> float:
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_time)).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def order_boards(boards: list[dict], every_hours: float = 6) -> list[dict]:
+    """Stalest first: boards not reached (or pushed back) last run lead, so under a time limit every
+    board is refreshed in turn. Among equally stale boards the biggest go first, so long listings
+    start early instead of being what the run waits for at the end."""
+    step = max(every_hours, 1)
+
+    def tier(b):   # how many runs ago it was last fetched OK (never: first of all)
+        age = _age_hours(b.get("last_ok"))
+        return 99 if age == float("inf") else min(int(age // step), 98)
+    return sorted(boards, key=lambda b: (-tier(b), -(b.get("job_count") or 0)))
+
+
+def not_due(board: dict, s) -> bool:
+    """Workday boards are refreshed every workday_refresh_hours: a listing is one request per 20
+    postings, and every company on a data center shares that data center's limit."""
+    return (board["ats"] == "workday" and s.workday_refresh_hours > 0 and not board.get("last_error")
+            and _age_hours(board.get("last_ok")) < s.workday_refresh_hours)
 
 
 def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str | None = None,
@@ -103,31 +147,44 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
     boards = [dict(b) for b in db.list_boards(conn, enabled_only=True)
               if b["ats"] in SOURCES and (only is None or (b["ats"], b["slug"]) in only)
               ]
+    if only is None:
+        boards = [b for b in boards if not not_due(b, s)]
+    boards = order_boards(boards, s.fetch_interval_hours or 6)
     STATUS["total"] = len(boards)
     hourly = re.compile("|".join(config_mod.HOURLY_TITLE_PATTERNS), re.I) if s.skip_hourly_titles else None
     countries = frozenset(profile.load(conn).get("countries") or [])
-    detail_stop = time.monotonic() + s.detail_minutes * 60 if s.detail_minutes else None
+    started = time.monotonic()
+    detail_stop = started + s.detail_minutes * 60 if s.detail_minutes else None
+    gate = RunGate(started + s.fetch_minutes * 60 if s.fetch_minutes else None)
+    deferred = []
     with ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool:
         futures = {pool.submit(_fetch_board, b, db.known_postings(conn, b["ats"], b["slug"]), client,
-                               s.max_detail_calls_per_board, hourly, countries, detail_stop): b for b in boards}
+                               s.max_detail_calls_per_board, hourly, countries, detail_stop, gate): b for b in boards}
         for fut in as_completed(futures):
             b = futures[fut]
             try:
                 jobs, src = fut.result()
             except Exception as exc:  # one bad board shouldn't stop the run
-                log.warning("%s/%s failed: %s", b["ats"], b["slug"], exc)
-                off = db.board_result(conn, b["ats"], b["slug"], error=str(exc) or type(exc).__name__,
+                why = str(exc) or type(exc).__name__
+                if looks_blocked(exc):
+                    why = f"Pushed back (bot check, block or rate limit); tried again next run. {why}"
+                log.warning("%s/%s failed: %s", b["ats"], b["slug"], why)
+                off = db.board_result(conn, b["ats"], b["slug"], error=why,
                                       not_found=isinstance(exc, BoardNotFound), disable_after=s.disable_after_failures)
-                results.append({"source": b["ats"], "board": b["slug"], "error": str(exc), "switched_off": off})
+                results.append({"source": b["ats"], "board": b["slug"], "error": why, "switched_off": off})
             else:
-                if jobs is None:  # byte-identical to last run
-                    db.board_unchanged(conn, b["ats"], b["slug"])
+                if jobs == DEFERRED:   # not started: first in line next run; its postings stay as they are
+                    deferred.append(b)
+                    results.append({"source": b["ats"], "board": b["slug"], "deferred": True})
+                elif jobs is None:  # byte-identical to last run
+                    touched |= db.board_unchanged(conn, b["ats"], b["slug"]) or set()
                     results.append({"source": b["ats"], "board": b["slug"], "unchanged_board": True})
                 else:
                     # Postings whose locations only became known from detail calls (Workday) get the country check now.
                     kept = [j for j in jobs if src.wanted(j)]
                     counts = db.upsert_board(conn, b["ats"], b["slug"], kept, keep_alive=src.dropped,
-                                             hold_mass_closures=s.hold_mass_closures)
+                                             hold_mass_closures=s.hold_mass_closures,
+                                             close_after=getattr(src, "close_after_misses", 1))
                     counts["filtered_out"] = len(src.dropped)
                     touched |= counts.pop("touched")
                     counts.pop("changed")
@@ -136,6 +193,13 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
                     results.append({"source": b["ats"], "board": b["slug"], **counts})
             STATUS["done"] += 1
             STATUS["results"] = results
+    for group, why in gate.blocked.items():
+        n = sum(1 for b in deferred if board_group(b) == group)
+        log.warning("%s pushed back (%s); %d more of its boards wait for the next run", group, why, n)
+    late = sum(1 for b in deferred if not gate.is_blocked(board_group(b)))
+    if late:
+        log.info("time limit (%g min) reached: %d boards not started, first in line next run", s.fetch_minutes, late)
+    log.info("fetched for %.1f min", (time.monotonic() - started) / 60)
     # After an upgrade (new rules, filter fields or schema), every company is reprocessed once, not just the
     # ones whose boards changed this run, so the next index carries the new fields everywhere.
     postprocess(conn, cfg, None if db.get_meta(conn, "processed_versions") != processed_versions() else touched)

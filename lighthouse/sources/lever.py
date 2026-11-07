@@ -12,6 +12,8 @@ API = "https://api.lever.co/v0/postings/{slug}?mode=json"
 class LeverSource(Source):
     name = "lever"
     label = "Lever"
+    single_response = True
+    shared_host = True
     url_patterns = (
         r"jobs\.lever\.co/(?P<slug>[\w.-]+)",
         r"api\.lever\.co/v0/postings/(?P<slug>[\w.-]+)",

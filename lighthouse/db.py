@@ -367,6 +367,14 @@ def _migrate_5_to_6(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE jobs SET derived_of = NULL")
 
 
+def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
+    """Closures need two misses in a row on paged listings (missed counts them); the role's count and
+    places move to its canonical row (dedupe), so every company is re-clustered once."""
+    if "missed" not in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}:
+        conn.execute("ALTER TABLE jobs ADD COLUMN missed INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE jobs SET cluster_id = NULL")
+
+
 MIGRATIONS = [
     lambda c: c.executescript(V1),  # 0 -> 1
     _migrate_1_to_2,                # 1 -> 2
@@ -374,6 +382,7 @@ MIGRATIONS = [
     _migrate_3_to_4,                # 3 -> 4
     _migrate_4_to_5,                # 4 -> 5
     _migrate_5_to_6,                # 5 -> 6
+    _migrate_6_to_7,                # 6 -> 7
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -646,6 +655,7 @@ def ensure_index_columns(conn, schema: str = "idx") -> None:
         for name, decl in _JOB_COLUMNS_V6:
             if name not in have:
                 conn.execute(f"ALTER TABLE {schema}.jobs ADD COLUMN {name} {decl}")
+        ensure_postings_view(conn, schema)
         conn.commit()
     except sqlite3.OperationalError:   # read-only copy (never the case for a downloaded index, which deltas write to)
         pass
@@ -703,7 +713,7 @@ def create_empty_index(path: Path) -> None:
 
 # Job columns that never go into a published index: personal (eligibility is computed per reader),
 # or builder-only (near-duplicate signatures).
-INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of"}
+INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of", "missed"}
 
 INDEX_TABLES = """
 CREATE TABLE IF NOT EXISTS job_content (uid TEXT PRIMARY KEY, html TEXT NOT NULL);
@@ -742,11 +752,67 @@ INDEX_FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS jobs_fts USING fts5(title, comp
              "tokenize = 'porter unicode61', content = '', detail = none)")
 
 
+# One row per open role (duplicate listings collapsed into the role), one column per filter, in plain
+# words: what you browse in a SQLite viewer (DB Browser for SQLite, Datasette...) and what jobs.csv.gz
+# holds. Lists are comma-separated; pay is per year (hourly x 2080) with pay_stated_per saying how
+# the posting gave it. Built-in SQL only, so any SQLite tool can read it.
+POSTINGS_SELECT = """SELECT
+    j.uid AS id, j.title, j.company,
+    j.location,
+    (SELECT group_concat(value, ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))) AS all_locations,
+    replace(trim(j.countries, ','), ',', ', ') AS countries,
+    j.workplace_eff AS workplace,
+    j.emp_type AS employment_type,
+    j.seniority,
+    j.job_function,
+    j.yoe_min AS years_experience,
+    j.yoe_source AS years_experience_source,
+    j.degree,
+    j.visa AS visa_sponsorship,
+    j.clearance,
+    j.citizenship AS us_citizens_only,
+    CAST(j.pay_min_annual AS INTEGER) AS pay_min_per_year,
+    CAST(j.pay_max_annual AS INTEGER) AS pay_max_per_year,
+    j.pay_currency,
+    j.pay_interval AS pay_stated_per,
+    replace(trim(j.skills, ','), ',', ', ') AS skills,
+    replace(trim(j.benefits, ','), ',', ', ') AS benefits,
+    j.travel,
+    replace(trim(j.languages, ','), ',', ', ') AS languages_required,
+    (SELECT group_concat(value, ', ') FROM json_each(COALESCE(j.departments, '[]'))) AS departments,
+    substr(j.posted_at, 1, 10) AS posted_on,
+    substr(j.effective_first_seen, 1, 10) AS first_seen_on,
+    j.cluster_count AS times_listed,
+    j.repost_count AS reposts,
+    j.ghost_score,
+    (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))) AS ghost_signals,
+    EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid) AS has_description,
+    (SELECT group_concat(f.key, ', ') FROM extractions e, json_each(e.data) f
+      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') = 'claude') AS filled_by_claude,
+    j.url,
+    j.source AS ats,
+    j.source_board AS board
+FROM jobs j
+WHERE j.active = 1 AND j.is_canonical = 1"""
+POSTINGS_VIEW = "CREATE VIEW postings AS\n" + POSTINGS_SELECT
+
+
+def ensure_postings_view(conn, schema: str = "main") -> None:
+    """Create (or bring up to date) the postings view in an index file."""
+    row = conn.execute(f"SELECT sql FROM {schema}.sqlite_master WHERE type = 'view' AND name = 'postings'").fetchone()
+    if row and row[0] == POSTINGS_VIEW:
+        return
+    if row:
+        conn.execute(f"DROP VIEW {schema}.postings")
+    conn.execute(POSTINGS_VIEW.replace("CREATE VIEW postings", f"CREATE VIEW {schema}.postings", 1))
+
+
 def create_index_tables(conn, job_columns: list[tuple[str, str]], fts: bool = True, indexes: bool = True) -> None:
     """The published index layout. job_columns: (name, declared type) of the shipped job columns."""
     cols = ",\n    ".join(f"{n} {t or ''}{' PRIMARY KEY' if n == 'uid' else ''}" for n, t in job_columns)
     conn.execute(f"CREATE TABLE IF NOT EXISTS jobs (\n    {cols}\n)")
     conn.executescript(INDEX_TABLES)
+    ensure_postings_view(conn)
     if indexes:
         conn.executescript(INDEX_INDEXES)
     if fts:
@@ -881,13 +947,24 @@ def board_result(conn, ats: str, slug: str, *, error: str | None = None, count: 
     return disabled
 
 
-def board_unchanged(conn, ats: str, slug: str) -> None:
-    """Board answered with exactly the same bytes as last run: just mark it seen."""
+def board_unchanged(conn, ats: str, slug: str) -> set[str]:
+    """Board answered with exactly the same bytes as last run: mark it seen. Postings that run had
+    already left out (held closures) are still left out, so they close now. Returns the companies
+    whose postings closed (to re-cluster)."""
     now = utcnow()
+    gone = [r[0] for r in conn.execute("SELECT uid FROM jobs WHERE source=? AND source_board=? AND active=1 "
+                                       "AND missed >= 1", (ats, slug))]
+    touched = set()
+    if gone:
+        touched = {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE source=? AND "
+                                              "source_board=? AND active=1 AND missed >= 1", (ats, slug))}
+        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
+        conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?, 'closed', ?)", [(u, now) for u in gone])
     conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1", (now, ats, slug))
-    conn.execute("UPDATE boards SET last_fetch=?, last_ok=?, last_error=NULL, fail_count=0 WHERE ats=? AND slug=?",
-                 (now, now, ats, slug))
+    conn.execute("UPDATE boards SET last_fetch=?, last_ok=?, last_error=NULL, fail_count=0, held_closures=0 "
+                 "WHERE ats=? AND slug=?", (now, now, ats, slug))
     conn.commit()
+    return touched
 
 
 def board_counts(conn) -> dict:
@@ -922,11 +999,14 @@ MASS_CLOSE_SHARE = 0.5    # ...that suddenly stop listing more than this share o
 
 
 def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[Job],
-                 keep_alive: set[str] | None = None, hold_mass_closures: bool = True) -> dict:
+                 keep_alive: set[str] | None = None, hold_mass_closures: bool = True,
+                 close_after: int = 1) -> dict:
     """Write one board's fresh listing. Returns counts plus which uids/companies changed.
 
     Postings that are no longer listed are marked inactive (kept for history; purge_closed deletes
-    them later). If a board that had 20+ open postings suddenly lists fewer than half of them, that
+    them later) once `close_after` successful listings in a row have left them out (paged listings
+    skip postings when the order shifts between pages); until then they stay open with last_seen
+    untouched. If a board that had 20+ open postings suddenly lists fewer than half of them, that
     is far more often an API hiccup than mass closure: the closures are held (the postings stay open)
     and only carried out if the next successful fetch agrees.
     An empty content_html never overwrites a stored copy (sources that need a detail
@@ -939,7 +1019,7 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
     now = utcnow()
     keep_alive = keep_alive or set()
     existing = {r["uid"]: r for r in conn.execute(
-        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig FROM jobs "
+        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig, missed FROM jobs "
         "WHERE source=? AND source_board=?", (source, board))}
     held_before = conn.execute("SELECT held_closures FROM boards WHERE ats=? AND slug=?", (source, board)).fetchone()
     fts = has_fts(conn)
@@ -962,6 +1042,8 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
             sig = _row_sig(j, chash, marker)
             if old is not None and old["active"] and not is_changed and (
                     old["row_sig"] == sig or (j.partial and old["url"] == j.url)):
+                if old["missed"]:
+                    conn.execute("UPDATE jobs SET missed=0 WHERE uid=?", (j.uid,))
                 continue  # nothing new: no write (last_seen is refreshed for the board below)
             conn.execute(
                 """INSERT INTO jobs (uid, fingerprint, source, source_board, external_id, title, company,
@@ -985,7 +1067,7 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                        salary_min=excluded.salary_min, salary_max=excluded.salary_max,
                        salary_currency=excluded.salary_currency, salary_interval=excluded.salary_interval,
                        locations=CASE WHEN ? THEN jobs.locations ELSE excluded.locations END,
-                       row_sig=excluded.row_sig""",
+                       row_sig=excluded.row_sig, missed=0""",
                 (j.uid, j.fingerprint, j.source, j.source_board, j.external_id, j.title, j.company,
                  company_key(j.company), j.location, j.url, chash,
                  json.dumps(j.departments), iso(j.posted_at), iso(j.updated_at), now, now,
@@ -1002,19 +1084,23 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                 touched.add(company_key(j.company))
                 if fts and j.content_html:
                     _fts_put(conn, j.uid, j.title, j.company, j.location, j.content_html)
-        gone = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive]
+        unseen = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive]
         was_open = sum(1 for r in existing.values() if r["active"])
         held = 0
+        need = max(1, close_after)
         if (hold_mass_closures and held_before is not None and not held_before[0]
-                and was_open >= MASS_CLOSE_MIN and len(gone) > was_open * MASS_CLOSE_SHARE):
-            held, gone = len(gone), []          # keep them open (last_seen untouched) until the next run agrees
+                and was_open >= MASS_CLOSE_MIN and len(unseen) > was_open * MASS_CLOSE_SHARE):
+            held, need = len(unseen), max(need, 2)   # closed only if the next run agrees
         if held_before is not None:
             conn.execute("UPDATE boards SET held_closures=? WHERE ats=? AND slug=?", (int(bool(held)), source, board))
-        if held:   # rare: refresh only what the board still listed
-            conn.executemany("UPDATE jobs SET last_seen=? WHERE uid=?", [(now, u) for u in seen])
-        else:
-            conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1", (now, source, board))
-        conn.executemany("UPDATE jobs SET active=0, closed_at=? WHERE uid=?", [(now, u) for u in gone])
+        gone = [u for u in unseen if (existing[u]["missed"] or 0) + 1 >= need]
+        closing = set(gone)
+        missed = [u for u in unseen if u not in closing]
+        conn.executemany("UPDATE jobs SET missed=missed + 1 WHERE uid=?", [(u,) for u in missed])
+        # last_seen: what the board listed this time (postings it left out keep theirs)
+        conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1 AND missed=0",
+                     (now, source, board))
+        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
         events += [(u, "closed", now) for u in gone]
         conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?,?,?)", events)
         if gone:
@@ -1022,7 +1108,7 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                 f"SELECT DISTINCT company_key FROM jobs WHERE uid IN ({','.join('?' * len(gone))})", gone)}
     new = sum(1 for e in events if e[1] == "new")
     return {"new": new, "updated": len(changed) - new, "unchanged": len(seen) - len(changed),
-            "closed": len(gone), "held": held, "changed": changed, "touched": touched}
+            "closed": len(gone), "missed": len(missed), "held": held, "changed": changed, "touched": touched}
 
 
 def _stamp() -> str:
@@ -1320,7 +1406,14 @@ def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe
 
 
 def content(conn, uid: str) -> str:
+    """A posting's description. The published index keeps one per role (its canonical listing), so a
+    duplicate listing shows its role's: the same text if any listing has it, else the canonical's."""
     r = conn.execute("SELECT html FROM job_content WHERE uid=?", (uid,)).fetchone()
+    if r is None:
+        r = conn.execute("""SELECT c.html FROM jobs j JOIN jobs k ON k.cluster_id = j.cluster_id
+                            JOIN job_content c ON c.uid = k.uid WHERE j.uid = ?
+                            ORDER BY k.content_hash = j.content_hash DESC, k.is_canonical DESC LIMIT 1""",
+                         (uid,)).fetchone()
     return unpack(r[0]) if r else ""
 
 

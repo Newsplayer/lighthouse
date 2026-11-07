@@ -19,6 +19,7 @@ MAX = 10000
 class AmazonSource(Source):
     name = "amazon"
     label = "Amazon Jobs"
+    shared_host = True
 
     @classmethod
     def detect(cls, url: str) -> str | None:

@@ -345,10 +345,13 @@ def unresolved(text: str, data: dict, title: str = "", departments: str = "", at
 
 
 def merge_llm(data: dict, llm: dict | None) -> dict:
-    """Fill the gaps in a rule extraction from Claude's reading; a rule answer always stays."""
-    if not llm:
+    """Fill the gaps in a rule extraction from Claude's reading; a rule answer always stays.
+    llm None: never sent to Claude. {} (asked, nothing usable) still leaves a claude_read marker, so a
+    builder restarted from the published index knows not to pay for that description again."""
+    if llm is None:
         return data
     out = dict(data)
+    out["claude_read"] = {"value": True}
     for k, v in llm.items():
         if not isinstance(v, dict) or v.get("value") in (None, [], ""):
             continue

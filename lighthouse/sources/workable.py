@@ -16,6 +16,8 @@ def _loc(l: dict) -> str:
 class WorkableSource(Source):
     name = "workable"
     label = "Workable"
+    single_response = True
+    shared_host = True
     url_patterns = (
         r"apply\.workable\.com/api/v1/widget/accounts/(?P<slug>[\w-]+)",
         r"apply\.workable\.com/(?P<slug>[\w-]+)",

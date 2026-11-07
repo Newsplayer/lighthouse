@@ -25,6 +25,7 @@ per_host_requests_per_second = 4 # politeness limit per ATS host, shared by all 
 fetch_workers = 16               # boards fetched in parallel
 fetch_interval_hours = 6         # automatic refresh while the site is open (0 = off)
 max_detail_calls_per_board = 150 # SmartRecruiters/Workday: description calls per board per run; the rest fill in later
+fetch_minutes = 0                # start no new board after this many minutes (0 = no limit; the index build uses 40)
 disable_after_failures = 2       # switch off a board that reports "not found" this many runs in a row
 skip_hourly_titles = true        # skip clearly hourly/frontline titles (warehouse, cashier, driver...)
 inactive_content_retention_days = 180
@@ -51,7 +52,7 @@ llm_fill = true
 llm_model = "claude-haiku-5-5"
 llm_monthly_cap_usd = 10.0       # the LIGHTHOUSE_LLM_CAP_USD repository variable overrides this
 llm_max_per_run = 5000
-llm_wait_minutes = 20
+llm_wait_minutes = 5               # longer batches are collected by the next build
 
 [[boards]]
 ats = "greenhouse"

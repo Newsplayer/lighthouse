@@ -93,11 +93,14 @@ class PhenomSource(Source):
         return jobs
 
     def _detail(self, host, country, lang, job):
+        if self.out_of_time():
+            return None
         try:
             data = self._post(host, {"lang": f"{lang}_{country}", "deviceType": "desktop", "country": country,
                                      "pageName": "job", "ddoKey": "jobDetail", "jobSeqNo": job.detail_marker})
             return ((data.get("jobDetail") or {}).get("data") or {}).get("job")
-        except Exception:
+        except Exception as exc:
+            self.pushed_back(exc)
             return None
 
     @staticmethod

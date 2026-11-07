@@ -7,5 +7,5 @@ data/*.db
 data/*.db-*
 .pytest_cache/
 .DS_Store
-data/visa/
+data/
 dist/

@@ -114,6 +114,7 @@ def english_only(urls: list[str]) -> list[str]:
 class JsonLdSource(Source):
     name = "jsonld"
     label = "Careers site (structured data)"
+    single_response = True
 
     @classmethod
     def detect(cls, url: str) -> str | None:
@@ -187,7 +188,7 @@ class JsonLdSource(Source):
         stop_at = time.monotonic() + BOARD_SECONDS
 
         def read(t):
-            return self._page(t[2]) if time.monotonic() < stop_at else False
+            return self._page(t[2]) if time.monotonic() < stop_at and not self.out_of_time() else False
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             for (uid, ext, url, marker), page in zip(fetchable, pool.map(read, fetchable)):

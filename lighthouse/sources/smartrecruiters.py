@@ -22,6 +22,7 @@ SECTIONS = ("jobDescription", "qualifications", "additionalInformation", "compan
 class SmartRecruitersSource(Source):
     name = "smartrecruiters"
     label = "SmartRecruiters"
+    shared_host = True
     url_patterns = (
         r"(?:jobs|careers)\.smartrecruiters\.com/(?P<slug>[\w-]+)",
         r"api\.smartrecruiters\.com/v1/companies/(?P<slug>[\w-]+)",
@@ -51,9 +52,12 @@ class SmartRecruitersSource(Source):
         return jobs
 
     def _detail(self, job: Job) -> dict | None:
+        if self.out_of_time():
+            return None
         try:
             return self._get_json(DETAIL.format(slug=job.source_board, id=job.external_id))
-        except Exception:
+        except Exception as exc:
+            self.pushed_back(exc)
             return None  # leave it title-only; retried next run
 
     def parse_summary(self, slug: str, raw: dict) -> Job:

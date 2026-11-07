@@ -48,6 +48,10 @@ class Settings:
     max_detail_calls_per_board: int = 150   # SmartRecruiters/Workday description calls per board per run
     detail_minutes: float = 0        # boards started after this many minutes make no description calls this
                                      # run (0 = no limit); keeps a first build of a big list inside the time limit
+    fetch_minutes: float = 0         # no board or description call is started after this many minutes (0 = no
+                                     # limit). Boards not reached are fetched first next run; nothing is lost.
+    workday_refresh_hours: float = 0  # a Workday board fetched OK more recently than this is skipped this run
+                                     # (0 = every run). Every Workday site shares one rate limit per data center.
     disable_after_failures: int = 2   # a board that reports "not found" this many runs in a row is switched off
     inactive_content_retention_days: int = 180
     # A posting no longer listed is closed at once; it's deleted (and readers drop it) this many days
@@ -88,7 +92,7 @@ class IndexSettings:
     llm_model: str = "claude-haiku-5-5"
     llm_monthly_cap_usd: float = 10.0  # hard stop for the month (estimated before sending; batches reserve)
     llm_max_per_run: int = 5000        # newest first; the rest wait for the next run
-    llm_wait_minutes: float = 20       # wait this long for the batch so results ship in the same build
+    llm_wait_minutes: float = 5        # wait this long for the batch; anything later ships with the next build
 
 
 @dataclass

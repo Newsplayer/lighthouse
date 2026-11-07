@@ -14,6 +14,7 @@
     python -m lighthouse index import [FILE] # update now (or merge a local base-*.db.xz to test a build)
     python -m lighthouse index seed base.db.xz  # builder: start from the published index (cache expired)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
+    python -m lighthouse index csv [--out jobs.csv.gz] [--db FILE]  # every open role, one column per filter
                                             # what the GitHub Action runs (maintainers only)
     python -m lighthouse discover [--only NAME] [--out FILE]
                                             # find job boards from config/companies.csv careers pages
@@ -81,8 +82,24 @@ def _index(args) -> None:
         m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
                            db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
                            published=args.published, full=args.full, llm=not args.no_llm,
-                           llm_cap_usd=num(args.llm_cap), llm_wait_minutes=num(args.llm_wait))
+                           llm_cap_usd=num(args.llm_cap), llm_wait_minutes=num(args.llm_wait),
+                           fetch_minutes=num(args.fetch_minutes))
         print(json.dumps(m, indent=2))
+        return
+    if args.action == "csv":
+        src = args.db or args.file
+        if not src:
+            if cfg.reader:
+                c = db.connect(db.app_db(cfg))
+                src = db.attached_index(c)
+                c.close()
+            else:
+                src = snapshot.BUILDER_DB if snapshot.BUILDER_DB.exists() else db.DEFAULT_DB
+        if not src or not Path(src).exists():
+            raise SystemExit("No job index here yet: start the app once (or pass --db FILE).")
+        out = args.out if args.out != "dist" else snapshot.CSV_NAME
+        info = snapshot.write_csv(src, out)
+        print(f"Wrote {info['rows']} open roles to {out} ({info['bytes'] / 1e6:.1f} MB)")
         return
     conn = db.connect(db.app_db(cfg))
     if args.action == "status":
@@ -147,7 +164,7 @@ def main() -> None:
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     p = sub.add_parser("index", help="the shared job index")
-    p.add_argument("action", choices=["status", "import", "build", "seed"])
+    p.add_argument("action", choices=["status", "import", "build", "seed", "csv"])
     p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
     p.add_argument("--out", default="dist", help="build: output folder")
     p.add_argument("--db", default=None, help="build: builder database (default data/builder.db)")
@@ -159,6 +176,8 @@ def main() -> None:
     p.add_argument("--no-llm", action="store_true", help="build: rules only, even if ANTHROPIC_API_KEY is set")
     p.add_argument("--llm-cap", default=None, help="build: monthly USD cap for Claude gap fills (default from config)")
     p.add_argument("--llm-wait", default=None, help="build: minutes to wait for the Claude batch (default from config)")
+    p.add_argument("--fetch-minutes", default=None,
+                   help="build: start no new board or description call after this many minutes (default 40)")
     p = sub.add_parser("discover", help="find job boards from the careers pages in config/companies.csv")
     p.add_argument("--only", default=None, help="only companies whose name contains this")
     p.add_argument("--out", default=None, help="write one JSON line per company here")
