@@ -1,0 +1,35 @@
+# Run a script from GitHub's network: the only place careers sites can be reached from while
+# developing (Claude Code's sandbox and many laptops can't reach them directly). Publishes nothing.
+#
+#   1. Put a script at probe/run.py on a branch named probe/<topic> (never on main).
+#   2. Push: this runs it. Or: gh workflow run network-probe.yml --ref probe/<topic>
+#   3. Read the output: gh run view <id> --log   (print one JSON line per result: easy to grep)
+#
+# Add an empty file probe/run-build on the branch to run a full test build instead
+# (nothing is published); it prints the manifest and BUILD_SECONDS.
+name: Network probe
+on:
+  push:
+    branches: ["probe/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Run probe/run.py
+        if: hashFiles('probe/run.py') != '' && hashFiles('probe/run-build') == ''
+        run: python probe/run.py
+      - name: Test build (nothing is published)
+        if: hashFiles('probe/run-build') != ''
+        run: |
+          start=$(date +%s)
+          python -m lighthouse index build --out dist --db data/test-builder.db --detail-calls 100
+          echo "BUILD_SECONDS $(( $(date +%s) - start ))"
+          python -c "import json; m = json.load(open('dist/manifest.json')); m.pop('switched_off', None); print('MANIFEST', json.dumps(m))"

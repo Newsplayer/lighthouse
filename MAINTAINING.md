@@ -104,6 +104,13 @@ marks and Claude verdicts carry over: they're keyed by posting, and the postings
 
 ---
 
+## Trying something against real careers sites
+
+Most development sandboxes (including Claude Code's) can't reach careers sites. Push a script as
+`probe/run.py` on a branch named `probe/<topic>`. The **Network probe** workflow runs it from
+GitHub's network; read its output in the run's log. Add an empty `probe/run-build` file to run a
+full test build instead. Nothing is published either way. Delete the branch when done.
+
 ## Day to day
 
 ### Add a large employer by its careers page
