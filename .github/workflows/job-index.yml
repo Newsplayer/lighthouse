@@ -29,6 +29,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      site: ${{ steps.site.outcome }}
     timeout-minutes: 100             # a build takes about an hour; this only catches a stuck one
     env:
       GH_TOKEN: ${{ github.token }}
@@ -76,7 +78,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: >
           python -m lighthouse index build --out dist --published prev/manifest.json
-          --detail-calls 1000 --countries "${{ vars.LIGHTHOUSE_COUNTRIES }}"
+          --detail-calls 1000 --countries "${{ vars.LIGHTHOUSE_COUNTRIES || 'US,CA,MX' }}"
           --llm-cap "${{ vars.LIGHTHOUSE_LLM_CAP_USD }}"
           --fetch-minutes "${{ vars.LIGHTHOUSE_FETCH_MINUTES }}"
           ${{ inputs.full && '--full' || '' }}
@@ -109,9 +111,39 @@ jobs:
           print("jobs.csv.gz:", m.get("csv"))
           PY
 
+      # The website (GitHub Pages): static files written from the same builder database. A failure here
+      # never stops the index or the cache below; the site just keeps its previous version until next run.
+      - name: Write the website
+        id: site
+        continue-on-error: true
+        run: python -m lighthouse site --out site_out --countries "${{ vars.LIGHTHOUSE_COUNTRIES || 'US,CA,MX' }}"
+
+      - name: Upload the website
+        if: steps.site.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site_out
+
       # Saved only after a successful publish, so the cache always matches what readers have.
       - name: Save builder database
         uses: actions/cache/save@v4
         with:
           path: data/builder.db
           key: lighthouse-builder-${{ github.run_id }}
+
+  # Settings -> Pages -> Source: GitHub Actions (once). Each build replaces the whole site.
+  deploy-site:
+    needs: build
+    if: needs.build.outputs.site == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

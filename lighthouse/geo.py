@@ -10,8 +10,11 @@ storing and processing postings located only elsewhere (the biggest saving on gl
 
 from __future__ import annotations
 
+import gzip
 import re
+import unicodedata
 from functools import lru_cache
+from pathlib import Path
 
 US_STATES = {
     "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
@@ -26,7 +29,14 @@ US_STATES = {
     "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia", "PR": "puerto rico",
 }
 CA_PROVINCES = {"ON": "ontario", "QC": "quebec", "BC": "british columbia", "AB": "alberta", "MB": "manitoba",
-                "SK": "saskatchewan", "NS": "nova scotia", "NB": "new brunswick", "NL": "newfoundland"}
+                "SK": "saskatchewan", "NS": "nova scotia", "NB": "new brunswick", "NL": "newfoundland",
+                "PE": "prince edward island", "YT": "yukon", "NT": "northwest territories", "NU": "nunavut"}
+# Mexican states (names that are also common US place names, e.g. Hidalgo or Durango, are left out).
+MX_STATES = ("aguascalientes", "baja california", "baja california sur", "campeche", "chiapas", "chihuahua",
+             "coahuila", "colima", "guanajuato", "jalisco", "michoacan", "michoacán", "nuevo leon", "nuevo león",
+             "oaxaca", "puebla", "queretaro", "querétaro", "quintana roo", "san luis potosi", "san luis potosí",
+             "sinaloa", "sonora", "tabasco", "tamaulipas", "tlaxcala", "veracruz", "yucatan", "yucatán", "zacatecas",
+             "ciudad de mexico", "ciudad de méxico", "estado de mexico", "estado de méxico")
 
 COUNTRIES = {
     "US": ("united states", "united states of america", "usa", "u.s.", "u.s.a.", "us", "america"),
@@ -64,7 +74,9 @@ CITIES = {
            "new delhi", "delhi"),
     "SG": ("singapore",), "JP": ("tokyo", "osaka"), "KR": ("seoul",), "CN": ("shanghai", "beijing", "shenzhen"),
     "AU": ("sydney", "melbourne", "brisbane", "perth"), "BR": ("são paulo", "sao paulo", "rio de janeiro"),
-    "MX": ("mexico city", "guadalajara", "monterrey"), "AR": ("buenos aires",), "CO": ("bogotá", "bogota", "medellín"),
+    "MX": ("mexico city", "guadalajara", "monterrey", "querétaro", "queretaro", "tijuana", "ciudad juárez",
+           "ciudad juarez", "juárez", "saltillo", "zapopan", "apodaca", "mérida", "león, gto"),
+    "AR": ("buenos aires",), "CO": ("bogotá", "bogota", "medellín"),
     "TW": ("taipei",), "HK": ("hong kong",), "PH": ("manila",), "TH": ("bangkok",), "NZ": ("auckland", "wellington"),
     "BE": ("brussels",), "FI": ("helsinki",), "NO": ("oslo",), "HU": ("budapest",), "GR": ("athens",),
 }
@@ -78,6 +90,36 @@ _CITY_TO_CODE = {c: code for code, cities in CITIES.items() for c in cities}
 _STATE_NAMES = {v: k for k, v in US_STATES.items()}
 _PROV_NAMES = set(CA_PROVINCES.values())
 _SPLIT = re.compile(r"\s*(?:;|\||/|\band\b|\n| or )\s*", re.I)
+_MX_STATES = set(MX_STATES)
+# Whole-word names inside free text ("Tampa Florida United States", "Mississauga Ontario Canada"),
+# longest first so "new mexico" wins over "mexico".
+_WORD_NAMES = sorted({**{n: c for n, c in _NAME_TO_CODE.items() if len(n) > 3 and "." not in n},
+                      **{n: "US" for n in _STATE_NAMES}, **{n: "CA" for n in _PROV_NAMES},
+                      **{n: "MX" for n in MX_STATES}}.items(), key=lambda kv: -len(kv[0]))
+_WORD_RE = re.compile(r"\b(" + "|".join(re.escape(n) for n, _ in _WORD_NAMES) + r")\b", re.I)
+_WORD_CODE = dict(_WORD_NAMES)
+_STATE_ZIP = re.compile(r"\b([A-Z]{2})\s*,?\s+\d{5}(?:-\d{4})?\b")      # "Erie PA, 16502" / "TX 75001"
+_CA_POSTAL = re.compile(r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b")
+_PREFIX = re.compile(r"^\s*([A-Z]{2})\s*[-–]\s*([A-Z]{2,3})?")            # Workday "CA-QC-Longueuil", "GB - Luton"
+_ISO_CODES = set(COUNTRIES)
+_CITIES_FILE = Path(__file__).with_name("data") / "cities.tsv.gz"
+
+
+@lru_cache(maxsize=1)
+def _gazetteer() -> dict[str, str]:
+    """City name -> country for 77k cities of 5,000+ people (GeoNames, CC BY 4.0), loaded on first
+    use. Only names one country clearly owns; never a foreign country for a name a North American
+    city also has."""
+    try:
+        with gzip.open(_CITIES_FILE, "rt", encoding="utf-8") as f:
+            return dict(line.rstrip("\n").split("\t", 1) for line in f if line[:1] != "#" and "\t" in line)
+    except OSError:
+        return {}
+
+
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return " ".join(s.lower().replace("-", " ").replace("'", "").split())
 _TOKEN = re.compile(r"[a-zà-ÿ.']+(?:\s+[a-zà-ÿ.']+)*", re.I)
 
 
@@ -95,7 +137,16 @@ def _one(loc: str) -> set[str]:
             out.add("US")
         elif t == "UK":
             out.add("GB")
-    parts = [p.strip().lower() for p in re.split(r"[,\-–()]", raw) if p.strip()]
+    # Country-code prefix: "CA-QC-Longueuil", "GB - Luton", "MX-NLE-Apodaca". A code that is also a
+    # US state (CA, IN, DE...) counts only when a province of that country follows.
+    m = _PREFIX.match(raw)
+    if m:
+        cc, nxt = m.group(1), m.group(2) or ""
+        if cc == "CA" and nxt in CA_PROVINCES:
+            out.add("CA")
+        elif cc in _ISO_CODES and cc not in US_STATES:
+            out.add(cc)
+    parts = [p.strip().lower() for p in re.split(r"[,\-–()~]", raw) if p.strip()]
     for p in parts:
         if p in _ABBREV:
             out.add(_ABBREV[p])
@@ -105,17 +156,38 @@ def _one(loc: str) -> set[str]:
             out.add("US")
         elif p in _PROV_NAMES:
             out.add("CA")
-    # ", CA" after a city: a US state code unless the text names another country
+        elif p in _MX_STATES:
+            out.add("MX")
+    city = {code for c, code in _CITY_TO_CODE.items() if c in low}
+    # ", CA" after a city: a US state code unless the text names another country. A province code
+    # that is also a Mexican state code (NL, BC) yields to a named Mexican city ("Monterrey, NL").
     for code in re.findall(r",\s*([A-Z]{2})\b", raw):
         if code in US_STATES and not (code == "CA" and "canada" in low):
             out.add("US")
-        elif code in CA_PROVINCES:
+        elif code in CA_PROVINCES and "MX" not in city and "mexico" not in low:
             out.add("CA")
+    for code in _STATE_ZIP.findall(raw):
+        if code in US_STATES:
+            out.add("US")
+    if _CA_POSTAL.search(raw) and ("canada" in low or any(f" {c}" in raw for c in CA_PROVINCES)):
+        out.add("CA")
     if not out:
-        for city, code in _CITY_TO_CODE.items():
-            if city in low:
+        for m in _WORD_RE.finditer(raw):       # names inside free text
+            name = m.group(1).lower()
+            if name == "mexico" and "new mexico" in low:
+                continue
+            out.add(_WORD_CODE[name])
+    if not out and city:
+        out.add(sorted(city)[0] if len(city) == 1 else next(iter(city)))
+    if not out:                               # last resort: a known city name as one part
+        gaz = _gazetteer()
+        for p in [raw, *raw.split(","), *parts]:
+            code = gaz.get(_norm(p))
+            if code:
                 out.add(code)
                 break
+    if {"US", "CA"} <= out and "canada" not in low:   # "Ontario, CA" is in California
+        out.discard("CA")
     return out
 
 
