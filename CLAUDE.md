@@ -1,9 +1,14 @@
 # Lighthouse: instructions for Claude Code
 
-Lighthouse is a free, locally run job board. A GitHub Action in this repo (the **builder**) reads
-large employers' own careers systems and publishes a ready-to-use job index on the `job-index`
-release. Each user's local app (a **reader**) downloads that index and adds personal data:
-profile, eligibility, fit, saved/applied/hidden.
+Lighthouse is a free job board. A GitHub Action in this repo (the **builder**) reads large
+employers' own careers systems, de-duplicates and analyses every posting, and publishes the
+result.
+- **Website (the main product, ROADMAP P1):** a static site on GitHub Pages. Users download
+  nothing. Their profile, eligibility and saved/applied/hidden marks stay in their browser.
+- **Local app (frozen, bug fixes only):** downloads the `job-index` release and adds personal
+  data locally.
+
+**Priority (owner, 2026-11-07):** a functional, effective aggregator first. AI fit is deferred.
 
 **Goal:** the most effective free job board. Every real, open role at the employers we list in
 the US, Canada and Mexico, once (no duplicates), updated as close to continuously as polite
@@ -26,15 +31,16 @@ goal, the prioritized work, and the decisions waiting on the owner.
     - It's skipped when no key is set, and stops when the quota runs out.
     - The build must always succeed on rules alone.
   - GitHub Models was shut down on 2026-07-30. Options are in `docs/ROADMAP.md` §5.
-- **Personal data never leaves the user's machine.** Published index files are built by whitelist
-  (`snapshot.py` export) and a test checks it. Never add a table or column to them without
-  checking it's job data.
-- **The builder is the only writer of job data.** Readers never crawl boards.
-  - The one planned exception (ROADMAP P1-1): when the user opens a job, the app fetches that one
-    posting's full description from the employer's public endpoint.
-  - The published index ships excerpts/summaries, not full descriptions.
-  - The only reader-side job-data writes are re-deriving fields from the user's own Claude
-    extractions (`extract.derive_claude`).
+- **Personal data never leaves the user's machine.**
+  - Published files (index and website) are built by whitelist (`snapshot.py` export, the planned
+    `site.py`), and a test checks it. Never add a table or column to them without checking it's
+    job data.
+  - On the website, personal data lives only in the browser's `localStorage`.
+- **The builder is the only writer of job data.** The website and the local app never contact
+  careers sites; "Apply" and "Read the full posting" link to the employer.
+  - The website and the published index ship excerpts/summaries, not full descriptions.
+  - The website makes no requests to anyone but its own GitHub Pages origin: no analytics, no
+    CDNs, no fonts.
 - **Be a polite crawler.** Respect robots.txt, identify as `BUILDER_AGENT`, use only public
   JSON/structured-data endpoints the careers sites themselves load, and stay within the rate
   limits in `net.py`. No LinkedIn or Indeed scraping, no logins, no CAPTCHA solving, no paid
@@ -59,7 +65,8 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
-| Web UI | `lighthouse/web.py`, `lighthouse/templates/` |
+| Website generator and page (planned, ROADMAP P1-1) | `lighthouse/site.py`, `site/` |
+| Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
 | Builder workflow / network probe | `.github/workflows/job-index.yml`, `.github/workflows/network-probe.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 
@@ -89,7 +96,8 @@ goal, the prioritized work, and the decisions waiting on the owner.
   4. Add an empty `probe/run-build` file to run a full test build instead. It publishes nothing.
 - **Measure before and after** any change to the builder, index format or queries: build time,
   base/delta size, pages in ms. Record the numbers in the PR. Real-data baselines are in
-  `docs/ROADMAP.md` §2, and how updates reach users is in §3.
+  `docs/ROADMAP.md` §2, and how updates reach users is in §3. For the website, also record
+  first-visit bytes, bytes per later visit, and filter/sort time in the page.
 - **Freshness matters:** job boards change all day. Never make a change that makes users download
   more per update or wait longer for new postings without saying so in the PR.
 - **Branches:** work on a branch, never commit to `main`, and open a PR with a short summary.
