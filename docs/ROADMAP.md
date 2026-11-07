@@ -87,6 +87,13 @@ Work top to bottom.
     | Return visit after a 2% update | 0.07 MB |
   - Tests: Node runs the page logic against the Python logic (19 filter combinations; eligibility
     reasons for 120 jobs × 40 profiles; search words), and a Chromium test drives the page.
+  - Full-scale test build in Actions (fresh database, all 700 companies; run 42406810708):
+    - Build: 73 min, 234,917 postings from 367 companies.
+    - Site: 132,951 roles in the US, Canada and Mexico from 407 companies, generated in 43 s.
+    - Size: 70.8 MB in all; the job list is 2.35 MB gzip; the largest search-word file is 57 KB
+      gzip.
+    - Only 27% of descriptions were read in that first run, so the site grows as later runs read
+      the rest.
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
     the postings whose filter fields the rules couldn't settle (`llm_fill.py`).
