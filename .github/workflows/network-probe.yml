@@ -33,3 +33,18 @@ jobs:
           python -m lighthouse index build --out dist --db data/test-builder.db --detail-calls 100
           echo "BUILD_SECONDS $(( $(date +%s) - start ))"
           python -c "import json; m = json.load(open('dist/manifest.json')); m.pop('switched_off', None); print('MANIFEST', json.dumps(m))"
+          start=$(date +%s)
+          python -m lighthouse site --db data/test-builder.db --out site_out
+          echo "SITE_SECONDS $(( $(date +%s) - start ))"
+          python - <<'PY'
+          import glob, gzip, json, os
+          d = "site_out/data"; latest = json.load(open(f"{d}/latest.json"))
+          gz = lambda p: len(gzip.compress(open(p, "rb").read(), 6))
+          det = sorted(glob.glob(f"{d}/{latest['detail']}/*.json"))
+          words = sorted(gz(p) for p in glob.glob(f"{d}/{latest['words']}/*.json"))
+          print("SITE", json.dumps({"jobs": latest["jobs"], "companies": latest["companies"],
+                "site_mb": round(sum(os.path.getsize(p) for p in glob.glob("site_out/**", recursive=True) if os.path.isfile(p)) / 1e6, 1),
+                "list_gzip_mb": round(gz(f"{d}/{latest['base']['file']}") / 1e6, 2),
+                "detail_files": len(det), "detail_gzip_kb_median": round(sorted(gz(p) for p in det[:200])[min(len(det), 200) // 2] / 1e3, 1) if det else 0,
+                "word_files": len(words), "word_gzip_kb_max": round(words[-1] / 1e3, 1) if words else 0}))
+          PY
