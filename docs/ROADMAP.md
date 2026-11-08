@@ -128,6 +128,8 @@ Job boards change all day, so freshness is a core feature.
    - The job list ships as a weekly base file plus a small "changed since the base" file. Both
      have per-build names.
    - Browsers keep the base cached and fetch only the small file when it changes.
+   - A change to the page alone (`site/`) doesn't wait for a build: `website.yml` deploys it on the
+     last build's job files in a minute or two, so users download the new page but no job data.
 3. **The page checks for a newer build.**
    - It fetches a ~1 KB `latest.json` on each visit and every 15 minutes while open.
    - When there's a newer build, it applies the change file in memory and shows the new jobs as
