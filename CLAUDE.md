@@ -63,6 +63,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Builder build/export (base + delta chain); reader sync/install/apply | `lighthouse/snapshot.py` |
 | Rule extraction (pay, YOE, visa, clearance...) / classification (function, seniority, skills) | `lighthouse/extract.py`, `lighthouse/classify.py` |
 | Location → country (rules + GeoNames city list; rebuild with `scripts/make_cities.py`) | `lighthouse/geo.py`, `lighthouse/data/cities.tsv.gz` |
+| Location → city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild the table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/places.tsv.gz` |
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
@@ -78,12 +79,14 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **`DERIVE_VERSION`** (`classify.py`): bump when derived columns change.
 - **`INDEX_SCHEMA`** (`db.py`) / **`FORMAT`** (`snapshot.py`): bump when the published file layout
   changes. Older apps then keep their jobs and say they need an update.
+- **`FORMAT`** (`site.py`) / **`VERSION`** (`places.py`): bump when the website's files or the place
+  rules change. The next build writes a new weekly base by itself.
 - **`SCHEMA_VERSION`** (`db.py`): follows the `MIGRATIONS` list. Add a migration whenever local
   tables change.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (127 pass) before every commit. No CI runs them yet
+- **Tests:** run `python -m pytest -q` (132 pass) before every commit. No CI runs them yet
   (ROADMAP P0-4).
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
   - Filters, eligibility and search words must give exactly the same results as the Python code.

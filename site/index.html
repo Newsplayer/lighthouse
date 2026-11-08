@@ -15,76 +15,136 @@
 <header class="top">
   <span class="brand"><span class="beam" aria-hidden="true"></span>Lighthouse</span>
   <nav class="top-links">
-    <button type="button" id="open-profile" class="link">My profile</button>
+    <button type="button" id="open-about" class="link">Can you apply?</button>
     <button type="button" id="open-sources" class="link">Sources</button>
   </nav>
 </header>
 <main>
   <p id="notice" class="notice" role="status" hidden></p>
   <form id="filters" class="filters" autocomplete="off">
-    <div class="row">
-      <input type="search" id="f-q" placeholder="Search title, company, skills…" aria-label="Search">
-      <input type="text" id="f-location" placeholder="City, state or Remote" aria-label="Location" class="short">
+    <div class="search">
+      <label class="field">
+        <span class="field-label">What</span>
+        <input type="search" id="f-q" placeholder="Job title, skill or company" aria-label="What: job title, skill or company">
+      </label>
+      <div class="field where" id="where">
+        <span class="field-label" id="where-label">Where</span>
+        <div class="where-box">
+          <span id="where-chips" class="chips"></span>
+          <input type="text" id="f-where" placeholder="City, state, province or country" role="combobox"
+                 aria-labelledby="where-label" aria-autocomplete="list" aria-expanded="false" aria-controls="where-list" data-skip>
+        </div>
+        <ul id="where-list" class="suggest" role="listbox" aria-label="Places" hidden></ul>
+      </div>
       <button class="btn" type="submit">Search</button>
     </div>
-    <div class="row small">
-      <select id="f-posted" aria-label="Date posted">
-        <option value="">Any date</option><option value="1">Past 24 hours</option><option value="3">Past 3 days</option>
-        <option value="7">Past week</option><option value="30">Past month</option>
-      </select>
-      <input type="text" id="f-company" list="companies" placeholder="Company" aria-label="Company" class="short">
-      <datalist id="companies"></datalist>
-      <select id="f-fn" aria-label="Job function"></select>
-      <select id="f-sen" aria-label="Level"></select>
-      <select id="f-emp" aria-label="Employment type"></select>
-      <select id="f-workplace" aria-label="Workplace">
-        <option value="">Any workplace</option><option value="remote">Remote</option><option value="hybrid">Hybrid</option><option value="onsite">On-site</option>
-      </select>
-      <input type="text" inputmode="numeric" id="f-min-salary" placeholder="Min pay / yr" aria-label="Minimum yearly pay" class="tiny">
-      <select id="f-sort" aria-label="Sort">
-        <option value="newest">Newest first</option><option value="relevance">Best match first</option>
-        <option value="salary">Highest pay first</option><option value="yoe">Fewest years asked first</option>
-      </select>
-      <select id="f-elig" aria-label="Eligibility">
-        <option value="1">Eligible only (from my profile)</option><option value="0">Include roles I can't apply to</option>
-      </select>
-      <label class="check"><input type="checkbox" id="f-ghosts"> Show likely ghost jobs</label>
+    <label class="check remote-too" id="remote-too" hidden><input type="checkbox" data-bool="remoteToo"> Also show remote roles open in the same country</label>
+
+    <div class="pills" id="pills">
+      <details class="pill" data-facet="postedWithin">
+        <summary><span class="pill-text">Date posted</span></summary>
+        <div class="pop" role="group" aria-label="Date posted">
+          <div class="opts" id="opts-posted"></div>
+        </div>
+      </details>
+      <details class="pill" data-facet="experience">
+        <summary><span class="pill-text">Experience</span></summary>
+        <div class="pop wide" role="group" aria-label="Experience">
+          <p class="pop-title">Level</p>
+          <div class="opts" id="opts-levels"></div>
+          <p class="pop-title">Years of experience asked <output id="yoe-out" class="pop-value">Any</output></p>
+          <div class="range" id="yoe-range">
+            <input type="range" id="f-yoe-lo" min="0" max="10" step="1" value="0" aria-label="At least this many years">
+            <input type="range" id="f-yoe-hi" min="0" max="10" step="1" value="10" aria-label="At most this many years">
+          </div>
+          <div class="range-scale" aria-hidden="true"><span>0</span><span>5</span><span>10+</span></div>
+          <label class="check"><input type="checkbox" data-bool="yoeUnknown" checked> Include roles that don't say</label>
+        </div>
+      </details>
+      <details class="pill" data-facet="workplaces">
+        <summary><span class="pill-text">Workplace</span></summary>
+        <div class="pop" role="group" aria-label="Workplace">
+          <div class="opts" id="opts-workplaces"></div>
+          <p class="meta">Many postings don't say. Picking one leaves those out.</p>
+        </div>
+      </details>
+      <details class="pill" data-facet="emps">
+        <summary><span class="pill-text">Job type</span></summary>
+        <div class="pop" role="group" aria-label="Job type">
+          <div class="opts" id="opts-emps"></div>
+          <p class="meta">Internships are under Experience.</p>
+        </div>
+      </details>
+      <details class="pill" data-facet="minSalary">
+        <summary><span class="pill-text">Pay</span></summary>
+        <div class="pop" role="group" aria-label="Pay">
+          <div class="opts" id="opts-pay"></div>
+          <label class="check"><input type="checkbox" data-bool="payListed"> Only roles that show pay</label>
+          <p class="meta">A yearly amount; hourly pay counts as 2,080 hours. Roles that don't show pay are left out when you pick a minimum.</p>
+        </div>
+      </details>
+      <details class="pill" data-facet="fns">
+        <summary><span class="pill-text">Category</span></summary>
+        <div class="pop scroll" role="group" aria-label="Category">
+          <div class="opts" id="opts-fns"></div>
+        </div>
+      </details>
+      <details class="pill" data-facet="companies">
+        <summary><span class="pill-text">Company</span></summary>
+        <div class="pop scroll" role="group" aria-label="Company">
+          <input type="search" id="company-find" placeholder="Find a company" aria-label="Find a company" data-skip>
+          <div class="opts" id="opts-companies"></div>
+        </div>
+      </details>
+      <button type="button" class="pill more-pill" id="open-more">More filters<span class="count" id="more-count"></span></button>
+      <button type="button" class="link clear" id="reset" hidden>Clear all</button>
     </div>
-    <details class="more">
-      <summary>More filters</summary>
-      <div class="row small">
-        <input type="text" id="f-skills" placeholder="Skills, e.g. python, sql" aria-label="Skills the posting mentions" class="short">
-        <span class="yoe" role="group" aria-label="Years of experience asked">
-          <span class="meta">Years asked</span>
-          <input type="text" inputmode="numeric" id="f-yoe-lo" placeholder="min" aria-label="At least" class="nano">
-          <span class="meta">–</span>
-          <input type="text" inputmode="numeric" id="f-yoe-hi" placeholder="max" aria-label="At most" class="nano">
-          <select id="f-yoe-unknown" aria-label="Roles that don't say"><option value="1">+ roles that don't say</option><option value="0">only roles that say</option></select>
-        </span>
-        <select id="f-visa" aria-label="Visa sponsorship">
-          <option value="">Visa: any</option><option value="not_no">Doesn't rule out sponsorship</option><option value="yes">Says it sponsors</option>
-        </select>
-        <select id="f-degree" aria-label="Degree asked">
-          <option value="">Any degree asked</option><option value="none">No degree asked</option>
-          <option value="bachelors">At most a bachelor's</option><option value="masters">At most a master's</option>
-        </select>
-        <select id="f-clearance" aria-label="Security clearance">
-          <option value="">Clearance: any</option><option value="none">No clearance asked</option><option value="required">Clearance roles only</option>
-        </select>
-        <select id="f-language" aria-label="Languages required"></select>
-        <label class="check"><input type="checkbox" id="f-pay-listed"> Pay listed</label>
-        <label class="check"><input type="checkbox" id="f-no-citizenship"> Hide U.S.-citizens-only roles</label>
-        <label class="check"><input type="checkbox" id="f-travel"> Little or no travel</label>
+
+    <dialog id="more" class="panel sheet" aria-labelledby="more-title">
+      <div class="sheet-head">
+        <h2 id="more-title">More filters</h2>
+        <button type="button" class="x" id="more-x" aria-label="Close">×</button>
       </div>
-      <div class="row small" id="f-countries" role="group" aria-label="Countries">
-        <span class="meta">In</span>
-        <label class="check"><input type="checkbox" value="US" checked> United States</label>
-        <label class="check"><input type="checkbox" value="CA" checked> Canada</label>
-        <label class="check"><input type="checkbox" value="MX" checked> Mexico</label>
+      <section class="group" id="about" aria-labelledby="about-title">
+        <h3 id="about-title">Can you apply?</h3>
+        <p class="meta">Answer only what applies to you; a question you leave unanswered never hides a role. Your answers stay in this browser.</p>
+        <div class="grid">
+          <label>Do you need visa sponsorship?
+            <select data-answer="sponsorship"><option value="">Not answered</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+          <label>Are you a U.S. citizen?
+            <select data-answer="citizen"><option value="">Not answered</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+          <label>Your highest degree
+            <select data-answer="degree"><option value="">Not answered</option><option value="none">None</option><option value="bachelors">Bachelor's</option><option value="masters">Master's</option><option value="phd">PhD</option></select></label>
+          <label>Security clearance you hold
+            <select data-answer="clearance"><option value="">Not answered</option><option value="none">None</option><option value="public_trust">Public trust</option><option value="secret">Secret</option><option value="ts">Top secret</option><option value="ts_sci">TS/SCI</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" data-bool="eligibleOnly" checked> Hide roles I can't apply to (otherwise they're shown, marked)</label>
+      </section>
+      <section class="group">
+        <h3>Skills</h3>
+        <input type="text" id="f-skills" placeholder="e.g. python, sql" aria-label="Skills the posting mentions (all of them)">
+      </section>
+      <section class="group">
+        <h3>Requirements</h3>
+        <label class="check"><input type="checkbox" data-flag="visa" value="yes"> Only roles that say they sponsor visas</label>
+        <label class="check"><input type="checkbox" data-flag="clearance" value="required"> Only roles that need a security clearance</label>
+        <label class="check"><input type="checkbox" data-bool="travelLow"> Little or no travel</label>
+        <label>Languages <select id="f-language" data-key="language" aria-label="Languages"></select></label>
+      </section>
+      <details class="group fold">
+        <summary><h3>Benefits the posting mentions</h3></summary>
+        <div class="opts" id="opts-benefits"></div>
+      </details>
+      <section class="group">
+        <h3>Ghost jobs</h3>
+        <label class="check"><input type="checkbox" data-bool="showGhosts"> Show likely ghost jobs (open for months, reposted, or no longer updated)</label>
+      </section>
+      <p class="meta">Read from each posting by free rules (and, where they couldn't tell, by an AI). Roles that don't say are kept, except where a filter says otherwise.</p>
+      <div class="sheet-foot">
+        <button type="button" class="link" id="more-clear">Clear these</button>
+        <button type="button" class="btn" id="more-done">Show roles</button>
       </div>
-      <div class="row small" id="f-benefits" role="group" aria-label="Benefits the posting offers"></div>
-      <p class="meta">Read from each posting by free rules (and, where they couldn't tell, by an AI). Roles that don't say are kept, except for “Pay listed” and “Offers”. <button type="button" id="reset" class="link">Clear all filters</button></p>
-    </details>
+    </dialog>
   </form>
 
   <nav id="tabs" class="tabs" aria-label="Lists">
@@ -95,15 +155,23 @@
     <button type="button" data-view="hidden" id="tab-hidden">Hidden <span class="count"></span></button>
   </nav>
 
-  <p id="summary" class="meta" role="status">Loading jobs…</p>
-  <p id="profile-hint" class="hint" hidden>Add <a href="#" id="profile-hint-link">your profile</a> to leave out roles you can't apply to (visa, citizenship, clearance, location, years, pay, degree). It stays in this browser.</p>
+  <div class="bar">
+    <p id="summary" class="meta" role="status">Loading jobs…</p>
+    <label class="sort">Sort
+      <select id="f-sort" aria-label="Sort">
+        <option value="newest">Newest</option><option value="relevance">Best match</option>
+        <option value="salary">Highest pay</option><option value="yoe">Fewest years asked</option>
+      </select>
+    </label>
+  </div>
+  <p id="elig-note" class="hint" hidden></p>
 
   <ul id="results" class="jobs"></ul>
-  <button type="button" id="more" class="btn secondary more-btn" hidden>Show more</button>
+  <button type="button" id="more-results" class="btn secondary more-btn" hidden>Show more</button>
   <section id="closed"></section>
 
   <footer class="foot meta">
-    <p>Postings come straight from employers' own careers sites and are checked every few hours. Lighthouse sends nothing anywhere: your profile and saved jobs stay in this browser.
+    <p>Postings come straight from employers' own careers sites and are checked every few hours. Lighthouse sends nothing anywhere: your answers and saved jobs stay in this browser.
       <button type="button" id="export" class="link">Save my data to a file</button> ·
       <label class="link">Load it from a file<input type="file" id="import" accept="application/json" hidden></label></p>
     <p>City names: <a href="https://www.geonames.org/" rel="noopener noreferrer">GeoNames</a> (CC BY 4.0). Code: <a href="https://github.com/Newsplayer/lighthouse" rel="noopener noreferrer">github.com/Newsplayer/lighthouse</a>.</p>
@@ -111,32 +179,6 @@
 </main>
 
 <dialog id="job" class="panel" aria-label="Job"></dialog>
-
-<dialog id="profile" class="panel" aria-label="My profile">
-  <form method="dialog" class="close"><button type="submit" aria-label="Close">×</button></form>
-  <h2>My profile</h2>
-  <p class="meta">Used only to leave out roles you can't apply to. It's stored in this browser and never sent anywhere.</p>
-  <form id="profile-form" class="profile">
-    <label>Years of experience <input type="text" inputmode="numeric" id="p-years" class="tiny"></label>
-    <label>Highest degree
-      <select id="p-degree"><option value="none">None / other</option><option value="bachelors">Bachelor's</option><option value="masters">Master's</option><option value="phd">PhD</option></select>
-    </label>
-    <label class="check"><input type="checkbox" id="p-sponsor"> I need visa sponsorship</label>
-    <label class="check"><input type="checkbox" id="p-citizen"> I'm a U.S. citizen</label>
-    <label>Security clearance I hold
-      <select id="p-clearance"><option value="none">None</option><option value="public_trust">Public trust</option><option value="secret">Secret</option><option value="ts">Top secret</option><option value="ts_sci">TS/SCI</option></select>
-    </label>
-    <label>Where I can work <input type="text" id="p-locations" placeholder="e.g. Austin, New York, Remote"></label>
-    <fieldset class="check-row"><legend>Workplace</legend>
-      <label class="check"><input type="checkbox" name="workplace" value="remote"> Remote</label>
-      <label class="check"><input type="checkbox" name="workplace" value="hybrid"> Hybrid</label>
-      <label class="check"><input type="checkbox" name="workplace" value="onsite"> On-site</label>
-    </fieldset>
-    <label>Minimum yearly pay <input type="text" inputmode="numeric" id="p-salary" class="tiny" placeholder="e.g. 90000"></label>
-    <div class="actions"><button class="btn" type="submit">Save</button></div>
-  </form>
-</dialog>
-
 <dialog id="sources" class="panel wide" aria-label="Sources"></dialog>
 </body>
 </html>

@@ -9,12 +9,17 @@ are flagged, and roles you can't apply to are filtered out.
 
 **[newsplayer.github.io/lighthouse](https://newsplayer.github.io/lighthouse/)**: nothing to install,
 no account.
-- **Search and filters:** keyword, location, company, function, level, type, workplace, pay, years
-  asked, visa, citizenship, clearance, degree, travel, languages and benefits.
+- **Search:** what (title, skill or company) and where. Type a city, state, province, metro area
+  ("Bay Area", "GTA") or country and pick it from the list; "NY-New York", "New York City" and
+  "US, NY, New York" all count as New York.
+- **Filters,** one button each: date posted, experience (level and/or a years-asked range),
+  workplace, job type, pay, category and company. Each choice shows how many roles it would find.
+  Skills, sponsorship, clearance, languages, travel, benefits and ghost jobs are under **More filters**.
 - **"New since your last visit".**
-- **Your profile:** leaves out roles you can't apply to, each with the reason.
+- **"Can you apply?":** up to four questions (visa sponsorship, citizenship, degree, clearance) leave
+  out roles you can't apply to, each with the reason. A question you skip never hides anything.
 - **Saved / Applied / Hidden lists.**
-- **Your data:** your profile and lists stay in your browser, and nothing is sent anywhere. "Save my
+- **Your data:** your answers and lists stay in your browser, and nothing is sent anywhere. "Save my
   data to a file" moves them to another browser.
 - **Updates:** the job list is refreshed by a GitHub Action every few hours. The page checks for a
   newer one every 15 minutes and downloads only what changed.
@@ -293,4 +298,6 @@ playwright install chromium`). Each is skipped when not installed.
 ## Credits
 
 City names for location matching: [GeoNames](https://www.geonames.org/) (CC BY 4.0), compacted into
-`lighthouse/data/cities.tsv.gz` by `scripts/make_cities.py`.
+`lighthouse/data/cities.tsv.gz` by `scripts/make_cities.py` (city → country, worldwide) and
+`lighthouse/data/places.tsv.gz` by `scripts/make_places.py` (US, Canadian and Mexican cities with
+their state or province and metro area).
