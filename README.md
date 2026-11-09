@@ -123,7 +123,7 @@ Every build also publishes **`jobs.csv.gz`** on the repo's `job-index` release: 
 job_function, years_experience, years_experience_source, degree, visa_sponsorship, clearance,
 us_citizens_only, pay_min_per_year, pay_max_per_year, pay_currency, pay_stated_per, skills, benefits,
 travel, languages_required, departments, posted_on, first_seen_on, times_listed, reposts, ghost_score,
-ghost_signals, has_description, filled_by_claude, url, ats, board`
+ghost_signals, has_description, filled_by_ai, url, ats, board`
 
 Empty means the posting doesn't say. Pay is per year (hourly × 2080; `pay_stated_per` says how the
 posting gave it). Open it in a spreadsheet or pandas. The same table is the `postings` view inside

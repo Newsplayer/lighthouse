@@ -4,8 +4,9 @@ citizenship, degree, visa-sponsorship language, pipeline wording, benefits, trav
 Tiers, all cached by description hash so identical text is never processed twice:
   rules    — free regexes, run on every new description during fetch
   gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
-             rules can't settle it (unresolved()), Claude reads it once and fills that gap. Rule answers
-             are never overwritten; filled fields carry "by": "claude".
+             rules can't settle it (unresolved()), a free open model on the build machine reads it once
+             and fills that gap; categorize.py places titles the rules can't. Rule answers are never
+             overwritten; filled fields carry "by": "model" or "titles" ("claude" in older indexes).
   claude   — optional, your own key (claude_api.py); replaces the rules result when present
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
@@ -344,20 +345,23 @@ def unresolved(text: str, data: dict, title: str = "", departments: str = "", at
     return out
 
 
+READ_MARKERS = ("llm_read", "claude_read")   # "this description was read by the gap fill"
+
+
 def merge_llm(data: dict, llm: dict | None) -> dict:
-    """Fill the gaps in a rule extraction from Claude's reading; a rule answer always stays.
-    llm None: never sent to Claude. {} (asked, nothing usable) still leaves a claude_read marker, so a
-    builder restarted from the published index knows not to pay for that description again."""
+    """Fill the gaps in a rule extraction from the gap fill's reading; a rule answer always stays.
+    llm None: never read. {} (read, nothing usable) still leaves an llm_read marker, so a builder restarted
+    from the published index knows not to read that description again."""
     if llm is None:
         return data
     out = dict(data)
-    out["claude_read"] = {"value": True}
+    out["llm_read"] = {"value": True}
     for k, v in llm.items():
         if not isinstance(v, dict) or v.get("value") in (None, [], ""):
             continue
         cur = out.get(k) if isinstance(out.get(k), dict) else {}
         if cur.get("value") in (None, [], ""):
-            out[k] = {**v, "by": "claude"}
+            out[k] = {**v, "by": v.get("by") or "claude"}   # Claude's older fills carried no mark of their own
     return out
 
 

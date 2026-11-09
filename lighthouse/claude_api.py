@@ -429,36 +429,25 @@ def poll_batches(conn, cfg) -> int:
         info = _get(f"/messages/batches/{b['id']}")
         if info.get("processing_status") != "ended":
             continue
-        fill = b["purpose"] == "index_fill"   # the job-index builder's gap fill (llm_fill.py)
-        if fill:
-            from . import llm_fill
         for line in _get(info["results_url"], raw=True).splitlines():
             if not line.strip():
                 continue
             item = json.loads(line)
             res = item.get("result") or {}
             if res.get("type") != "succeeded":
-                if fill and res.get("type") == "errored":
-                    llm_fill.store(conn, item["custom_id"], None, "error")   # not retried: it would fail again
                 continue                                                      # expired/canceled: retried next run
             msg = res["message"]
             _record(conn, cfg, b["purpose"], b["model"], msg.get("usage", {}), batch=True)
             try:
                 out = _parse_output(msg)
-            except (ValueError, KeyError):   # refusal, cut off: nothing usable, but it was asked
-                if fill:
-                    llm_fill.store(conn, item["custom_id"], None, b["model"])
+            except (ValueError, KeyError):   # refusal, cut off: nothing usable
                 continue
             if b["purpose"] == "fit":
                 _store_fit(conn, item["custom_id"], b["profile_hash"], out, "batch", b["model"])
-            elif fill:
-                llm_fill.store(conn, item["custom_id"], out, b["model"])
             else:
                 _store_extraction(conn, item["custom_id"], out, b["model"])
         conn.execute("UPDATE claude_batches SET status='ended', reserved_usd=0, done_at=? WHERE id=?",
                      (utcnow(), b["id"]))
-        if fill:
-            conn.execute("DELETE FROM llm_pending WHERE batch_id = ?", (b["id"],))
         conn.commit()
         finished += 1
     return finished

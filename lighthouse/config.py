@@ -87,12 +87,11 @@ class IndexSettings:
     check_every_hours: float = 1     # how often to look for a newer index while the app is open
     stale_after_hours: float = 30    # warn when the newest index is older than this
     # Builder only (`index build`, i.e. the GitHub Action): postings whose filter fields the rules
-    # couldn't settle are read by Claude. Runs only when ANTHROPIC_API_KEY is set; readers ignore these.
+    # couldn't settle are read by a free open model on the build machine (llm_fill.py); readers ignore these.
     llm_fill: bool = True
-    llm_model: str = "claude-haiku-5-5"
-    llm_monthly_cap_usd: float = 10.0  # hard stop for the month (estimated before sending; batches reserve)
-    llm_max_per_run: int = 5000        # newest first; the rest wait for the next run
-    llm_wait_minutes: float = 5        # wait this long for the batch; anything later ships with the next build
+    llm_minutes: float = 20            # reading time per build, newest postings first; the rest wait
+    llm_parallel: int = 2              # questions the model works on at once
+    llm_max_per_run: int = 20000
 
 
 @dataclass

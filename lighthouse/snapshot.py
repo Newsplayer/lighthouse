@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 
-from . import __version__, db, workers
+from . import __version__, db, extract, workers
 from . import profile as profile_mod
 
 log = logging.getLogger("lighthouse.index")
@@ -115,12 +115,14 @@ def _sha256(path: Path) -> str:
 
 def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | str = BUILDER_DB,
           detail_calls: int | None = None, published: Path | str | None = None, full: bool = False,
-          discover_companies: bool = True, llm: bool = True, llm_cap_usd: float | None = None,
-          llm_wait_minutes: float | None = None, fetch_minutes: float | None = None) -> dict:
-    """Find boards for the listed companies, fetch every enabled board into the builder database,
-    let Claude fill the fields the rules couldn't settle (when a key is set), then write the index files."""
+          discover_companies: bool = True, llm: bool = True, llm_minutes: float | None = None,
+          fetch_minutes: float | None = None) -> dict:
+    """Find boards for the listed companies, fetch every enabled board into the builder database, let a
+    free open model on this machine fill the fields the rules couldn't settle (when one is set up: see
+    llm_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
+    index files."""
+    from . import categorize, fetch, llm_fill, net
     from . import config as config_mod
-    from . import fetch, llm_fill, net
     config_path = Path(config_path or config_mod.DEFAULT_CONFIG)
     conn = db.connect(db_path)
     if db.has_fts(conn):   # the published index gets its own search index; the builder needs none
@@ -150,12 +152,19 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     conn = db.connect(db_path)
     if retired:   # boards switched off in the list: their postings were closed, re-cluster those companies
         fetch.postprocess(conn, cfg, retired)
-    if llm:
+    if llm:   # optional steps: the rule answers are published whatever happens here
         try:
-            if published and Path(published).exists():
-                llm_fill.carry_spend(conn, json.loads(Path(published).read_text(encoding="utf-8")))
-            llm_fill.run(conn, cfg, cap_usd=llm_cap_usd, wait_minutes=llm_wait_minutes)
-        except Exception as exc:   # optional step: publish the rule answers whatever happens here
+            categorize.run(conn)
+        except Exception as exc:
+            log.warning("category guesses skipped: %s", exc)
+        try:
+            server = llm_fill.server_from_env(cfg)
+            if server is None:
+                llm_fill.run(conn, cfg)          # merges anything stored; says why nothing was read
+            else:
+                with server:
+                    llm_fill.run(conn, cfg, minutes=llm_minutes, server=server)
+        except Exception as exc:
             log.warning("gap fill skipped: %s", exc)
     _company_openings(conn)
     conn.close()
@@ -274,17 +283,18 @@ def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> in
             # model 'seeded': the next build re-runs the rules (which also records what they left unsettled)
             conn.execute("INSERT OR REPLACE INTO extractions (content_hash, method, data, model, at) "
                          "SELECT content_hash, method, data, 'seeded', at FROM s.extractions")
-            # Claude's gap fills are in the published extractions ("by": "claude"): keep them as already
-            # asked, so a lost cache never pays for the same descriptions twice.
+            # The gap fill's answers are in the published extractions ("by": "model", or "claude" in older
+            # ones): keep them as already read, so a lost cache never reads the same descriptions twice.
+            # Category guesses ("by": "titles") aren't kept: they're redone each build in seconds.
             now = _now()
             for chash, data in conn.execute("SELECT content_hash, data FROM s.extractions WHERE data LIKE "
-                                            "'%\"by\":%' OR data LIKE '%\"claude_read\"%'").fetchall():
+                                            "'%\"by\":%' OR data LIKE '%_read\"%'").fetchall():
                 try:
                     d = json.loads(data)
-                    filled = {k: v for k, v in d.items() if isinstance(v, dict) and v.get("by") == "claude"}
+                    filled = {k: v for k, v in d.items() if isinstance(v, dict) and v.get("by") in ("model", "claude")}
                 except (ValueError, AttributeError):
                     continue
-                if filled or "claude_read" in d:   # read before, even if it found nothing to fill
+                if filled or any(m in d for m in extract.READ_MARKERS):   # read before, even if it found nothing
                     conn.execute("INSERT OR IGNORE INTO llm_extractions (content_hash, data, model, at) "
                                  "VALUES (?, ?, 'seeded', ?)", (chash, json.dumps(filled, ensure_ascii=False), now))
             conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY id")
