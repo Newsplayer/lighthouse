@@ -100,7 +100,7 @@ jobs:
           python - <<'PY'
           import json; m = json.load(open("dist/manifest.json"))
           new = [f for f in [m["base"], *m["deltas"]] if f["built_at"] == m["built_at"]]
-          print(f"{m['jobs']} open roles from {m['boards']} boards; "
+          print(f"{m['jobs']} open roles ({m.get('postings')} postings) from {m['boards']} boards; "
                 + (f"new {new[0]['file']}: {new[0]['rows']} rows, {new[0]['bytes']/1e6:.1f} MB" if new else "nothing changed")
                 + f"; {len(m['deltas'])} deltas since the base")
           print("Companies list coverage:", m.get("coverage"))

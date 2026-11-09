@@ -291,6 +291,9 @@ def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> in
             conn.execute(f"INSERT OR REPLACE INTO boards ({', '.join(bcols)}) SELECT {', '.join(bcols)} FROM s.boards")
             conn.execute(f"INSERT OR REPLACE INTO companies ({', '.join(ccols)}) SELECT {', '.join(ccols)} FROM s.companies")
             conn.execute("UPDATE jobs SET minhash = NULL, minhash_of = NULL")   # recomputed by the next build
+            # The index carries one description per role: boards answered in one response are read in
+            # full once (not skipped as unchanged), so their duplicate listings get their text back.
+            conn.execute("UPDATE boards SET body_hash = NULL")
         n = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         conn.execute("DETACH DATABASE s")
         conn.close()
@@ -619,9 +622,10 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
             csv_info = write_csv(db_path, out / CSV_NAME)
         except Exception as exc:   # a convenience for people: never stops the index from publishing
             log.warning("%s not written: %s", CSV_NAME, exc)
+    roles, postings = _open_counts(db_path)
     manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
-                "countries": list(countries), "jobs": _active_total(db_path), "boards": _board_total(db_path),
+                "countries": list(countries), "jobs": roles, "postings": postings, "boards": _board_total(db_path),
                 "changed_this_run": changed, "deleted_this_run": deleted, "switched_off": _switched_off(db_path),
                 "coverage": coverage, "llm": llm, "fill": _fill_rates(db_path), "csv": csv_info,
                 "base": base, "deltas": chain}
@@ -682,10 +686,12 @@ def _coverage(conn) -> dict:
     return {r[0]: r[1] for r in rows}
 
 
-def _active_total(db_path) -> int:
+def _open_counts(db_path) -> tuple[int, int]:
+    """(open roles, open postings): a role listed in 40 places is one role, 40 postings. Every app
+    shows the manifest's "jobs" as open roles, the number its lists add up to."""
     conn = db.connect(db_path)
     try:
-        return conn.execute("SELECT COUNT(*) FROM jobs WHERE active = 1").fetchone()[0]
+        return tuple(conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone())
     finally:
         conn.close()
 
@@ -897,8 +903,10 @@ def apply_delta(conn, path: Path, since: str | None = None) -> dict:
             conn.execute("UPDATE idx.jobs SET fts_rowid = (SELECT rid FROM temp.fts_new f WHERE f.uid = jobs.uid) "
                          "WHERE uid IN (SELECT uid FROM temp.fts_new)")
             conn.execute("DROP TABLE temp.fts_new")
-            conn.execute("UPDATE idx.jobs SET fts_rowid = NULL WHERE active = 0 AND fts_rowid IS NOT NULL "
-                         "AND uid IN (SELECT uid FROM d.jobs)")
+            # Search covers a role's open main listing only: a listing that closed or stopped leading its
+            # role leaves search (its role is found through the listing that leads it now).
+            conn.execute("UPDATE idx.jobs SET fts_rowid = NULL WHERE (active = 0 OR is_canonical = 0) "
+                         "AND fts_rowid IS NOT NULL AND uid IN (SELECT uid FROM d.jobs)")
             changed = conn.execute("SELECT COUNT(*) FROM d.jobs").fetchone()[0]
     finally:
         conn.execute("DETACH DATABASE d")

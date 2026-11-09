@@ -20,6 +20,7 @@ from lighthouse.sources.base import Blocked, RunGate, json_body, looks_blocked
 from lighthouse.sources.workday import WorkdaySource
 
 from test_index import Builder, base_file, reader, unpacked
+from test_index import job as index_job
 
 BODY = "<p>Build dashboards with SQL. 3+ years of experience required. " + " ".join(
     f"word{k}" for k in range(80)) + "</p>"
@@ -211,6 +212,62 @@ def test_index_ships_one_description_per_role_and_search_still_finds_every_city(
     member = r.execute("SELECT uid FROM idx.jobs WHERE is_canonical = 0 LIMIT 1").fetchone()[0]
     assert "dashboards" in db.content(r, member)                                 # its page shows the role's text
     assert m["fill"]["roles"] == 1 and m["fill"]["with_description_pct"] == 100.0
+    assert m["jobs"] == 1 and m["postings"] == 3                                   # shown as "open roles"
+
+
+def test_a_duplicate_listings_page_shows_its_roles_places(tmp_path):
+    b, conn, jobs = cluster_builder(tmp_path, ["Austin, TX", "Denver, CO"])
+    conn.close()
+    b.export()
+    r, rcfg = reader(tmp_path)
+    snapshot.import_file(r, rcfg, base_file(b), full=True)
+    member = r.execute("SELECT uid FROM idx.jobs WHERE is_canonical = 0").fetchone()[0]
+    assert sorted(json.loads(db.get_job(r, member)["cluster_locations"])) == ["Austin, TX", "Denver, CO"]
+
+
+def test_a_delta_moves_search_to_the_listing_that_now_leads_the_role(tmp_path):
+    def listing(eid, city, day):
+        return Job("greenhouse", "acme", str(eid), "Data Analyst", "Acme", city, f"https://x/{eid}",
+                   sanitize_html(BODY), posted_at=datetime(2026, 10, day, tzinfo=timezone.utc))
+    b = Builder(tmp_path)
+    conn = db.connect(b.path)
+    db.sync_config_boards(conn, b.cfg.boards)
+    first = [listing(1, "Chicago, IL", 5), listing(2, "Denver, CO", 6)]
+    first += [index_job(i, f"Role {i}") for i in range(10, 16)]   # other roles: the change stays a delta
+    db.upsert_board(conn, "greenhouse", "acme", first)
+    fetch.postprocess(conn, b.cfg)
+    b.export()
+    r, rcfg = reader(tmp_path)
+    snapshot.import_file(r, rcfg, base_file(b), full=True)
+    # an earlier listing of the same role turns up: it leads the role now, the old lead stays open
+    db.upsert_board(conn, "greenhouse", "acme", first + [listing(3, "Boston, MA", 1)])
+    fetch.postprocess(conn, b.cfg)
+    conn.close()
+    b.export()
+    snapshot.import_file(r, rcfg, next(b.dist.glob("delta-*.db.xz")), full=False)
+    lead = r.execute("SELECT uid FROM idx.jobs WHERE is_canonical = 1 AND title = 'Data Analyst'").fetchone()[0]
+    assert lead == "greenhouse:acme:3"
+    assert r.execute("SELECT COUNT(*) FROM idx.jobs WHERE fts_rowid IS NOT NULL AND title = 'Data Analyst'").fetchone()[0] == 1
+    for city in ("Chicago", "Denver", "Boston"):
+        assert db.list_jobs(r, db.Filters(q=city))[1] == 1, city
+    assert "dashboards" in db.content(r, lead)
+
+
+def test_a_builder_restarted_from_the_index_gets_every_description_back(tmp_path):
+    b, conn, jobs = cluster_builder(tmp_path, ["Austin, TX", "Denver, CO", "Boston, MA"])
+    db.board_result(conn, "greenhouse", "acme", count=3, body_hash="same")
+    conn.close()
+    b.export()
+    fresh = tmp_path / "fresh.db"
+    snapshot.seed_builder(base_file(b), fresh)
+    conn = db.connect(fresh)
+    assert conn.execute("SELECT COUNT(*) FROM job_content").fetchone()[0] == 1          # one per role
+    assert conn.execute("SELECT body_hash FROM boards WHERE slug = 'acme'").fetchone()[0] is None   # re-read once
+    out = db.upsert_board(conn, "greenhouse", "acme", jobs)                               # the same listing
+    assert conn.execute("SELECT COUNT(*) FROM job_content").fetchone()[0] == 3
+    assert out["touched"] == {"acme"}
+    db.upsert_board(conn, "greenhouse", "acme", jobs)
+    assert conn.execute("SELECT COUNT(*) FROM job_content").fetchone()[0] == 3
 
 
 def test_postings_table_and_csv_have_a_column_per_filter(tmp_path):

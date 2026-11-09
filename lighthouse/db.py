@@ -1019,7 +1019,8 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
     now = utcnow()
     keep_alive = keep_alive or set()
     existing = {r["uid"]: r for r in conn.execute(
-        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig, missed FROM jobs "
+        "SELECT uid, active, content_hash, title, location, url, detail_marker, row_sig, missed, "
+        "EXISTS (SELECT 1 FROM job_content c WHERE c.uid = jobs.uid) AS has_content FROM jobs "
         "WHERE source=? AND source_board=?", (source, board))}
     held_before = conn.execute("SELECT held_closures FROM boards WHERE ats=? AND slug=?", (source, board)).fetchone()
     fts = has_fts(conn)
@@ -1040,7 +1041,10 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
             is_changed = (old is None or not old["active"] or old["content_hash"] != chash
                           or old["title"] != j.title or (not j.partial and (old["location"] or "") != j.location))
             sig = _row_sig(j, chash, marker)
-            if old is not None and old["active"] and not is_changed and (
+            # A stored row without its description (a builder seeded from the published index, which
+            # carries one per role) takes the text the moment a listing brings it.
+            fill = bool(j.content_html) and old is not None and not old["has_content"]
+            if old is not None and old["active"] and not is_changed and not fill and (
                     old["row_sig"] == sig or (j.partial and old["url"] == j.url)):
                 if old["missed"]:
                     conn.execute("UPDATE jobs SET missed=0 WHERE uid=?", (j.uid,))
@@ -1074,9 +1078,11 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                  marker, j.workplace, j.employment_type, j.salary_min, j.salary_max,
                  j.salary_currency, j.salary_interval, json.dumps(j.locations or ([j.location] if j.location else [])),
                  now, j.uid, sig, *([int(j.partial and old is not None)] * 5)))
-            if j.content_html and (old is None or old["content_hash"] != chash or not old["active"]):
+            if j.content_html and (old is None or old["content_hash"] != chash or not old["active"] or fill):
                 conn.execute("INSERT INTO job_content(uid, html) VALUES (?, ?) "
                              "ON CONFLICT(uid) DO UPDATE SET html=excluded.html", (j.uid, pack(j.content_html)))
+            if fill:
+                touched.add(company_key(j.company))   # its signature and rules are computed next
             if old is None:
                 conn.execute("DELETE FROM tombstones WHERE uid=?", (j.uid,))   # deleted once, listed again
             if is_changed:
@@ -1400,6 +1406,13 @@ def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe
         return None
     row = dict(r)
     row["content_html"] = content(conn, uid)
+    if not row.get("cluster_locations"):
+        # A role's places are stored on its main listing; a duplicate or closed listing shows those,
+        # else its own.
+        lead = conn.execute("SELECT cluster_locations FROM jobs WHERE cluster_id = ? AND is_canonical = 1 "
+                            "AND cluster_locations IS NOT NULL LIMIT 1", (row.get("cluster_id"),)).fetchone()
+        own = json.loads(row.get("locations") or "[]") or ([row["location"]] if row.get("location") else [])
+        row["cluster_locations"] = lead[0] if lead else json.dumps(own)
     from .profile import annotate
     annotate([row], profile or {}, yoe_slack)
     return row

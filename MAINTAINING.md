@@ -109,7 +109,8 @@ publishes what it has (about an hour in all). Boards it didn't reach go first in
 Workday sites fill in their descriptions over the next few days. When it's green:
 - **Releases → Job index** (tag `job-index`) has `manifest.json` and a `base-<time>.db.xz`. Each build's
   files get their own names; the manifest says which are current, and older ones are removed after it's uploaded.
-- The *Publish* step's summary reads like `468707 open roles from 852 boards; new base-….db.xz: …`,
+- The *Publish* step's summary reads like `307717 open roles (485693 postings) from 852 boards; new
+  base-….db.xz: 514519 rows, 537.6 MB`,
   then how full each filter column is (`Filled for this % of open roles`) and the `jobs.csv.gz` row count.
 
 After that it runs every 6 hours by itself, plus whenever you push a change under `config/`.
@@ -219,8 +220,10 @@ Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthous
 - **0.8.0** (schema v7, builder only): two misses to close a posting on paged listings, a role's
   places on its canonical row only, one description per role in the published index, a 40-minute
   fetch limit, and the `postings` view plus `jobs.csv.gz`. The first build after the upgrade
-  re-clusters everything once and writes a fresh base. Older apps keep reading the index; on them, a
-  duplicate listing's own page shows no description (its role's main listing does).
+  re-clusters everything once and writes a fresh base. The manifest's `jobs` now counts open roles
+  (what every app labels it and what its lists add up to); `postings` counts every open listing.
+  Older apps keep reading the index; on them, a duplicate listing's own page shows no description
+  (its role's main listing does).
 - **0.7.0** adds filter columns and deletion records (schema v6). Older apps keep reading new indexes
   (they ignore the new columns and deletions), and 0.7 reads older indexes (it adds the columns, empty).
 - **You changed the published index layout (`INDEX_SCHEMA` in `db.py`):** older apps keep the jobs
