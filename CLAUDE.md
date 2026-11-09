@@ -87,7 +87,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (136 pass) before every commit. No CI runs them yet
+- **Tests:** run `python -m pytest -q` (138 pass) before every commit. No CI runs them yet
   (ROADMAP P0-4).
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
   - Filters, eligibility and search words must give exactly the same results as the Python code.

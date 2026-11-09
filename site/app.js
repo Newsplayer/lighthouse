@@ -855,6 +855,7 @@ async function start() {
       await loadData();
     } catch {
       $("#summary").textContent = "The job list couldn't be loaded. Try again in a few minutes.";
+      $("#results").replaceChildren();               // a preview's buttons would wait forever
       return;
     }
   }
