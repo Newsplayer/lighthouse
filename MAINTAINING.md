@@ -82,19 +82,23 @@ The free rules read every filter field. When a posting clearly talks about one o
 read the answer (sponsorship in unusual wording, years written oddly, a pay band we can't parse), a free,
 open model reads that posting on the build machine itself. There's no key, account or cost.
 
-- **What runs:** llama.cpp's server with Gemma 4 E2B (Apache-2.0), on the runner's CPU. It's asked only
-  about the unsettled fields, and shown only the sentences around them (about a tenth of the posting).
+- **What runs:** llama.cpp's server with Qwen3.5 2B (Apache-2.0), on the runner's CPU, in the *fill*
+  job after the index and the site are published, so it never delays new postings. What it fills goes
+  out with the next build. It's asked only about the unsettled fields, and shown only the sentences
+  around them (about a tenth of the posting).
   An answer is kept only when the model quotes the words it read and the quote is really in the text;
   numbers must appear in their quote. It fills empty fields only, never overrides a rule answer, and
   reads each description at most once. Filled fields are marked `"by": "model"`.
 - **Job categories:** a title no rule recognises takes the category of the most similar titles the
   rules did place, from a small embedding model (model2vec). If those titles don't clearly agree, the
   category stays unknown. These are marked `"by": "titles"`.
-- **How long:** 20 minutes per build, newest postings first (about 2,000 an hour). The rest wait for
-  the next build. To change it, add a repository variable `LIGHTHOUSE_LLM_MINUTES`.
-- **Setup:** none. The first build runs `scripts/get_llm.sh`, which builds llama.cpp and downloads the
-  two models (about 3 GB; 10–20 minutes). They're kept in the Actions cache, so later builds start at
-  once. If that step fails, the build goes on with the rules alone and tries again next time.
+- **How long:** 45 minutes per build, newest postings first (about 1,500 an hour, so about 4,500 a
+  day: more than the 2,500 or so new ones a day that need it). To change it, add a repository variable
+  `LIGHTHOUSE_LLM_MINUTES`.
+- **Setup:** none. The first *fill* job runs `scripts/get_llm.sh`, which builds llama.cpp and downloads
+  the two models (1.3 GB; about 8 minutes). They're kept in the Actions cache, so later runs start at
+  once. If the *fill* job fails, nothing is lost: the next build starts from the build job's database,
+  and the rule answers stand.
 - **Changing the model:** edit the pins in `scripts/get_llm.sh` (the cache key follows the file).
   First compare models with `scripts/eval_fill.py` through the network probe (see "Trying something
   against real careers sites" below).
@@ -311,12 +315,13 @@ once a week, or when the changes add up to half the base.
      deleted once no other listing in its cluster is open, or after a year regardless. Each deletion
      leaves a tombstone that the next delta carries, so readers delete it too. Postings you marked
      yourself (local mode) are never deleted.
-   - **Open-model gap fill** (step 5b). First, titles the rules couldn't place get a category from the
-     most similar placed titles. Then the rules' list of gaps (per description, the fields it talks about
-     that they couldn't settle) goes to the open model, newest open, de-duplicated, non-ghost postings
-     first, for 20 minutes. Grounded answers are merged into the extraction for the empty fields only,
-     marked `"by": "model"`. If this step fails for any reason, the build publishes the rule answers.
-     Descriptions already read are recovered from the published base when seeding.
+   - **Open-model gap fill** (step 5b; the *fill* job, after publishing). First, titles the rules
+     couldn't place get a category from the most similar placed titles. Then the rules' list of gaps
+     (per description, the fields it talks about that they couldn't settle) goes to the open model,
+     newest open, de-duplicated, non-ghost postings first, for 45 minutes. Grounded answers are merged
+     into the extraction for the empty fields only, marked `"by": "model"`, and the builder database is
+     saved again; the next build publishes them. If the job fails, the rule answers stand. Descriptions
+     already read are recovered from the published base when seeding.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
    - **new base** (first build, weekly, `full`, a new rules version, changes > half the base, or 40 deltas):
@@ -378,8 +383,8 @@ once a week, or when the changes add up to half the base.
 | Many Workday boards fail with "Pushed back" | Workday's bot protection answered with block pages; that data center was left alone for the run and goes first next time. If it lasts for days, lower `SHARED_LIMITS` in `net.py` or raise `WORKDAY_REFRESH_HOURS` in `snapshot.py`. Don't work around it |
 | The log says "time limit (40 min) reached: N boards not started" | normal on a first build or after a block; they go first next run |
 | Many boards fail with HTTP 429 | lower `per_host_requests_per_second` in `config/sources.toml` |
-| Manifest's `llm` entry stays at 0 descriptions | *Get the open model* failed (its log says why: a download or the llama.cpp build); the *Build* log says `gap fill: ... skipped`. It's retried next build |
-| `llm.waiting` keeps growing | more new postings than 20 minutes of reading covers; raise `LIGHTHOUSE_LLM_MINUTES` (each build gets that much longer) |
+| Manifest's `llm` entry stays at 0 descriptions | the *fill* job failed: its *Get the open model* step says why (a download or the llama.cpp build). It's retried next build |
+| `llm.waiting` keeps growing | more new postings than the reading time covers; raise `LIGHTHOUSE_LLM_MINUTES` (the *fill* job gets longer; publishing doesn't) |
 | *deploy-site* fails with "Timeout reached" | GitHub was slow copying the files; it waits up to 30 minutes now, and the next build deploys anyway |
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |

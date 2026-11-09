@@ -26,8 +26,9 @@ goal, the prioritized work, and the decisions waiting on the owner.
     Studio, llama.cpp), Chrome's built-in model, or the user's own Claude (API key or Claude app
     via MCP).
   - **The builder fills filter fields with a free, open model on the build machine** (no key, no
-    account): llama.cpp + Gemma 4 E2B via `llm_fill.py`, and job categories from similar titles via
-    `categorize.py` (model2vec). Both are fetched by `scripts/get_llm.sh` (pinned versions).
+    account): llama.cpp + Qwen3.5 2B via `llm_fill.py`, and job categories from similar titles via
+    `categorize.py` (model2vec), in the workflow's *fill* job after publishing. Both are fetched by
+    `scripts/get_llm.sh` (pinned versions; measure a new model with `scripts/eval_fill.py` first).
     - Only the sentences around an unsettled field are shown, and an answer is kept only when its
       quote is really in the text.
     - It's skipped when the model isn't there, and is time-boxed per build.
