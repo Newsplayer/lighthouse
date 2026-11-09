@@ -3,8 +3,8 @@
 # job files stay the ones the last Job index build wrote (it keeps them in the Actions cache); only
 # the page files are replaced.
 #
-# A push that also changes lighthouse/ (how those files are written) waits for the next build, which
-# writes everything again: new page code never meets files written by old code.
+# A push that also changes lighthouse/ (how those files are written) waits for the Job index build
+# that push starts, which writes everything again: new page code never meets files written by old code.
 name: Website
 
 on:
@@ -48,7 +48,7 @@ jobs:
           if [ -z "${{ steps.cache.outputs.cache-matched-key }}" ]; then
             msg="No website from a build in the cache yet. This change goes live with the next Job index build."
           elif ! git diff --quiet "$(cat site_built_from.txt)" HEAD -- lighthouse/ requirements.txt 2>/dev/null; then
-            msg="lighthouse/ changed since the last build wrote the website, so this change goes live with the next Job index build (every 6 hours, or Run workflow there)."
+            msg="lighthouse/ changed since the last build wrote the website, so this change goes live with the Job index build that change starts (about an hour)."
           else
             cp -r site/. site_out/
             echo "ready=true" >> "$GITHUB_OUTPUT"

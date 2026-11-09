@@ -17,7 +17,9 @@ on:
         default: false
   push:
     branches: [main]
-    paths: ["config/**"]            # board or companies list edited -> rebuild soon
+    # Board or company lists edited, or the code that reads and writes job data changed: rebuild now,
+    # so the change is live in about an hour instead of at the next 6-hourly run.
+    paths: ["config/**", "lighthouse/**", "requirements.txt"]
 
 permissions:
   contents: write                   # publish the release; nothing else
@@ -28,6 +30,9 @@ concurrency:
 
 jobs:
   build:
+    # Only main publishes. A run started on another branch would put that branch's data on the
+    # release everyone downloads (test builds: network-probe.yml with probe/run-build).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       site: ${{ steps.site.outcome }}
