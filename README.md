@@ -26,10 +26,11 @@ no account.
 - **Applying:** you apply on the employer's own site. The page shows an excerpt of each posting and
   every place it's listed.
 
-Measured on a real 73k-role list:
-- First visit: 1.7 MB, including a search and opening three jobs.
-- Results in under 0.4 s; filtering in under 10 ms.
-- A visit after an hourly update: 0.07 MB.
+Measured on the real list (226,771 roles, 2026-11-09), fast connection / phone-like connection:
+- First visit: the newest roles show in 0.2 s / 0.6 s. The whole list (4.9 MB) is ready to search
+  and filter in 1.4 s / 5.9 s.
+- Searching: 0.1 s / 0.3 s. Filtering: under 10 ms. Opening a job: 0.1 s / 0.3 s.
+- A visit after an update downloads only what changed since the weekly list (0.5 MB two days in).
 
 ## The local app (optional)
 

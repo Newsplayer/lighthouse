@@ -362,7 +362,7 @@ once a week, or when the changes add up to half the base.
 |---|---|---|
 | Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
-| GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | ~50 MB per 73k roles; a first visit is ~1.7 MB, so ~60k first visits a month at 255k roles |
+| GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
 | Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |

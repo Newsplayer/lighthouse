@@ -98,6 +98,24 @@ Work top to bottom.
       gzip.
     - Only 27% of descriptions were read in that first run, so the site grows as later runs read
       the rest.
+  - **Production, 2026-11-09** (the last build's database, 226,771 roles; probe `probe/run-site`;
+    Chromium with gzip like Pages; fast = 50 Mbps, 20 ms; phone = 10 Mbps, 70 ms, 4× slower CPU).
+    Before → after the combined PR (new filters, first-page preview):
+
+    | Measure | Fast | Phone |
+    |---|---|---|
+    | First roles on screen | 2.06 → 0.20 s | 7.00 → 0.58 s |
+    | Whole list ready (search, filters) | 2.07 → 1.41 s | 7.04 → 5.85 s |
+    | Search ("data engineer") | 0.09 s | 0.33 s |
+    | Opening a job | 0.11 → 0.07 s | 0.31 → 0.27 s |
+    | Return visit (list from the browser's cache) | 0.46 → 0.39 s | 1.98 → 1.81 s |
+
+    - First visit downloads 6.15 → 4.93 MB; the preview file is 6.8 KB gzip.
+    - Site 190 → 185 MB; written in 26 → 36 s.
+    - Two days into the week the change file was 530 KB gzip (14,555 changed roles, 12,327 gone).
+    - **Next for speed:** a return visit on a phone spends 0.9 s reading and parsing the cached list
+      and 0.16 s building it. Keeping the built list (IndexedDB) or a binary list would cut that.
+      Changes are cumulative for the week, so later visits download more as the week goes on.
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
     the postings whose filter fields the rules couldn't settle (`llm_fill.py`).
