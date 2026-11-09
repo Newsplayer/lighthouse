@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -464,18 +465,30 @@ def _free_port():
         return s.getsockname()[1]
 
 
+class _Handler(http.server.SimpleHTTPRequestHandler):
+    slow = None              # a path prefix whose files take 1.5 s, as on a slow connection
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.slow and self.path.startswith(self.slow):
+            time.sleep(1.5)
+        super().do_GET()
+
+
 @pytest.fixture
 def site_server(tmp_path):
-    """A builder, its site in tmp_path/site, and a local server for that folder. Regenerating the
-    site replaces the folder, as a Pages deploy replaces the site."""
+    """A builder, its site in tmp_path/site, a local server for that folder, and the server's handler
+    class (set .slow to delay some files). Regenerating the site replaces the folder, as a Pages
+    deploy replaces the site."""
     b = varied_builder(tmp_path, n=60)
     out = tmp_path / "site"
     gen(b, out, now=datetime.now(timezone.utc))
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
-    handler.log_message = lambda *a, **k: None
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", _free_port()), handler)
+    handler = type("Handler", (_Handler,), {})
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", _free_port()), functools.partial(handler, directory=str(out)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}/", b, out
+    yield f"http://127.0.0.1:{srv.server_address[1]}/", b, out, handler
     srv.shutdown()
 
 
@@ -575,7 +588,7 @@ def test_page_keeps_working_when_the_site_is_redeployed_under_it(site_server):
     """A deploy removes the previous build's search and job files. A page left open must catch up
     instead of showing no matches or a job without apply links."""
     sync = pytest.importorskip("playwright.sync_api")
-    url, b, out = site_server
+    url, b, out, _ = site_server
     start = datetime.now(timezone.utc)
     count = lambda page: int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))
     with sync.sync_playwright() as p:
@@ -612,5 +625,68 @@ def test_page_keeps_working_when_the_site_is_redeployed_under_it(site_server):
         gen(b, out, now=start + timedelta(days=8, hours=1))
         page.locator("#results li.job .mark").first.click()
         page.wait_for_function("document.querySelector('#tab-saved .count').textContent === '1'")
+        assert not errors, errors
+        browser.close()
+
+
+@needs_node
+def test_first_page_preview_is_the_pages_own_first_page(tmp_path):
+    """top-<build>.json holds exactly the first page the page computes from the whole list (default
+    view: newest first, likely ghosts left out), shown the same way, after a new base and a delta."""
+    b = varied_builder(tmp_path, n=140)
+    out = tmp_path / "site"
+    script = _store_script() + """
+const top = JSON.parse(readFileSync(`${dir}/data/${latest.top}`));
+const ctx = { now: logic.nowHours(), profile: null, markOf: () => undefined, since: undefined };
+const ids = logic.sortIds(store, logic.filterIds(store, logic.freshFilters(), ctx, null), "newest").slice(0, 50);
+const mini = logic.buildStore(top, null, latest.vocab);
+const shown = (s, i) => JSON.stringify([s.cols.t[i], s.dicts.company[s.cols.c[i]], logic.placeLabels(s, i),
+  logic.payText(s, i), s.dicts.function[s.cols.f[i]], s.cols.s[i], s.cols.e[i], s.cols.w[i], s.cols.h[i], s.cols.gh[i]]);
+console.log(JSON.stringify({ ids, top: top.ids, same: top.ids.every((id, j) => shown(store, id) === shown(mini, j)) }));
+"""
+    gen(b, out)
+    r = node(script, {"dir": str(out)})
+    assert len(r["ids"]) == 50 and r["top"] == r["ids"] and r["same"]
+
+    b.ingest("beta", [job(900 + k, title=f"Fresh role {k}", board="beta", company="Beta") for k in range(5)])
+    vary(b)
+    conn = db.connect(b.path)
+    conn.execute("UPDATE jobs SET effective_first_seen = ? WHERE source_board = 'beta'", ((NOW + timedelta(hours=1)).isoformat(),))
+    conn.commit()
+    conn.close()
+    gen(b, out, now=NOW + timedelta(hours=2))
+    assert read(out, "latest.json")["delta"]                     # new roles arrive in the change file
+    r = node(script, {"dir": str(out)})
+    assert r["top"] == r["ids"] and r["same"] and set(r["ids"]) & set(range(140, 145))
+
+
+def test_first_visit_shows_the_newest_roles_while_the_list_downloads(site_server):
+    sync = pytest.importorskip("playwright.sync_api")
+    url, _, _, handler = site_server
+    handler.slow = "/data/jobs-"                                  # the job list takes a while to arrive
+    titles = "[...document.querySelectorAll('#results li.job .title')].slice(0, 50).map((t) => t.textContent)"
+    loaded = "!document.querySelector('#summary').innerText.includes('loading all')"
+    with sync.sync_playwright() as p:
+        browser, page = _browser_page(p, sync)
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        assert "loading all" in page.inner_text("#summary")      # shown before the list is in
+        preview = page.evaluate(titles)
+        page.wait_for_function(loaded)
+        assert page.evaluate(titles) == preview and " roles" in page.inner_text("#summary")
+
+        page = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True).new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        page.evaluate("window.stillHere = true")
+        page.fill("#f-q", "software")                             # typed while the list downloads
+        page.press("#f-q", "Enter")
+        page.wait_for_function(loaded)
+        page.wait_for_function("location.hash.includes('q=software')")
+        assert page.evaluate("window.stillHere === true")        # Enter didn't reload the page
+        assert page.input_value("#f-q") == "software"
         assert not errors, errors
         browser.close()

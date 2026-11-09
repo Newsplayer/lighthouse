@@ -46,7 +46,12 @@ const state = {
   answers: cleanAnswers(load(STORE.answers, null) || answersFromProfile(load(STORE.oldProfile, null))),
   marks: load(STORE.marks, {}), keyToId: null, baseKeys: null,
   shards: new Map(), details: new Map(), since: undefined, searchToken: 0, placeCount: null,
+  preview: false, loaded: null,
 };
+// Resolves once the whole job list is in (actions taken on the first-page preview wait for it).
+let listLoaded;
+state.loaded = new Promise((ok) => { listLoaded = ok; });
+const whenLoaded = (fn) => (state.store ? fn() : state.loaded.then(fn));
 
 // ---------------------------------------------------------------- tiny DOM helpers
 function el(tag, attrs = {}, ...children) {
@@ -102,17 +107,41 @@ async function getBase(file) {
 
 async function loadData() {
   const latest = await getJSON(`data/latest.json?t=${Date.now()}`, { cache: "no-store" });
+  if (!state.store && latest.top && previewFits()) {
+    state.latest = latest;                             // its labels, for the preview's cards
+    getJSON(`data/${latest.top}`).then(showPreview).catch(() => {});
+  }
+  const t0 = performance.now();
   const [base, delta] = await Promise.all([
     getBase(latest.base.file),
     latest.delta ? getJSON(`data/${latest.delta.file}`) : null,
   ]);
+  const t1 = performance.now();
   state.latest = latest;
   state.store = buildStore(base, delta, latest.vocab);
+  performance.measure("lh:list", { start: t0, end: t1 });         // timings for the network probe
+  performance.measure("lh:store", { start: t1 });
   state.shards.clear();
   state.details.clear();
   state.keyToId = null;
   state.placeCount = null;
   if (Object.keys(state.marks).length) await remapMarks();
+}
+
+// A first visit downloads the whole job list (a few MB) before it can filter. Meanwhile it shows the
+// default view's first page from a small file the builder writes alongside: the same 50 roles the
+// list then shows, so nothing moves when it arrives. Only for the default view with no answers or
+// marks, which is what that file is.
+function previewFits() {
+  return !filtersToHash(state.filters) && !answered(state.answers) && !Object.keys(state.marks).length;
+}
+
+function showPreview(top) {
+  if (state.store) return;                             // the whole list arrived first
+  const s = buildStore(top, null, state.latest.vocab);
+  state.preview = true;
+  $("#results").replaceChildren(...top.ids.map((id, j) => card(j, s, id)));
+  $("#summary").replaceChildren(el("strong", { text: "Newest roles" }), ` · loading all ${fmt(state.latest.jobs)}…`);
 }
 
 // Each deploy replaces the whole site, so a page left open still names the previous build's search
@@ -300,8 +329,9 @@ const SEN = () => state.latest.labels.seniority;
 const EMP = () => state.latest.labels.emp;
 const WORKPLACE = { remote: "Remote", hybrid: "Hybrid", onsite: "On-site" };
 
-function card(i) {
-  const s = state.store, c = s.cols, v = s.vocab;
+// A result: row i of store s (the job list, or the preview's), whose id in the job list is id.
+function card(i, s = state.store, id = i) {
+  const c = s.cols, v = s.vocab, full = s === state.store;
   const places = placeLabels(s, i);
   const where = places.length ? places[0] + (places.length > 1 ? ` +${places.length - 1} more` : "") : "";
   const pay = payText(s, i);
@@ -309,11 +339,11 @@ function card(i) {
   const tags = [s.dicts.function[c.f[i]], SEN()[v.seniority[c.s[i]]], emp !== "internship" && EMP()[emp],
                 WORKPLACE[v.workplace[c.w[i]]]].filter(Boolean);
   const profile = profileFrom(state.answers);
-  const reasons = profile ? eligibility(s, i, profile) : [];
-  const mark = markOf(i);
+  const reasons = profile && full ? eligibility(s, i, profile) : [];
+  const mark = full ? markOf(id) : undefined;
   const li = el("li", { class: "job" + (reasons.length ? " dim" : "") + (mark ? ` marked-${mark}` : "") },
     el("div", { class: "job-main" },
-      el("button", { class: "title", type: "button", text: c.t[i], onclick: () => openJob(i) }),
+      el("button", { class: "title", type: "button", text: c.t[i], onclick: () => whenLoaded(() => openJob(id)) }),
       el("div", { class: "meta" },
         el("span", { class: "company", text: s.dicts.company[c.c[i]] }),
         where && el("span", { text: where }),
@@ -325,7 +355,7 @@ function card(i) {
       c.gh[i] >= 2 && el("div", { class: "warn", text: c.gh[i] >= 3 ? "Likely ghost job" : "Possible ghost job" }),
       reasons.length && el("div", { class: "inelig", text: `Not eligible: ${reasons.join("; ")}` })),
     el("div", { class: "actions" },
-      markButton(i, "saved", "Save", mark), markButton(i, "applied", "Applied", mark), markButton(i, "hidden", "Hide", mark)));
+      markButton(id, "saved", "Save", mark), markButton(id, "applied", "Applied", mark), markButton(id, "hidden", "Hide", mark)));
   return li;
 }
 
@@ -333,6 +363,7 @@ function markButton(i, status, label, current) {
   return el("button", { type: "button", class: "mark" + (current === status ? " on" : ""), "aria-pressed": current === status ? "true" : "false",
     text: current === status ? `✓ ${label === "Hide" ? "Hidden" : label === "Save" ? "Saved" : label}` : label,
     onclick: async () => {
+      await state.loaded;                               // clicked on the preview: once the list is in
       const got = await detailOf(i);                    // null: the list was just renumbered and redrawn
       if (got) { await setMark(i, status, got.d); await run({ keepScroll: true }); }
     } });
@@ -815,6 +846,7 @@ function wire() {
 }
 
 async function start() {
+  $("#filters").addEventListener("submit", (e) => e.preventDefault());   // Enter while loading: no reload
   try {
     await loadData();
   } catch {
@@ -826,6 +858,9 @@ async function start() {
       return;
     }
   }
+  listLoaded();
+  const typed = $("#f-q").value.trim();          // typed while the list was loading: search it now
+  if (typed && !state.filters.q) state.filters = { ...state.filters, q: typed };
   const visit = load(STORE.visit, null);         // "new since your last visit" = since the previous visit
   state.since = visit ? visit.h : undefined;
   if (!visit || nowHours() - visit.h >= 1) save(STORE.visit, { h: nowHours(), prev: visit ? visit.h : null });
@@ -833,7 +868,8 @@ async function start() {
   fillChoices();
   filtersToForm();
   wire();
-  await run();
+  await run({ keepScroll: state.preview });      // the preview showed this same first page
+  state.preview = false;
   setInterval(checkForUpdate, CHECK_EVERY_MS);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForUpdate(); });
 }

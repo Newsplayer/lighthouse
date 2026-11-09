@@ -16,6 +16,8 @@ only to its own GitHub Pages origin, and a user's profile and saved jobs live in
     data/d-<build>/<n>.json        job details, 128 per file: excerpt, every apply link, places,
                                    departments, ghost reasons
     data/sources-<build>.json      the companies list's coverage, and the boards
+    data/top-<build>.json          the default view's first page, as a tiny job list: shown on a first
+                                   visit while the whole list downloads
 
 Ids are stable for a base week: base entries are 0..n-1, new roles get the next ids, and the
 builder remembers both (table site_ids; the weekly files themselves in site_files; state in meta
@@ -31,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import heapq
 import json
 import re
 import shutil
@@ -48,6 +51,8 @@ ASSETS = Path(__file__).resolve().parent.parent / "site"
 # The page: every file in site/ (.github/workflows/website.yml publishes the same files on its own).
 ASSET_FILES = tuple(sorted(p.name for p in ASSETS.iterdir() if p.is_file())) if ASSETS.is_dir() else ()
 DETAIL_PER_FILE = 128
+PREVIEW = 50                       # roles in top-<build>.json: the page's first page of results
+GHOST_HIDE_AT = 3                  # the page hides roles with this ghost level by default (logic.js)
 MAX_PLACES = 25                    # places kept per role in the list (all of them in its details)
 EXCERPT_CHARS = 600
 BASE_EVERY_DAYS = 7
@@ -394,12 +399,25 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
         sources_file = f"sources-{stamp}.json"
         _write_json(data / sources_file, _sources(conn))
 
+        # What a first visit sees first: the default view's first page, as a tiny job list of its own,
+        # so it shows while the whole list downloads (logic.js computes the same page from the list).
+        h_col, gh_col = COLUMNS.index("h"), COLUMNS.index("gh")
+        top = heapq.nsmallest(PREVIEW, (u for u in by_uid if cards[u][gh_col] < GHOST_HIDE_AT),
+                              key=lambda u: (-cards[u][h_col], id_of[u]))
+        top_dicts: dict[str, dict] = {name: {} for name in DICTS}
+        top_cards = [_card(by_uid[u], top_dicts) for u in top]
+        top_file = f"top-{stamp}.json"
+        top_bytes = _write_json(data / top_file, {
+            "format": FORMAT, "n": len(top), "ids": [id_of[u] for u in top],
+            "dicts": {k: _dict_list(v) for k, v in top_dicts.items()}, "cols": _columns(top_cards),
+            "places": place_names()})
+
         latest = {
             "format": FORMAT, "built_at": now.isoformat(timespec="seconds"), "stamp": stamp,
             "base": {"stamp": base_stamp, "file": f"jobs-{base_stamp}.json", "keys": f"keys-{base_stamp}.json",
                      "count": state["count"]},
             "delta": delta, "words": f"w-{stamp}", "detail": f"d-{stamp}", "per_detail": DETAIL_PER_FILE,
-            "sources": sources_file, "jobs": len(rows), "companies": len({r["company"] for r in rows}),
+            "sources": sources_file, "top": top_file, "jobs": len(rows), "companies": len({r["company"] for r in rows}),
             "countries": list(countries or []),
             "vocab": {"workplace": WORKPLACES, "seniority": SENIORITIES, "emp": EMP_TYPES, "clearance": CLEARANCES,
                       "degree": DEGREES, "travel": TRAVELS, "interval": INTERVALS, "benefits": classify.BENEFITS,
@@ -416,7 +434,7 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
     total = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     return {"new_base": reason, "jobs": len(rows), "base_bytes": base_bytes, "delta": delta,
             "words_bytes": word_bytes, "words_files": len(shards), "detail_bytes": detail_bytes,
-            "detail_files": len(files), "site_bytes": total}
+            "detail_files": len(files), "top_bytes": top_bytes, "site_bytes": total}
 
 
 def _departments(r) -> list[str]:
