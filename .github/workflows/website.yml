@@ -1,0 +1,80 @@
+# Puts a change to the page itself (the files in site/: HTML, CSS, JavaScript) live in a minute or
+# two, without a build: no crawling, and the builder database isn't touched. The job list, search and
+# job files stay the ones the last Job index build wrote (it keeps them in the Actions cache); only
+# the page files are replaced.
+#
+# A push that also changes lighthouse/ (how those files are written) waits for the Job index build
+# that push starts, which writes everything again: new page code never meets files written by old code.
+name: Website
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**"]
+  workflow_dispatch:                # "Run workflow": put main's page files live now
+
+permissions:
+  contents: read
+
+# One Pages deploy at a time (job-index.yml's deploy-site job uses the same group).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      ready: ${{ steps.swap.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0              # to compare with the commit the last build wrote the website from
+
+      - name: Get the last build's website
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            site_out
+            site_built_from.txt
+          key: lighthouse-site-${{ github.run_id }}     # never there: the newest lighthouse-site-* is used
+          restore-keys: lighthouse-site-
+
+      - name: Put this commit's page files on it
+        id: swap
+        run: |
+          if [ -z "${{ steps.cache.outputs.cache-matched-key }}" ]; then
+            msg="No website from a build in the cache yet. This change goes live with the next Job index build."
+          elif ! git diff --quiet "$(cat site_built_from.txt)" HEAD -- lighthouse/ requirements.txt 2>/dev/null; then
+            msg="lighthouse/ changed since the last build wrote the website, so this change goes live with the Job index build that change starts (about an hour)."
+          else
+            cp -r site/. site_out/
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            msg="Page files from $(git rev-parse --short HEAD), on the job data the build of $(cut -c1-7 site_built_from.txt) wrote."
+          fi
+          echo "$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the website
+        if: steps.swap.outputs.ready == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site_out
+
+  deploy:
+    needs: page
+    if: needs.page.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

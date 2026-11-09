@@ -7,6 +7,10 @@
 #
 # Add an empty file probe/run-build on the branch to run a full test build instead
 # (nothing is published); it prints the manifest and BUILD_SECONDS.
+#
+# Add an empty file probe/run-site to get the last build's database first (the newest one in the
+# Actions cache, as data/builder.db; this copy is never saved back), then run probe/run.py: for
+# example, write the website with this branch's code and time the page on real data.
 name: Network probe
 on:
   push:
@@ -23,6 +27,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: "3.12", cache: pip}
       - run: pip install -r requirements.txt
+      - name: Get the last build's database (read only)
+        if: hashFiles('probe/run-site') != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-probe-${{ github.run_id }}     # never there: the newest build's is used
+          restore-keys: lighthouse-builder-
+          fail-on-cache-miss: true
       - name: Run probe/run.py
         if: hashFiles('probe/run.py') != '' && hashFiles('probe/run-build') == ''
         run: python probe/run.py

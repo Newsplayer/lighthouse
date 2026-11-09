@@ -1,0 +1,51 @@
+# Keeps the branch list short. Deletes:
+#   - branches whose work is all on main already (merged), and
+#   - probe/<topic> branches (network-probe.yml) with no new commit for a day.
+# Any other branch with work that isn't on main is left alone. Runs after each push to main, daily,
+# and from the Actions tab (Run workflow). Each deleted branch is listed in the run's summary.
+name: Tidy branches
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 9 * * *"            # daily (UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write                   # deleting branches; nothing else
+
+concurrency:
+  group: tidy-branches
+  cancel-in-progress: true
+
+jobs:
+  tidy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Delete merged and idle probe branches
+        run: |
+          git fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*' --prune
+          day_ago=$(( $(date +%s) - 86400 ))
+          deleted=0
+          for ref in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin); do
+            branch=${ref#origin/}
+            case "$branch" in main|HEAD|origin) continue ;; esac
+            if git merge-base --is-ancestor "$ref" origin/main; then
+              why="all of it is on main"
+            elif [[ "$branch" == probe/* ]] && [ "$(git log -1 --format=%ct "$ref")" -lt "$day_ago" ]; then
+              why="probe branch, no new commit for a day"
+            else
+              continue
+            fi
+            if git push --quiet origin --delete "$branch"; then
+              echo "Deleted $branch ($why)" | tee -a "$GITHUB_STEP_SUMMARY"
+              deleted=$((deleted + 1))
+            fi
+          done
+          [ "$deleted" -gt 0 ] || echo "Nothing to delete." | tee -a "$GITHUB_STEP_SUMMARY"

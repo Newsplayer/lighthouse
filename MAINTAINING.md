@@ -117,7 +117,9 @@ Workday sites fill in their descriptions over the next few days. When it's green
   base-….db.xz: 514519 rows, 537.6 MB`,
   then how full each filter column is (`Filled for this % of open roles`) and the `jobs.csv.gz` row count.
 
-After that it runs every 6 hours by itself, plus whenever you push a change under `config/`.
+After that it runs every 6 hours by itself, plus whenever a push to `main` changes `config/`,
+`lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
+nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
 
 ### 8. Check it from the app
 
@@ -133,16 +135,37 @@ marks and Claude verdicts carry over: they're keyed by posting, and the postings
 **Settings → Pages → Build and deployment → Source: GitHub Actions** (once). After each build the
 workflow writes the website from the builder database (`python -m lighthouse site`, step *Write the
 website*), and the *deploy-site* job publishes it at `https://<owner>.github.io/<repo>/`. Each deploy
-replaces the whole site.
+replaces the whole site at once, so the site is never down during a deploy.
 
-If the website step fails, the job index is still published and the cache still saved. The site
-keeps its previous version, and the *Build* log shows why.
+- **Pages of visitors who already have the site open** still name the previous build's search and
+  job files, which the deploy removed. When one is missing, the page loads the new build and draws
+  the list again. After the weekly list (when jobs are renumbered), a job opened at that moment asks
+  to be opened again.
+- **If the website step or the deploy fails,** the job index is still published and the cache still
+  saved. The site keeps its previous version, and the *Build* log shows why. The next build fixes it.
+- **What visitors download per build** is only the change file. What's regenerated each build (search
+  and job files) is redone from cached excerpts in under a minute.
+
+**Changing only the page (`site/`) doesn't need a build.** Each build keeps the website it wrote in
+the Actions cache. A push to `main` that changes `site/` runs the *Website* workflow
+(`website.yml`), which puts the new page files on the last build's job data and deploys in a minute
+or two: no crawling, and the builder database isn't touched. Its *Run workflow* button does the same
+for whatever `main` has.
+- If the push also changes `lighthouse/` (how the job files are written), the *Website* run deploys
+  nothing and says so in its summary. That push starts a *Job index* build, which writes everything
+  again and puts the change live in about an hour.
+- A build that was already running when you pushed uses the newest page files from `main` too, so it
+  doesn't put the old page back.
 
 ### 9. Optional: protect `main`
 
 **Settings → Rules → Rulesets → New branch ruleset:** target the default branch, enable
 **Restrict deletions** and **Block force pushes**. Only you can push (you're the only collaborator:
 **Settings → Collaborators**), so this just guards against accidents.
+
+**Branches are tidied by themselves** (`tidy-branches.yml`): after each push to `main`, and daily,
+branches whose work is all on `main` are deleted, and so are `probe/…` branches with no new commit
+for a day. A branch with work that isn't on `main` is never touched. Each run lists what it deleted.
 
 ---
 
@@ -151,7 +174,9 @@ keeps its previous version, and the *Build* log shows why.
 Most development sandboxes (including Claude Code's) can't reach careers sites. Push a script as
 `probe/run.py` on a branch named `probe/<topic>`. The **Network probe** workflow runs it from
 GitHub's network; read its output in the run's log. Add an empty `probe/run-build` file to run a
-full test build instead. Nothing is published either way. Delete the branch when done.
+full test build instead, or an empty `probe/run-site` file to get the last build's database first
+(read only) so `probe/run.py` can, for example, write and time the website on real data. Nothing is
+published either way. Delete the branch when done.
 
 ## Day to day
 
@@ -337,7 +362,7 @@ once a week, or when the changes add up to half the base.
 |---|---|---|
 | Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
-| GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | ~50 MB per 73k roles; a first visit is ~1.7 MB, so ~60k first visits a month at 255k roles |
+| GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
 | Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
@@ -359,6 +384,7 @@ once a week, or when the changes add up to half the base.
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |
 | *deploy-site* fails with "Not Found" / Pages not enabled | Settings → Pages → Source: GitHub Actions (step 8b) |
+| A page change pushed to `main` isn't live; the *Website* run deployed nothing | its summary says why: no build has kept a website yet (the first build after this workflow was added does), or the push also changed `lighthouse/` (wait for the next build, or *Run workflow* on *Job index*) |
 
 ## Testing a build locally
 

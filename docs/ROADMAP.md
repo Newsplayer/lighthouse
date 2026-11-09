@@ -1,8 +1,12 @@
 # Lighthouse roadmap: from v0.6 to the most effective free job board
 
 This was written 2026-11-07 for Claude Code, and updated the same day with the owner's
-decisions (§8). It compares Lighthouse v0.6 (PR #1, branch `big-companies`, verified by a full
-test build on 2026-11-06) with what the goal requires.
+decisions (§8). It compares Lighthouse v0.6 (PR #1, verified by a full test build on 2026-11-06)
+with what the goal requires.
+
+**Status (2026-11-09):** everything is on `main` (PRs #1 and #2, then one PR combining the website
+filters, page-only deploys and open-page catch-up). The website is live and rebuilt by every build.
+No other branches are kept.
 
 **Direction (owner, 2026-11-07):** the top priority is a functional, effective job aggregator.
 - **Hosting:** Lighthouse becomes a **website hosted on GitHub Pages**, so users install and
@@ -72,7 +76,7 @@ Work top to bottom.
   - A delta with 2,000 changed postings (half with new descriptions) is 2.5 MB. An update with one
     change is 42 KB. Exporting a delta takes 8 s.
   - Installing the index takes 6 s; pages load in 2–50 ms.
-- **Website (P1-1, built 2026-11-07; branch `website`):**
+- **Website (P1-1, built 2026-11-07; live since PR #2):**
   - Measured on the real 124k-posting builder database: 72,812 roles in scope.
     - Generated in 37 s; the site is 50 MB.
     - The job list is 8.6 MB, 1.66 MB gzip.
@@ -94,6 +98,24 @@ Work top to bottom.
       gzip.
     - Only 27% of descriptions were read in that first run, so the site grows as later runs read
       the rest.
+  - **Production, 2026-11-09** (the last build's database, 226,771 roles; probe `probe/run-site`;
+    Chromium with gzip like Pages; fast = 50 Mbps, 20 ms; phone = 10 Mbps, 70 ms, 4× slower CPU).
+    Before → after the combined PR (new filters, first-page preview):
+
+    | Measure | Fast | Phone |
+    |---|---|---|
+    | First roles on screen | 2.06 → 0.20 s | 7.00 → 0.58 s |
+    | Whole list ready (search, filters) | 2.07 → 1.41 s | 7.04 → 5.85 s |
+    | Search ("data engineer") | 0.09 s | 0.33 s |
+    | Opening a job | 0.11 → 0.07 s | 0.31 → 0.27 s |
+    | Return visit (list from the browser's cache) | 0.46 → 0.39 s | 1.98 → 1.81 s |
+
+    - First visit downloads 6.15 → 4.93 MB; the preview file is 6.8 KB gzip.
+    - Site 190 → 185 MB; written in 26 → 36 s.
+    - Two days into the week the change file was 530 KB gzip (14,555 changed roles, 12,327 gone).
+    - **Next for speed:** a return visit on a phone spends 0.9 s reading and parsing the cached list
+      and 0.16 s building it. Keeping the built list (IndexedDB) or a binary list would cut that.
+      Changes are cumulative for the week, so later visits download more as the week goes on.
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
     the postings whose filter fields the rules couldn't settle (`llm_fill.py`).
@@ -128,6 +150,8 @@ Job boards change all day, so freshness is a core feature.
    - The job list ships as a weekly base file plus a small "changed since the base" file. Both
      have per-build names.
    - Browsers keep the base cached and fetch only the small file when it changes.
+   - A change to the page alone (`site/`) doesn't wait for a build: `website.yml` deploys it on the
+     last build's job files in a minute or two, so users download the new page but no job data.
 3. **The page checks for a newer build.**
    - It fetches a ~1 KB `latest.json` on each visit and every 15 minutes while open.
    - When there's a newer build, it applies the change file in memory and shows the new jobs as
@@ -150,12 +174,12 @@ Job boards change all day, so freshness is a core feature.
 |---|---|---|
 | Collect via APIs / "job wrapping" (an employer's own ATS feed), not scraping | ✓ Only the public feeds careers sites load, and robots.txt respected | Coverage: see P2-4 |
 | Backfill from bought feeds | Not used (paid) | Non-goal |
-| Normalize titles, locations, salary, job type | Pay per hour/year, function, seniority, employment type, country (GeoNames cities) | No standard occupation (P3-2), no coordinates or radius (P3-4), no currency conversion for MXN/CAD (P3-6) |
+| Normalize titles, locations, salary, job type | Pay per hour/year, function, seniority, employment type; locations to city, state/province, metro area and country (GeoNames, P1-4) | No standard occupation (P3-2), no radius (P3-4), no currency conversion for MXN/CAD (P3-6) |
 | De-duplicate across postings | ✓ Fingerprint + MinHash per company; all apply links kept | None |
 | Re-crawl; expire filled or removed jobs | ✓ Every 6 h; a posting missing from its feed closes | Faster cycle (P2-1); `validThrough` / end dates ignored (P0-2) |
 | **"Kill and fill": keep the last-known-good set if a feed comes back empty or partial** | ✗ A successful but shrunken feed closes every missing posting; they "reopen" next run, which pollutes the repost and ghost signals | **P0-1** |
 | Ghost / spam controls, audits | ✓ Multi-signal ghost score with reasons | No measurement (P0-3). User reports: not for now (§8) |
-| Keyword search + filters (date, type, industry, location, salary, experience) | ✓ FTS5 + all of those except industry and radius | On the website (P1-1); richer filters (P3-1); radius, industry (P3-4, P3-5) |
+| Keyword search + filters (date, type, industry, location, salary, experience) | ✓ All of those except industry and radius; on the website as one-click pills with counts (P1-4) | Richer filters (P3-1); radius, industry (P3-4, P3-5) |
 | Ranking by relevance, recency, preferences | Sort by date / pay / YOE | Relevance for keyword search on the website (P1-1) |
 | AI matching | Claude only (optional, local app) | Deferred (§6 "Later") |
 | Clean cards that link to the original | ✓ | None |
@@ -236,12 +260,12 @@ means. Keep every change incremental and measured (§2 baselines).
 4. **Run the tests on every push and PR.** Add `.github/workflows/tests.yml` running
    `python -m pytest -q` on Python 3.11 and 3.13, plus the website's JS tests once they exist
    (`node --test`).
-5. **Merge v0.6 (PR #1)** and watch the first production build: new base, timing, sizes.
+5. **✓ Merged v0.6 (PR #1)**; production builds run every 6 hours.
    - Then measure a week of the daily change rate, and fill in §1 and §3.
 
 ### P1: the website (GitHub Pages; nothing to install)
 
-1. **✓ Built (branch `website`): static site built by the Action.** The design below is what was
+1. **✓ Built and live: static site built by the Action.** The design below is what was
    built. Measurements are in §2.
    - **Generator:** new `lighthouse/site.py`, run after each build: `python -m lighthouse site
      --out site`. It reads `data/builder.db` and writes plain static files, so there is no server
@@ -262,8 +286,8 @@ means. Keep every change incremental and measured (§2 baselines).
        (tracking parameters removed), skills, locations, ghost reasons and departments.
      - `index.html`, `app.js`, `app.css`: hand-written, no framework, no external requests.
    - **Page:**
-     - The same filters as the local app: keyword, company, function, seniority, type, workplace,
-       country/state, pay floor, years asked, visa/citizenship/clearance/degree, posted within N
+     - Filters (redesigned in P1-4): keyword, place (city, state, metro area, country), company,
+       category, experience (level and years asked), type, workplace, pay floor, posted within N
        days, hide likely ghosts.
      - Sorts: newest, pay, fewest years, keyword relevance.
      - Infinite list; a job panel with the excerpt, all "Apply on …" links and ghost reasons; a
@@ -296,6 +320,45 @@ means. Keep every change incremental and measured (§2 baselines).
 3. **The local app is frozen:** bug fixes only. Its README section points to the website.
    - Decide at the first major change whether to retire it.
    - The `job-index` release keeps being published while it exists.
+4. **✓ Filters redesigned (2026-11-07; on `main` since 2026-11-09).**
+   - **What other boards do:** LinkedIn, Indeed and Google Jobs put the same few filters in one row:
+     date posted, experience level, workplace (remote/hybrid/on-site), job type, pay, company,
+     category. Everything else sits behind "All filters". Google Jobs and Hiring Cafe also filter by
+     years of experience; Hiring Cafe uses a 0–20 range plus "include roles that don't say". Filter
+     guides agree on showing each choice's count, showing what's applied, and keeping the list short.
+   - **The page now:** a What/Where search bar, then one pill each for Date posted, Experience,
+     Workplace, Job type, Pay, Category and Company. Each pill's panel shows a role count per choice,
+     computed with the other filters applied. Several choices can be picked in one pill.
+     Skills, sponsorship, clearance, languages, travel, benefits (folded) and ghost jobs are under
+     More filters. Sort sits next to the result count.
+   - **Places:** `places.py` reads each location into a city, state or province, metro area (98
+     curated areas, by distance from anchor cities) and country, from GeoNames' 26.6k US, Canadian
+     and Mexican cities of 1,000+ people. On the published 232k in-scope roles: 80% resolve to a
+     city, 5% to a state, 8% to a country only ("United States", "Remote - US"), and 6% have no place
+     ("Remote", blank, a hospital name). 46k roles that had no country now get one. Where is a
+     search box with suggestions and counts; several places can be picked.
+   - **Redundancy removed:**
+     - level and years asked are one Experience filter;
+     - internships are a level, not also a job type;
+     - countries are places;
+     - the profile's location, workplace, pay and years are the filters themselves.
+     - The profile became "Can you apply?": four questions (sponsorship, citizenship, degree,
+       clearance). An unanswered question never hides a role. The four filters that repeated it
+       (visa "not no", no citizenship, degree at most, no clearance) are gone. "Says it sponsors"
+       and "needs a clearance" stay as positive filters.
+   - **Measured** on the published `jobs.csv.gz` (232k in-scope roles, not de-duplicated, so larger
+     than the site), main → this branch:
+     - Job list (weekly base): 5.49 → 4.82 MB gzip. Roles point at normalized places, and the raw
+       place strings (645 KB gzip) leave the list; detail files and search words keep them.
+     - `latest.json`: unchanged (2.6 KB). Page code: 18 → 27 KB gzip.
+     - Site generation: 17 → 20 s.
+     - In the page (Node, same data): filters 4–11 ms; counts for a pill 10–16 ms; place
+       suggestions < 1 ms; first results 0.33 s (local server).
+     - "Texas" finds 22,311 roles, against 14,713 for the old text match on "tx".
+   - **Known gaps:**
+     - 69% of postings don't state a workplace, so picking one leaves most roles out.
+     - MXN and CAD pay are compared as if in dollars (P3-6).
+     - Bare names that several cities share ("Richmond", "Arlington") get no city.
 
 ### P2: freshness, coverage and health
 
@@ -374,8 +437,9 @@ means. Keep every change incremental and measured (§2 baselines).
    and attribution) for an "Occupation" filter and "similar titles".
 3. **"More like this"** with model2vec embeddings of title + skills + summary. Ship 1-bit vectors in
    the detail files, and compare in JS.
-4. **Radius filter.** Add coordinates from the GeoNames city list at build time, and a "within N
-   miles of …" filter.
+4. **Radius filter.** `places.tsv.gz` already has each city's coordinates; ship them with the
+   normalized places in the weekly base and add a "within N miles of …" choice to Where. Metro
+   areas (P1-4) cover the common case meanwhile.
 5. **Industry.** Add an `industry` column to `companies.csv` and use it as a filter.
 6. **Smaller items:**
    - MXN/CAD pay with a USD equivalent
@@ -426,6 +490,17 @@ means. Keep every change incremental and measured (§2 baselines).
 - [Popular AI: Best CPU-only local LLMs in 2026](https://www.popularai.org/p/best-cpu-only-local-llm-2026)
 - [It's FOSS: CPU-only LLM speeds measured with Ollama](https://itsfoss.com/testing-local-llms-without-gpu)
 - [GeoNames](https://www.geonames.org/) (city names, CC BY 4.0)
+- Filters on other boards (P1-4), all checked 2026-11-07:
+  - LinkedIn: [Power-user guide](https://pitchmeai.com/blog/linkedin-job-board-power-user-guide) and
+    [filters guide](https://itsourcecode.com/blogs/how-to-search-jobs-on-linkedin-2026/)
+  - [Indeed Help Center: improving your job searches](https://www.indeed.com/help/job-seekers/articles/204488950-improving-your-job-searches-tips-and-help)
+  - [SerpApi: filtering Google Jobs results](https://serpapi.com/blog/filtering-google-jobs-results/)
+    (requirement chips: no degree, no experience, under 3 years, 3+ years)
+  - Hiring Cafe's experience filters, as a [scraper documents them](https://apify.com/boncross/hiring-cafe-jobs)
+  - [Wellfound Help: setting up a search](https://help.wellfound.com/article/777-setting-up-a-search)
+  - [TheirStack: region, county and metro filters (2026)](https://theirstack.com/en/product-updates/2026-05-14-region-county-metro-filter-fix)
+  - Filter UX: [faceted filtering](https://blog.logrocket.com/ux-design/faceted-filtering-better-ecommerce-experiences) and
+    [Baymard's filtering examples](https://baymard.com/ecommerce-design-examples/filtering-options)
 - [GitHub Docs: GitHub Pages limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits)
 - [Querying SQLite on GitHub Pages with sql.js-httpvfs (2026)](https://recca0120.github.io/en/2026/03/07/sql-js-httpvfs-static-hosting/):
   considered and not chosen, because multi-filter searches make it read large parts of the file

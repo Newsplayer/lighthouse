@@ -63,12 +63,14 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Builder build/export (base + delta chain); reader sync/install/apply | `lighthouse/snapshot.py` |
 | Rule extraction (pay, YOE, visa, clearance...) / classification (function, seniority, skills) | `lighthouse/extract.py`, `lighthouse/classify.py` |
 | Location → country (rules + GeoNames city list; rebuild with `scripts/make_cities.py`) | `lighthouse/geo.py`, `lighthouse/data/cities.tsv.gz` |
+| Location → city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild the table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/places.tsv.gz` |
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
-| Builder workflow / network probe | `.github/workflows/job-index.yml`, `.github/workflows/network-probe.yml` |
+| Workflows: builder, page-only deploy, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `network-probe.yml`, `tidy-branches.yml` |
+| Page-only deploy (a push to `site/` goes live on the last build's data, no build) | `.github/workflows/website.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 
 ## Versions to bump
@@ -78,12 +80,14 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **`DERIVE_VERSION`** (`classify.py`): bump when derived columns change.
 - **`INDEX_SCHEMA`** (`db.py`) / **`FORMAT`** (`snapshot.py`): bump when the published file layout
   changes. Older apps then keep their jobs and say they need an update.
+- **`FORMAT`** (`site.py`) / **`VERSION`** (`places.py`): bump when the website's files or the place
+  rules change. The next build writes a new weekly base by itself.
 - **`SCHEMA_VERSION`** (`db.py`): follows the `MIGRATIONS` list. Add a migration whenever local
   tables change.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (127 pass) before every commit. No CI runs them yet
+- **Tests:** run `python -m pytest -q` (138 pass) before every commit. No CI runs them yet
   (ROADMAP P0-4).
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
   - Filters, eligibility and search words must give exactly the same results as the Python code.
@@ -98,6 +102,8 @@ goal, the prioritized work, and the decisions waiting on the owner.
   3. Read the output with `gh run view <id> --log`. Use REST `gh api`, because GraphQL calls may
      be blocked.
   4. Add an empty `probe/run-build` file to run a full test build instead. It publishes nothing.
+  5. Or add an empty `probe/run-site` file: the run first gets the last build's database from the
+     Actions cache (read only), so `probe/run.py` can write and time the website on real data.
 - **Measure before and after** any change to the builder, index format or queries: build time,
   base/delta size, pages in ms. Record the numbers in the PR. Real-data baselines are in
   `docs/ROADMAP.md` §2, and how updates reach users is in §3. For the website, also record
@@ -105,6 +111,10 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **Freshness matters:** job boards change all day. Never make a change that makes users download
   more per update or wait longer for new postings without saying so in the PR.
 - **Branches:** work on a branch, never commit to `main`, and open a PR with a short summary.
+  - Check open branches and PRs first (`git ls-remote --heads origin`). Build on unmerged work
+    instead of starting a parallel branch that touches the same files.
+  - The *Job index* workflow runs on `main` only; test builds go through the network probe.
+  - Merged branches and idle `probe/…` branches are deleted by `tidy-branches.yml`.
 - **Decisions:** keep them brief and informative. Note each one in the PR. If the claude.ai
   Projects tool is available, also add an entry to `claude/lighthouse-decisions.md` (read it
   first, then write the whole file back).

@@ -7,6 +7,6 @@ data/*.db
 data/*.db-*
 .pytest_cache/
 .DS_Store
-data/
+/data/
 dist/
 site_out/

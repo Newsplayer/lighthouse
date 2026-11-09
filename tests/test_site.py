@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 
 from test_index import Builder, job
 
-from lighthouse import classify, db, profile, site
+from lighthouse import classify, db, places, profile, site
 
 NODE = shutil.which("node")
 LOGIC = (Path(__file__).resolve().parent.parent / "site" / "logic.js").as_uri()
@@ -30,13 +31,17 @@ def node(script: str, payload) -> object:
     code = code.replace("require_stdin()", "(await new Promise((ok) => { let s = ''; process.stdin.on('data', (d) => s += d); "
                                            "process.stdin.on('end', () => ok(s)); }))")
     out = subprocess.run([NODE, "--input-type=module", "-e", code], input=json.dumps(payload), capture_output=True,
-                         text=True, timeout=60)
+                         encoding="utf-8", timeout=60)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
 
 FUNCTIONS = ["Software Engineering", "Data & Analytics", "Finance & Accounting", ""]
-PLACES = ["Austin, TX", "New York, NY", "Remote - US", "Toronto, ON", "Monterrey, NL", "London, UK", "Denver, CO"]
+# Location strings as careers systems write them, and the country each is in.
+PLACES = {"Austin, TX": "US", "New York, NY": "US", "Remote - US": "US", "Toronto, ON": "CA", "Monterrey, NL": "MX",
+          "London, UK": "GB", "Denver, CO": "US", "US, TX, Round Rock": "US", "NY-New York": "US",
+          "Mississauga, Ontario, Canada": "CA", "Greater Seattle Area": "US", "Ciudad de México": "MX",
+          "Remote (Canada)": "CA", "Texas": "US"}
 
 
 def varied_builder(tmp_path, n=80, seed=7) -> Builder:
@@ -53,9 +58,8 @@ def vary(b, seed=7):
     conn = db.connect(b.path)
     for (uid,) in conn.execute("SELECT uid FROM jobs").fetchall():
         rng = random.Random(f"{seed}:{uid}")
-        places = rng.sample(PLACES, rng.choice([1, 1, 2, 3]))
-        codes = sorted({"Austin": "US", "New York": "US", "Remote": "US", "Toronto": "CA", "Monterrey": "MX",
-                        "London": "GB", "Denver": "US"}[p.split(",")[0].split(" -")[0]] for p in places)
+        places = rng.sample(sorted(PLACES), rng.choice([1, 1, 2, 3]))
+        codes = sorted({PLACES[p] for p in places})
         pay = rng.choice([None, 60000, 95000, 120000, 180000])
         yoe = rng.choice([None, 0, 2, 3, 5, 8])
         conn.execute("""UPDATE jobs SET visa = ?, citizenship = ?, clearance = ?, workplace_eff = ?, yoe_min = ?,
@@ -200,41 +204,196 @@ def test_page_filters_match_the_local_app(tmp_path):
     gen(b, out)
     conn = db.connect(b.path)
     uid_of = {i: u for u, i in conn.execute("SELECT uid, id FROM site_ids")}
-    prof = {**profile.DEFAULT, "years_experience": 3, "needs_sponsorship": True, "locations": ["Austin", "Remote"],
+    prof = {**profile.DEFAULT, "years_experience": 3, "needs_sponsorship": True,   # where: the Where filter, not the profile
             "min_salary": 100000, "degree": "bachelors"}
-    cases = [  # (local app Filters, the page's filters)
+    cases = [  # (local app Filters; a list = any of them, the page's filters)
         ({}, {}),
-        ({"function": "Software Engineering"}, {"fn": "Software Engineering"}),
-        ({"seniority": "senior", "emp_type": "full_time"}, {"sen": "senior", "emp": "full_time"}),
-        ({"workplace": "remote", "min_salary": 100000}, {"workplace": "remote", "minSalary": 100000}),
+        ({"function": "Software Engineering"}, {"fns": ["Software Engineering"]}),
+        ([{"function": "Software Engineering"}, {"function": "Data & Analytics"}],
+         {"fns": ["Software Engineering", "Data & Analytics"]}),
+        ({"seniority": "senior", "emp_type": "full_time"}, {"levels": ["senior"], "emps": ["full_time"]}),
+        ([{"seniority": "entry"}, {"seniority": "mid"}], {"levels": ["entry", "mid"]}),
+        ([{"emp_type": "full_time"}, {"emp_type": "contract"}], {"emps": ["full_time", "contract"]}),
+        ({"workplace": "remote", "min_salary": 100000}, {"workplaces": ["remote"], "minSalary": 100000}),
+        ([{"workplace": "remote"}, {"workplace": "hybrid"}], {"workplaces": ["remote", "hybrid"]}),
+        ({"company": "Acme"}, {"companies": ["Acme"]}),
         ({"yoe_lo": 2, "yoe_hi": 5}, {"yoeLo": 2, "yoeHi": 5}),
         ({"yoe_hi": 3, "yoe_unknown": False}, {"yoeHi": 3, "yoeUnknown": False}),
-        ({"visa": "not_no", "pay_listed": True}, {"visa": "not_no", "payListed": True}),
+        ({"pay_listed": True}, {"payListed": True}),
         ({"visa": "yes"}, {"visa": "yes"}),
-        ({"degree_max": "none"}, {"degreeMax": "none"}),
-        ({"degree_max": "bachelors", "clearance": "none"}, {"degreeMax": "bachelors", "clearance": "none"}),
-        ({"clearance": "required", "no_citizenship": True}, {"clearance": "required", "noCitizenship": True}),
+        ({"clearance": "required"}, {"clearance": "required"}),
         ({"benefits": ("equity", "health")}, {"benefits": ["equity", "health"]}),
         ({"travel": "low", "language": "english"}, {"travelLow": True, "language": "english"}),
         ({"language": "spanish"}, {"language": "spanish"}),
         ({"skills": ("python",), "posted_within": 7}, {"skills": ["python"], "postedWithin": 7}),
-        ({"countries": ("CA", "MX")}, {"countries": ["CA", "MX"]}),
-        ({"location": "new york"}, {"location": "new york"}),
         ({"show_ghosts": True}, {"showGhosts": True}),
         ({"eligible_only": True, "profile": prof}, {"eligibleOnly": True}),
     ]
     expected = []
     for py, _ in cases:
-        rows, _ = db.list_jobs(conn, db.Filters(**{"eligible_only": False, **py}), per_page=1000, with_count=False)
-        expected.append(sorted(r["uid"] for r in rows))
+        uids = set()
+        for one in py if isinstance(py, list) else [py]:
+            rows, _ = db.list_jobs(conn, db.Filters(**{"eligible_only": False, **one}), per_page=1000, with_count=False)
+            uids |= {r["uid"] for r in rows}
+        expected.append(sorted(uids))
     conn.close()
     got = node(_store_script() + """
-const out = input.cases.map((f) => logic.filterIds(store, {...logic.DEFAULT_FILTERS, eligibleOnly: false, ...f},
+const out = input.cases.map((f) => logic.filterIds(store, {...logic.freshFilters(), eligibleOnly: false, ...f},
   {now: logic.nowHours(), profile: input.profile}));
 console.log(JSON.stringify(out));
 """, {"dir": str(out), "cases": [js for _, js in cases], "profile": prof})
     for (py, _), want, ids in zip(cases, expected, got):
         assert sorted(uid_of[i] for i in ids) == want, py
+    assert all(expected[1:9]) and expected[0] != expected[1]          # the cases select something, not everything
+
+
+def _where_expected(r, where: set, remote_too: bool, metro_country: dict) -> bool:
+    """The page's place filter, in Python: any of the role's places is in a chosen place, or (remote
+    roles, when asked) the role is open in a chosen place's country."""
+    locs = site._places(r)[:site.MAX_PLACES]
+    if places.keys_of(locs) & where:
+        return True
+    want = {metro_country[k[1:]] if k.startswith("@") else k[:2] for k in where}
+    have = {p.country for loc in locs for p in places.parse(loc)}
+    return bool(remote_too and r["workplace_eff"] == "remote" and have & want)
+
+
+@needs_node
+def test_page_place_filter_matches_python(tmp_path):
+    b = varied_builder(tmp_path, n=120, seed=5)
+    out = tmp_path / "site"
+    gen(b, out)
+    conn = db.connect(b.path)
+    rows = {i: conn.execute("SELECT * FROM jobs WHERE uid = ?", (u,)).fetchone()
+            for u, i in conn.execute("SELECT uid, id FROM site_ids")}
+    conn.close()
+    metro_country = {slug: cc for slug, (_, cc, _, _) in places.metros().items()}
+    cases = [["US-TX-Austin"], ["@austin"], ["US-TX"], ["US"], ["CA"], ["MX-CMX-Mexico City"], ["@toronto"],
+             ["US-NY-New York", "CA-ON"], ["@seattle"], ["MX"], ["US-CO-Denver", "@cdmx"]]
+    want = [[sorted(i for i, r in rows.items() if _where_expected(r, set(w), rt, metro_country)) for w in cases]
+            for rt in (True, False)]
+    got = node(_store_script() + """
+const res = [true, false].map((rt) => input.cases.map((w) => logic.filterIds(store,
+  {...logic.freshFilters(), eligibleOnly: false, showGhosts: true, where: w, remoteToo: rt}, {now: logic.nowHours()})));
+const labels = Object.fromEntries(input.cases.flat().map((k) => [k, logic.keyLabel(store, k)]));
+const counts = logic.placeCounts(store, logic.filterIds(store, {...logic.freshFilters(), eligibleOnly: false, showGhosts: true}, {now: logic.nowHours()}));
+const sugg = Object.fromEntries(["aus", "round", "texas", "new york", "gta", "cdmx", "seattle area"].map((q) =>
+  [q, logic.suggestPlaces(store, q, counts).map((s) => s.label)]));
+console.log(JSON.stringify({res, labels, sugg}));
+""", {"dir": str(out), "cases": cases})
+    for rt in (0, 1):
+        for w, exp, ids in zip(cases, want[rt], got["res"][rt]):
+            assert sorted(ids) == exp, (w, rt)
+    assert all(want[0]) and want[0] != want[1]                     # each choice finds roles; remote ones join in
+    assert got["labels"]["US-TX-Austin"] == "Austin, TX" and got["labels"]["@austin"] == "Austin area"
+    assert got["labels"]["US-TX"] == "Texas" and got["labels"]["MX-CMX-Mexico City"] == "Mexico City"
+    s = got["sugg"]
+    assert "Austin, TX" in s["aus"] and "Austin area" in s["aus"] and s["round"] == ["Round Rock, TX"]
+    assert s["texas"][0] == "Texas" and s["new york"][0] == "New York, NY"
+    assert s["gta"] == ["Toronto area (GTA)"] and s["cdmx"][0] == "Mexico City" and s["seattle area"] == ["Seattle area"]
+
+
+def test_places_normalize_the_ways_careers_sites_write_a_city():
+    same = {
+        "US|NY|New York|nyc": ["New York, NY", "NY-New York", "New York City", "New York, New York, United States",
+                                    "US, NY, New York", "New York", "NYC", "Brooklyn, NY", "New York New York United States"],
+        "US|CA|Santa Clara|sf-bay": ["US, CA, Santa Clara", "Santa Clara, California", "Santa Clara, CA 95054"],
+        "US|TX|Dallas|dfw": ["TX-Dallas", "Dallas, TX, United States", "Dallas Texas", "03209 - UT Southwstrn-Dallas D"],
+        "CA|QC|Longueuil|montreal": ["CA-QC-Longueuil", "Longueuil, Quebec, Canada",
+                                     "CA-QC-LONGUEUIL-J01 ~ 1000 Blvd Marie-Victorin ~ J01 BLDG"],
+        "MX|NLE|Monterrey|monterrey": ["Monterrey, NL", "Monterrey, N.L., México", "MX-NLE-Monterrey"],
+        "MX|CMX|Mexico City|cdmx": ["Ciudad de México", "CDMX", "Mexico City, Mexico"],
+        "CA|ON|Barrie|": ["Barrie, CA"],                         # "CA" can be Canada
+        "US|CA|Ontario|": ["Ontario, CA"],                       # ... or California
+        "US|AZ|Peoria|phoenix": ["Store 03812 Peoria AZ"],
+        "US|WI|Madison|madison": ["Madison, WI", "Store 02521 Madison WI"],     # a common word, but WI says which
+        "US|DC|Washington|dc": ["Washington, DC", "Washington DC", "DC - Washington (20006)", "Washington, D.C."],
+        "US|WA||seattle": ["Greater Seattle Area"],
+        "US|CA||sf-bay": ["Bay Area", "Silicon Valley"],
+        "US|TX||": ["Texas", "TX, Working at Home - Texas"],
+        "US|||": ["United States", "Remote - US", "USA - Remote", "Washington"],   # the state or the capital
+    }
+    for want, texts in same.items():
+        for t in texts:
+            assert [p.entry() for p in places.parse(t)] == [want], t
+    assert [p.entry() for p in places.parse("Houston, TX, Milford, UT")] == ["US|TX|Houston|houston", "US|UT|Milford|"]
+    assert [p.entry() for p in places.parse("Remote (United States | Canada)")] == ["US|||", "CA|||"]
+    for abroad, cc in (("London", "GB"), ("Bangalore, KA, IN, 560066", "IN"), ("Campo Largo, PR, Brazil", "BR"),
+                       ("Marktoberdorf, DE", "DE")):
+        assert [p.entry() for p in places.parse(abroad)] == [f"{cc}|||"], abroad
+    for unknown in ("Remote", "", "Richmond", "Cambridge", "Penn State University Park"):
+        assert places.parse(unknown) == (), unknown            # several cities share it: nothing guessed
+    assert places.parse("London, ON")[0].city == "London" and places.parse("Paris, TX")[0].region == "TX"
+    assert places.parse("Austin, TX")[0].keys() == {"US", "US-TX", "@austin", "US-TX-Austin"}
+
+
+@needs_node
+def test_page_levels_put_internships_together(tmp_path):
+    b = varied_builder(tmp_path, n=30)
+    conn = db.connect(b.path)
+    conn.execute("UPDATE jobs SET emp_type = 'internship', seniority = NULL WHERE CAST(external_id AS INT) % 4 = 0")
+    conn.execute("UPDATE jobs SET seniority = 'intern', emp_type = 'full_time' WHERE CAST(external_id AS INT) % 4 = 1")
+    conn.commit()
+    conn.close()
+    out = tmp_path / "site"
+    gen(b, out)
+    conn = db.connect(b.path)
+    rows = {i: conn.execute("SELECT * FROM jobs WHERE uid = ?", (u,)).fetchone()
+            for u, i in conn.execute("SELECT uid, id FROM site_ids")}
+    conn.close()
+    got = node(_store_script() + """
+console.log(JSON.stringify(input.levels.map((l) => logic.filterIds(store,
+  {...logic.freshFilters(), eligibleOnly: false, showGhosts: true, levels: l}, {now: logic.nowHours()}))));
+""", {"dir": str(out), "levels": [["intern"], ["entry", "mid"]]})
+    interns = sorted(i for i, r in rows.items() if site.level_of(r) == "intern")
+    assert sorted(got[0]) == interns and len(interns) >= 14
+    assert sorted(got[1]) == sorted(i for i, r in rows.items() if site.level_of(r) in ("entry", "mid"))
+
+
+@needs_node
+def test_page_unanswered_questions_never_hide_a_role(tmp_path):
+    b = varied_builder(tmp_path, n=120, seed=11)
+    out = tmp_path / "site"
+    gen(b, out)
+    conn = db.connect(b.path)
+    rows = {i: conn.execute("SELECT * FROM jobs WHERE uid = ?", (u,)).fetchone()
+            for u, i in conn.execute("SELECT uid, id FROM site_ids")}
+    conn.close()
+    answers = [{"sponsorship": True}, {"citizen": False}, {"citizen": True, "clearance": "secret"},
+               {"degree": "bachelors"}, {"sponsorship": False, "citizen": True, "degree": "none", "clearance": "none"}]
+    got = node(_store_script() + """
+const ids = Object.keys(input.ids).map(Number).sort((a, b) => a - b);
+console.log(JSON.stringify({none: logic.profileFrom(logic.NO_ANSWERS),
+  res: input.answers.map((a) => { const p = logic.profileFrom({...logic.NO_ANSWERS, ...a});
+    return ids.map((i) => logic.eligibility(store, i, p)); })}));
+""", {"dir": str(out), "answers": answers, "ids": {str(i): 1 for i in rows}})
+    assert got["none"] is None
+    for a, res in zip(answers, got["res"]):
+        # what the answers mean for lighthouse/profile.py: unanswered = never a reason
+        p = {**profile.DEFAULT, "needs_sponsorship": a.get("sponsorship") is True, "us_citizen": a.get("citizen") is not False,
+             "degree": a.get("degree") or "phd", "clearance": a.get("clearance") or "none", "years_experience": None,
+             "workplaces": ["remote", "hybrid", "onsite"], "min_salary": None}
+        assert res == [profile.check(rows[i], p) for i in sorted(rows)], a
+        reasons = " ".join(" ".join(r) for r in res)
+        assert ("citizenship" in reasons) == (a.get("citizen") is False) and ("degree" in reasons) == ("degree" in a)
+        assert ("sponsor" in reasons) == (a.get("sponsorship") is True)
+
+
+@needs_node
+def test_page_filters_survive_the_address_bar():
+    got = node("""
+const f = {...logic.freshFilters(), q: "data engineer", where: ["US-TX-Austin", "@sf-bay"], levels: ["entry", "mid"],
+  workplaces: ["remote"], companies: ["Johnson & Johnson", "AT&T, Inc."], yoeHi: 3, remoteToo: false, minSalary: 100000};
+const back = logic.filtersFromHash("#" + logic.filtersToHash(f));
+const old = logic.filtersFromHash("#sen=senior&emp=contract&fn=Sales&company=Acme&countries=CA,MX&skills=python,sql&workplace=remote");
+console.log(JSON.stringify({same: JSON.stringify(back) === JSON.stringify(f), old, empty: logic.filtersToHash(logic.freshFilters()),
+  bad: logic.filtersFromHash("#q=%E0%A4%A&levels=senior")}));
+""", None)
+    assert got["same"] and got["empty"] == ""
+    old = got["old"]
+    assert old["levels"] == ["senior"] and old["emps"] == ["contract"] and old["fns"] == ["Sales"]
+    assert old["companies"] == ["Acme"] and old["where"] == ["CA", "MX"] and old["skills"] == ["python", "sql"]
+    assert old["workplaces"] == ["remote"] and got["bad"]["levels"] == ["senior"] and got["bad"]["q"] == ""
 
 
 @needs_node
@@ -247,7 +406,7 @@ def test_page_eligibility_matches_profile_check(tmp_path):
                  "degree": rng.choice(["none", "bachelors", "masters", "phd"]),
                  "needs_sponsorship": rng.random() < .4, "us_citizen": rng.random() < .5,
                  "clearance": rng.choice(["none", "public_trust", "secret", "ts", "ts_sci"]),
-                 "locations": rng.sample(["austin", "Toronto", "remote", "denver", "mexico"], rng.randint(0, 2)),
+                 "locations": [],                   # the page asks where with the Where filter
                  "workplaces": rng.sample(["remote", "hybrid", "onsite"], rng.randint(1, 3)),
                  "min_salary": rng.choice([None, 90000, 150000])} for _ in range(40)]
     conn = db.connect(b.path)
@@ -306,46 +465,104 @@ def _free_port():
         return s.getsockname()[1]
 
 
+class _Handler(http.server.SimpleHTTPRequestHandler):
+    slow = None              # a path prefix whose files take 1.5 s, as on a slow connection
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.slow and self.path.startswith(self.slow):
+            time.sleep(1.5)
+        super().do_GET()
+
+
 @pytest.fixture
-def served_site(tmp_path):
+def site_server(tmp_path):
+    """A builder, its site in tmp_path/site, a local server for that folder, and the server's handler
+    class (set .slow to delay some files). Regenerating the site replaces the folder, as a Pages
+    deploy replaces the site."""
     b = varied_builder(tmp_path, n=60)
     out = tmp_path / "site"
     gen(b, out, now=datetime.now(timezone.utc))
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(out))
-    handler.log_message = lambda *a, **k: None
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", _free_port()), handler)
+    handler = type("Handler", (_Handler,), {})
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", _free_port()), functools.partial(handler, directory=str(out)))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}/"
+    yield f"http://127.0.0.1:{srv.server_address[1]}/", b, out, handler
     srv.shutdown()
 
 
+@pytest.fixture
+def served_site(site_server):
+    return site_server[0]
+
+
+def _browser_page(p, sync):
+    try:
+        browser = p.chromium.launch()
+    except Exception as e:  # no browser installed here
+        pytest.skip(f"no Chromium: {e}")
+    # bypass_csp: Playwright's own polling would be blocked by the page's strict policy (as intended)
+    ctx = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True)
+    return browser, ctx.new_page()
+
+
 def test_page_has_a_strict_policy():
-    html = (Path(__file__).resolve().parent.parent / "site" / "index.html").read_text()
+    html = (Path(__file__).resolve().parent.parent / "site" / "index.html").read_text(encoding="utf-8")
     assert "default-src 'self'" in html and "connect-src 'self'" in html and 'name="robots" content="noindex"' in html
-    js = (Path(__file__).resolve().parent.parent / "site" / "app.js").read_text()
+    js = (Path(__file__).resolve().parent.parent / "site" / "app.js").read_text(encoding="utf-8")
     assert "innerHTML" not in js and "insertAdjacentHTML" not in js     # posting text is only ever text
 
 
 def test_page_works_in_a_browser(served_site):
     sync = pytest.importorskip("playwright.sync_api")
     with sync.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except Exception as e:  # no browser installed here
-            pytest.skip(f"no Chromium: {e}")
-        # bypass_csp: Playwright's own polling would be blocked by the page's strict policy (as intended)
-        ctx = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True)
-        page = ctx.new_page()
+        browser, page = _browser_page(p, sync)
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(served_site)
         page.wait_for_selector("#results li.job")
         assert "roles" in page.inner_text("#summary")
-        total = int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))
+        shown = lambda: int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))  # noqa: E731
+        total = shown()
         page.fill("#f-q", "software")
         page.wait_for_timeout(600)
-        found = int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))
+        found = shown()
         assert 0 < found < total
+        page.fill("#f-q", "")
+        page.wait_for_timeout(600)
+        assert shown() == total
+        # a pill: its panel shows a count per choice, and the pill says what's picked
+        page.click("details[data-facet=experience] summary")
+        page.wait_for_selector("details[data-facet=experience] .pop", state="visible")
+        senior = page.locator("#opts-levels .opt", has_text="Senior").first
+        page.wait_for_function("document.querySelector('#opts-levels .opt .n').textContent !== ''")
+        n_senior = int(senior.locator(".n").inner_text().replace(",", ""))
+        senior.locator("input").check()
+        page.wait_for_timeout(200)
+        assert shown() == n_senior and "Senior" in page.inner_text("details[data-facet=experience] summary")
+        page.keyboard.press("Escape")
+        assert not page.locator("details[data-facet=experience]").get_attribute("open")
+        page.click("#reset")
+        page.wait_for_timeout(200)
+        assert shown() == total
+        # a place: typed, picked from the suggestions with the keyboard, shown as a chip
+        page.fill("#f-where", "texas")
+        page.wait_for_selector("#where-list .sg")
+        assert page.locator("#where-list .sg-name").first.inner_text() == "Texas"
+        n_texas = int(page.locator("#where-list .sg .n").first.inner_text().replace(",", ""))
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(200)
+        assert page.locator("#where-chips .chip").count() == 1 and shown() == n_texas
+        page.locator("#where-chips .chip button").click()
+        page.wait_for_timeout(200)
+        assert shown() == total
+        # "Can you apply?": an answer hides roles and says how many
+        page.click("#open-about")
+        page.select_option("select[data-answer=sponsorship]", "yes")
+        page.wait_for_timeout(200)
+        page.click("#more-done")
+        assert "hidden" in page.inner_text("#elig-note") and shown() < total
         page.locator("#results li.job .title").first.click()
         page.wait_for_selector("#job .apply a")
         assert page.locator("#job .apply a").first.get_attribute("href").startswith("https://x/")
@@ -356,8 +573,120 @@ def test_page_works_in_a_browser(served_site):
         page.reload()
         page.wait_for_selector("#results li.job")
         assert page.inner_text("#tab-saved .count") == "1"          # kept in the browser
+        assert page.locator("select[data-answer=sponsorship]").input_value() == "yes"   # answers kept too
         page.set_viewport_size({"width": 380, "height": 800})
         page.wait_for_timeout(200)
         assert page.evaluate("document.documentElement.scrollWidth") <= 380
+        page.click("details[data-facet=companies] summary")                # its panel is a sheet on a phone
+        page.wait_for_timeout(200)
+        assert page.evaluate("document.documentElement.scrollWidth") <= 380
+        assert not errors, errors
+        browser.close()
+
+
+def test_page_keeps_working_when_the_site_is_redeployed_under_it(site_server):
+    """A deploy removes the previous build's search and job files. A page left open must catch up
+    instead of showing no matches or a job without apply links."""
+    sync = pytest.importorskip("playwright.sync_api")
+    url, b, out, _ = site_server
+    start = datetime.now(timezone.utc)
+    count = lambda page: int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))
+    with sync.sync_playwright() as p:
+        browser, page = _browser_page(p, sync)
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        total = count(page)
+
+        gen(b, out, now=start + timedelta(hours=1))                 # a build within the week
+        page.fill("#f-q", "software")
+        page.wait_for_function("document.querySelector('#notice') && !document.querySelector('#notice').hidden")
+        page.wait_for_timeout(300)
+        assert 0 < count(page) < total and "Updated just now" in page.inner_text("#notice")
+
+        gen(b, out, now=start + timedelta(hours=2))
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job .apply a")                    # same ids: the same job, with its links
+        page.locator("#job .close button").click()
+
+        page.reload()                                              # job files already read stay usable,
+        page.wait_for_selector("#results li.job")                  # so start without any
+        assert gen(b, out, now=start + timedelta(days=8))["new_base"] == "weekly"   # jobs renumbered
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job p:has-text('just updated')")
+        page.locator("#job .close button").click()
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job .apply a")
+        page.locator("#job .close button").click()
+
+        page.reload()
+        page.wait_for_selector("#results li.job")
+        gen(b, out, now=start + timedelta(days=8, hours=1))
+        page.locator("#results li.job .mark").first.click()
+        page.wait_for_function("document.querySelector('#tab-saved .count').textContent === '1'")
+        assert not errors, errors
+        browser.close()
+
+
+@needs_node
+def test_first_page_preview_is_the_pages_own_first_page(tmp_path):
+    """top-<build>.json holds exactly the first page the page computes from the whole list (default
+    view: newest first, likely ghosts left out), shown the same way, after a new base and a delta."""
+    b = varied_builder(tmp_path, n=140)
+    out = tmp_path / "site"
+    script = _store_script() + """
+const top = JSON.parse(readFileSync(`${dir}/data/${latest.top}`));
+const ctx = { now: logic.nowHours(), profile: null, markOf: () => undefined, since: undefined };
+const ids = logic.sortIds(store, logic.filterIds(store, logic.freshFilters(), ctx, null), "newest").slice(0, 50);
+const mini = logic.buildStore(top, null, latest.vocab);
+const shown = (s, i) => JSON.stringify([s.cols.t[i], s.dicts.company[s.cols.c[i]], logic.placeLabels(s, i),
+  logic.payText(s, i), s.dicts.function[s.cols.f[i]], s.cols.s[i], s.cols.e[i], s.cols.w[i], s.cols.h[i], s.cols.gh[i]]);
+console.log(JSON.stringify({ ids, top: top.ids, same: top.ids.every((id, j) => shown(store, id) === shown(mini, j)) }));
+"""
+    gen(b, out)
+    r = node(script, {"dir": str(out)})
+    assert len(r["ids"]) == 50 and r["top"] == r["ids"] and r["same"]
+
+    b.ingest("beta", [job(900 + k, title=f"Fresh role {k}", board="beta", company="Beta") for k in range(5)])
+    vary(b)
+    conn = db.connect(b.path)
+    conn.execute("UPDATE jobs SET effective_first_seen = ? WHERE source_board = 'beta'", ((NOW + timedelta(hours=1)).isoformat(),))
+    conn.commit()
+    conn.close()
+    gen(b, out, now=NOW + timedelta(hours=2))
+    assert read(out, "latest.json")["delta"]                     # new roles arrive in the change file
+    r = node(script, {"dir": str(out)})
+    assert r["top"] == r["ids"] and r["same"] and set(r["ids"]) & set(range(140, 145))
+
+
+def test_first_visit_shows_the_newest_roles_while_the_list_downloads(site_server):
+    sync = pytest.importorskip("playwright.sync_api")
+    url, _, _, handler = site_server
+    handler.slow = "/data/jobs-"                                  # the job list takes a while to arrive
+    titles = "[...document.querySelectorAll('#results li.job .title')].slice(0, 50).map((t) => t.textContent)"
+    loaded = "!document.querySelector('#summary').innerText.includes('loading all')"
+    with sync.sync_playwright() as p:
+        browser, page = _browser_page(p, sync)
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        assert "loading all" in page.inner_text("#summary")      # shown before the list is in
+        preview = page.evaluate(titles)
+        page.wait_for_function(loaded)
+        assert page.evaluate(titles) == preview and " roles" in page.inner_text("#summary")
+
+        page = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True).new_page()
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        page.evaluate("window.stillHere = true")
+        page.fill("#f-q", "software")                             # typed while the list downloads
+        page.press("#f-q", "Enter")
+        page.wait_for_function(loaded)
+        page.wait_for_function("location.hash.includes('q=software')")
+        assert page.evaluate("window.stillHere === true")        # Enter didn't reload the page
+        assert page.input_value("#f-q") == "software"
         assert not errors, errors
         browser.close()
