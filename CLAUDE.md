@@ -102,6 +102,8 @@ goal, the prioritized work, and the decisions waiting on the owner.
   3. Read the output with `gh run view <id> --log`. Use REST `gh api`, because GraphQL calls may
      be blocked.
   4. Add an empty `probe/run-build` file to run a full test build instead. It publishes nothing.
+  5. Or add an empty `probe/run-site` file: the run first gets the last build's database from the
+     Actions cache (read only), so `probe/run.py` can write and time the website on real data.
 - **Measure before and after** any change to the builder, index format or queries: build time,
   base/delta size, pages in ms. Record the numbers in the PR. Real-data baselines are in
   `docs/ROADMAP.md` §2, and how updates reach users is in §3. For the website, also record
@@ -109,6 +111,10 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **Freshness matters:** job boards change all day. Never make a change that makes users download
   more per update or wait longer for new postings without saying so in the PR.
 - **Branches:** work on a branch, never commit to `main`, and open a PR with a short summary.
+  - Check open branches and PRs first (`git ls-remote --heads origin`). Build on unmerged work
+    instead of starting a parallel branch that touches the same files.
+  - The *Job index* workflow runs on `main` only; test builds go through the network probe.
+  - Delete probe branches when done.
 - **Decisions:** keep them brief and informative. Note each one in the PR. If the claude.ai
   Projects tool is available, also add an entry to `claude/lighthouse-decisions.md` (read it
   first, then write the whole file back).

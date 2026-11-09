@@ -1,8 +1,12 @@
 # Lighthouse roadmap: from v0.6 to the most effective free job board
 
 This was written 2026-11-07 for Claude Code, and updated the same day with the owner's
-decisions (§8). It compares Lighthouse v0.6 (PR #1, branch `big-companies`, verified by a full
-test build on 2026-11-06) with what the goal requires.
+decisions (§8). It compares Lighthouse v0.6 (PR #1, verified by a full test build on 2026-11-06)
+with what the goal requires.
+
+**Status (2026-11-09):** everything is on `main` (PRs #1 and #2, then one PR combining the website
+filters, page-only deploys and open-page catch-up). The website is live and rebuilt by every build.
+No other branches are kept.
 
 **Direction (owner, 2026-11-07):** the top priority is a functional, effective job aggregator.
 - **Hosting:** Lighthouse becomes a **website hosted on GitHub Pages**, so users install and
@@ -72,7 +76,7 @@ Work top to bottom.
   - A delta with 2,000 changed postings (half with new descriptions) is 2.5 MB. An update with one
     change is 42 KB. Exporting a delta takes 8 s.
   - Installing the index takes 6 s; pages load in 2–50 ms.
-- **Website (P1-1, built 2026-11-07; branch `website`):**
+- **Website (P1-1, built 2026-11-07; live since PR #2):**
   - Measured on the real 124k-posting builder database: 72,812 roles in scope.
     - Generated in 37 s; the site is 50 MB.
     - The job list is 8.6 MB, 1.66 MB gzip.
@@ -238,12 +242,12 @@ means. Keep every change incremental and measured (§2 baselines).
 4. **Run the tests on every push and PR.** Add `.github/workflows/tests.yml` running
    `python -m pytest -q` on Python 3.11 and 3.13, plus the website's JS tests once they exist
    (`node --test`).
-5. **Merge v0.6 (PR #1)** and watch the first production build: new base, timing, sizes.
+5. **✓ Merged v0.6 (PR #1)**; production builds run every 6 hours.
    - Then measure a week of the daily change rate, and fill in §1 and §3.
 
 ### P1: the website (GitHub Pages; nothing to install)
 
-1. **✓ Built (branch `website`): static site built by the Action.** The design below is what was
+1. **✓ Built and live: static site built by the Action.** The design below is what was
    built. Measurements are in §2.
    - **Generator:** new `lighthouse/site.py`, run after each build: `python -m lighthouse site
      --out site`. It reads `data/builder.db` and writes plain static files, so there is no server
@@ -298,7 +302,7 @@ means. Keep every change incremental and measured (§2 baselines).
 3. **The local app is frozen:** bug fixes only. Its README section points to the website.
    - Decide at the first major change whether to retire it.
    - The `job-index` release keeps being published while it exists.
-4. **✓ Filters redesigned (2026-11-07, branch `website-filters`).**
+4. **✓ Filters redesigned (2026-11-07; on `main` since 2026-11-09).**
    - **What other boards do:** LinkedIn, Indeed and Google Jobs put the same few filters in one row:
      date posted, experience level, workplace (remote/hybrid/on-site), job type, pay, company,
      category. Everything else sits behind "All filters". Google Jobs and Hiring Cafe also filter by

@@ -117,7 +117,9 @@ Workday sites fill in their descriptions over the next few days. When it's green
   base-….db.xz: 514519 rows, 537.6 MB`,
   then how full each filter column is (`Filled for this % of open roles`) and the `jobs.csv.gz` row count.
 
-After that it runs every 6 hours by itself, plus whenever you push a change under `config/`.
+After that it runs every 6 hours by itself, plus whenever a push to `main` changes `config/`,
+`lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
+nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
 
 ### 8. Check it from the app
 
@@ -150,8 +152,8 @@ the Actions cache. A push to `main` that changes `site/` runs the *Website* work
 or two: no crawling, and the builder database isn't touched. Its *Run workflow* button does the same
 for whatever `main` has.
 - If the push also changes `lighthouse/` (how the job files are written), the *Website* run deploys
-  nothing and says so in its summary. The change goes live with the next build, which writes
-  everything again.
+  nothing and says so in its summary. That push starts a *Job index* build, which writes everything
+  again and puts the change live in about an hour.
 - A build that was already running when you pushed uses the newest page files from `main` too, so it
   doesn't put the old page back.
 
@@ -161,6 +163,9 @@ for whatever `main` has.
 **Restrict deletions** and **Block force pushes**. Only you can push (you're the only collaborator:
 **Settings → Collaborators**), so this just guards against accidents.
 
+**Settings → General → Pull Requests → Automatically delete head branches** keeps the branch list
+short: a pull request's branch goes away when it's merged.
+
 ---
 
 ## Trying something against real careers sites
@@ -168,7 +173,9 @@ for whatever `main` has.
 Most development sandboxes (including Claude Code's) can't reach careers sites. Push a script as
 `probe/run.py` on a branch named `probe/<topic>`. The **Network probe** workflow runs it from
 GitHub's network; read its output in the run's log. Add an empty `probe/run-build` file to run a
-full test build instead. Nothing is published either way. Delete the branch when done.
+full test build instead, or an empty `probe/run-site` file to get the last build's database first
+(read only) so `probe/run.py` can, for example, write and time the website on real data. Nothing is
+published either way. Delete the branch when done.
 
 ## Day to day
 
