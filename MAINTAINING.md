@@ -163,8 +163,9 @@ for whatever `main` has.
 **Restrict deletions** and **Block force pushes**. Only you can push (you're the only collaborator:
 **Settings → Collaborators**), so this just guards against accidents.
 
-**Settings → General → Pull Requests → Automatically delete head branches** keeps the branch list
-short: a pull request's branch goes away when it's merged.
+**Branches are tidied by themselves** (`tidy-branches.yml`): after each push to `main`, and daily,
+branches whose work is all on `main` are deleted, and so are `probe/…` branches with no new commit
+for a day. A branch with work that isn't on `main` is never touched. Each run lists what it deleted.
 
 ---
 

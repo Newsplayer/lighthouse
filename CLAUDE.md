@@ -69,7 +69,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
-| Builder workflow / network probe | `.github/workflows/job-index.yml`, `.github/workflows/network-probe.yml` |
+| Workflows: builder, page-only deploy, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `network-probe.yml`, `tidy-branches.yml` |
 | Page-only deploy (a push to `site/` goes live on the last build's data, no build) | `.github/workflows/website.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 
@@ -114,7 +114,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
   - Check open branches and PRs first (`git ls-remote --heads origin`). Build on unmerged work
     instead of starting a parallel branch that touches the same files.
   - The *Job index* workflow runs on `main` only; test builds go through the network probe.
-  - Delete probe branches when done.
+  - Merged branches and idle `probe/…` branches are deleted by `tidy-branches.yml`.
 - **Decisions:** keep them brief and informative. Note each one in the PR. If the claude.ai
   Projects tool is available, also add an entry to `claude/lighthouse-decisions.md` (read it
   first, then write the whole file back).
