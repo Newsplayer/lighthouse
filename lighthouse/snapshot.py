@@ -121,8 +121,8 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     free open model on this machine fill the fields the rules couldn't settle (when one is set up: see
     llm_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
     index files."""
-    from . import categorize, fetch, llm_fill, net
     from . import config as config_mod
+    from . import fetch, net
     config_path = Path(config_path or config_mod.DEFAULT_CONFIG)
     conn = db.connect(db_path)
     if db.has_fts(conn):   # the published index gets its own search index; the builder needs none
@@ -153,22 +153,34 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     if retired:   # boards switched off in the list: their postings were closed, re-cluster those companies
         fetch.postprocess(conn, cfg, retired)
     if llm:   # optional steps: the rule answers are published whatever happens here
-        try:
-            categorize.run(conn)
-        except Exception as exc:
-            log.warning("category guesses skipped: %s", exc)
-        try:
-            server = llm_fill.server_from_env(cfg)
-            if server is None:
-                llm_fill.run(conn, cfg)          # merges anything stored; says why nothing was read
-            else:
-                with server:
-                    llm_fill.run(conn, cfg, minutes=llm_minutes, server=server)
-        except Exception as exc:
-            log.warning("gap fill skipped: %s", exc)
+        fill_gaps(conn, cfg, llm_minutes)
     _company_openings(conn)
     conn.close()
     return export(db_path, out_dir, countries=p["countries"], published=published, full=full)
+
+
+def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
+    """The builder's free gap fill: categories for titles no rule places (categorize.py), then the open
+    model on this machine for fields the rules couldn't settle (llm_fill.py), for `minutes`. Never
+    raises: whatever fails, the rule answers stand. Returns what each step did."""
+    from . import categorize, llm_fill
+    out = {}
+    try:
+        out["categories"] = categorize.run(conn)
+    except Exception as exc:
+        log.warning("category guesses skipped: %s", exc)
+        out["categories"] = {"error": str(exc)[:200]}
+    try:
+        server = llm_fill.server_from_env(cfg)
+        if server is None:
+            out["model"] = llm_fill.run(conn, cfg)          # merges anything stored; says why nothing was read
+        else:
+            with server:
+                out["model"] = llm_fill.run(conn, cfg, minutes=minutes, server=server)
+    except Exception as exc:
+        log.warning("gap fill skipped: %s", exc)
+        out["model"] = {"error": str(exc)[:200]}
+    return out
 
 
 def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_n: int = 24) -> list[dict]:

@@ -94,11 +94,14 @@ SYSTEM = (
     "current or future sponsorship; 'yes' only if it says sponsorship is available.\n"
     "citizenship_required: true only if the role is limited to U.S. citizens (or U.S. persons under export "
     "rules).\n"
-    "clearance: a security clearance the candidate must hold or obtain.\n"
-    "degree_required: the lowest degree the role requires (null if equivalent experience is accepted).\n"
+    "clearance: the security clearance the role requires to start: secret, ts (top secret), ts_sci (TS/SCI) or "
+    "public_trust; unspecified only when no level is named. A higher level it may need later doesn't count.\n"
+    "degree_required: the lowest degree the role requires. If several are accepted (a bachelor's with "
+    "experience, or a master's), give the lowest. A degree that's only preferred doesn't count; null if "
+    "equivalent experience is accepted.\n"
     "workplace: how the job itself is worked: remote, hybrid or onsite. Words like 'remote' that describe "
     "equipment, systems or customers don't count.\n"
-    "travel: none, occasional (up to 25%) or frequent (more).\n"
+    "travel: none, occasional (up to 25% of the time) or frequent (more than 25%).\n"
     "languages: languages other than English the role requires (not merely a plus), lowercase English names.")
 
 _Q = {"type": "string", "maxLength": 160}
@@ -163,6 +166,16 @@ def _numbers(s: str) -> set[float]:
     return out
 
 
+def _travel_from_percent(quote: str, said):
+    """A quoted share of time decides the travel level (the model's word is kept only without one):
+    small models read "up to 25%" as frequent."""
+    pcts = [float(x) for x in re.findall(r"(\d{1,3}(?:\.\d+)?)\s*%", quote or "")]
+    if not pcts:
+        return said
+    top = max(pcts)
+    return "none" if top == 0 else "occasional" if top <= 25 else "frequent"
+
+
 def to_fields(ans: dict, fields: list[str], shown: str) -> tuple[dict, list[str]]:
     """The model's answer -> extraction fields ({field: {"value", "evidence", "by"}}), keeping only grounded,
     known values. Returns (fields, names dropped as ungrounded)."""
@@ -196,6 +209,8 @@ def to_fields(ans: dict, fields: list[str], shown: str) -> tuple[dict, list[str]
               "degree": ("degree_required", ("bachelors", "masters", "phd")),
               "workplace": ("workplace", ("remote", "hybrid", "onsite")),
               "travel": ("travel", tuple(classify.TRAVEL))}
+    if "travel" in fields:
+        ans = {**ans, "travel": _travel_from_percent(ans.get("travel_quote") or "", ans.get("travel"))}
     for f, (key, allowed) in simple.items():
         if f in fields:
             keep(f, one(ans.get(key), allowed), ans.get(f"{f}_quote") or "")

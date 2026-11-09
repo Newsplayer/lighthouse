@@ -8,13 +8,17 @@
 # All free and open (MIT / Apache-2.0); nothing needs a key or an account.
 set -euo pipefail
 
-LLAMA_CPP_REF="${LLAMA_CPP_REF:-v0.9.0}"
-MODEL_REPO="${MODEL_REPO:-unsloth/gemma-4-E2B-it-GGUF}"
-MODEL_FILE="${MODEL_FILE:-gemma-4-E2B-it-Q4_K_M.gguf}"
-MODEL_REVISION="${MODEL_REVISION:-main}"
-MODEL_SHA256="${MODEL_SHA256:-}"
-EMBED_REPO="${EMBED_REPO:-minishlab/potion-base-8M}"
-EMBED_REVISION="${EMBED_REVISION:-main}"
+# Pinned (checked with scripts/eval_fill.py on the real builder database, 2026-11-09). Qwen3.5 2B agreed
+# with the rules' answers more often than Gemma 4 E2B (86% vs 85%), answered more (78% vs 72%), read
+# 1,486 postings an hour against 1,015, and is 1.3 GB instead of 3.1 GB.
+LLAMA_CPP_REF="${LLAMA_CPP_REF:-cd959bae99ff4bed22bef2604f45241c09bbb8c8}"     # tag v0.9.0
+MODEL_REPO="${MODEL_REPO:-unsloth/Qwen3.5-2B-GGUF}"                            # Apache-2.0
+MODEL_FILE="${MODEL_FILE:-Qwen3.5-2B-Q4_K_M.gguf}"
+MODEL_REVISION="${MODEL_REVISION:-f6d5376be1edb4d416d56da11e5397a961aca8ae}"
+MODEL_SHA256="${MODEL_SHA256-aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223}"
+EMBED_REPO="${EMBED_REPO:-minishlab/potion-base-8M}"                          # MIT
+EMBED_REVISION="${EMBED_REVISION:-bf8b056651a2c21b8d2565580b8569da283cab23}"
+# To try another model: MODEL_REPO=... MODEL_FILE=... MODEL_REVISION=main MODEL_SHA256= (empty: no check).
 OUT="${OUT:-llm}"
 
 mkdir -p "$OUT/bin"

@@ -195,6 +195,10 @@ def test_answer_checks():
     assert got["salary"]["value"] == {"min": 85000, "max": 110000, "currency": None, "interval": "year"}
     assert got["yoe_min"]["value"] == 3 and got["workplace"]["value"] == "remote"   # quotes may come from the location
     assert got["languages"]["value"] == ["spanish"] and "travel" not in got and dropped == []
+    for quote, level in (("Approximately 20% travel.", "occasional"), ("up to 25% of the time", "occasional"),
+                         ("Travel Required: 00% - 25%", "occasional"), ("Travel: 50%", "frequent"), ("0% travel", "none")):
+        got = llm_fill.to_fields({"travel": "frequent", "travel_quote": quote}, ["travel"], f"Excerpts: {quote}")[0]
+        assert got["travel"]["value"] == level, quote                              # the quoted share decides
     bad = {**ans, "salary_max": 120000}
     assert "salary" in llm_fill.to_fields(bad, ["salary"], shown)[1]               # 120,000 isn't in the quote
     assert llm_fill.snippet("x " * 400 + "We will not sponsor a visa for this role. " + "y " * 400, ["visa"]).count("sponsor") == 1

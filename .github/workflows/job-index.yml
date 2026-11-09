@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       site: ${{ steps.site.outcome }}
-    timeout-minutes: 130             # a build takes about an hour and a quarter; this only catches a stuck one
+    timeout-minutes: 100             # a build takes about an hour; this only catches a stuck one
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -48,30 +48,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -r requirements.txt -r requirements-builder.txt
-
-      # The free gap fill: llama.cpp's server, an open model and a small title model (no key, no account).
-      # Fetched once by scripts/get_llm.sh (a few minutes) and kept in the cache, keyed by that script's
-      # pinned versions. If this fails, the build goes on with the rules alone.
-      - name: Restore the open model
-        id: llm
-        uses: actions/cache/restore@v4
-        with:
-          path: llm
-          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
-
-      - name: Get the open model (first run, or after scripts/get_llm.sh changed)
-        id: getllm
-        if: steps.llm.outputs.cache-hit != 'true'
-        continue-on-error: true
-        run: bash scripts/get_llm.sh
-
-      - name: Keep the open model in the cache
-        if: steps.llm.outputs.cache-hit != 'true' && steps.getllm.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: llm
-          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
+        run: pip install -r requirements.txt
 
       # The builder's working database, kept between runs, so each run only processes what changed.
       - name: Restore builder database
@@ -99,18 +76,12 @@ jobs:
             echo "First build: finding careers pages and fetching for 40 minutes; later runs fill in the rest"
           fi
 
-      # After fetching, the open model reads the newest postings the rules couldn't settle for
-      # LIGHTHOUSE_LLM_MINUTES (variable, default 20), and titles the rules can't place get a category
-      # from similar titles. Both are skipped (rules only) if llm/ is missing.
+      # Rules only here: the open model reads afterwards (the fill job below), so it never delays new
+      # postings. What it fills goes out with the next build.
       - name: Build
-        env:
-          LIGHTHOUSE_LLM_SERVER: llm/bin/llama-server
-          LIGHTHOUSE_LLM_MODEL: llm/model.gguf
-          LIGHTHOUSE_EMBED_MODEL: llm/embed
         run: >
-          python -m lighthouse index build --out dist --published prev/manifest.json
+          python -m lighthouse index build --out dist --published prev/manifest.json --no-llm
           --detail-calls 1000 --countries "${{ vars.LIGHTHOUSE_COUNTRIES || 'US,CA,MX' }}"
-          --llm-minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES }}"
           --fetch-minutes "${{ vars.LIGHTHOUSE_FETCH_MINUTES }}"
           ${{ inputs.full && '--full' || '' }}
 
@@ -137,7 +108,7 @@ jobs:
                 + (f"new {new[0]['file']}: {new[0]['rows']} rows, {new[0]['bytes']/1e6:.1f} MB" if new else "nothing changed")
                 + f"; {len(m['deltas'])} deltas since the base")
           print("Companies list coverage:", m.get("coverage"))
-          print("Deleted (closed long ago):", m.get("deleted_this_run"), "· Open-model gap fill:", m.get("llm"))
+          print("Deleted (closed long ago):", m.get("deleted_this_run"), "· Open-model gap fill so far:", m.get("llm"))
           print("Filled for this % of open roles:", m.get("fill"))
           print("jobs.csv.gz:", m.get("csv"))
           PY
@@ -179,6 +150,67 @@ jobs:
         with:
           path: data/builder.db
           key: lighthouse-builder-${{ github.run_id }}
+
+  # The free gap fill, after the index and the site are out (it runs alongside the deploy): a free, open
+  # model on this machine reads the newest postings the rules couldn't settle, for LIGHTHOUSE_LLM_MINUTES
+  # (variable, default 45), and titles no rule places get a category from similar titles. No key, no
+  # account. The builder database is saved again with the answers, and the next build publishes them.
+  # If anything here fails, nothing is lost: the next build starts from the build job's database.
+  fill:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-builder.txt
+
+      # llama.cpp's server, the open model and the title model: fetched once by scripts/get_llm.sh
+      # (about 10 minutes) and kept in the cache, keyed by that script's pinned versions.
+      - name: Restore the open model
+        id: llm
+        uses: actions/cache/restore@v4
+        with:
+          path: llm
+          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
+
+      - name: Get the open model (first run, or after scripts/get_llm.sh changed)
+        if: steps.llm.outputs.cache-hit != 'true'
+        run: bash scripts/get_llm.sh
+
+      - name: Keep the open model in the cache
+        if: steps.llm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llm
+          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
+
+      - name: Restore builder database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Read what the rules couldn't
+        env:
+          LIGHTHOUSE_LLM_SERVER: llm/bin/llama-server
+          LIGHTHOUSE_LLM_MODEL: llm/model.gguf
+          LIGHTHOUSE_EMBED_MODEL: llm/embed
+        run: python -m lighthouse index fill --minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES || 45 }}"
+
+      # Newer than the build job's entry, so the next build starts from this one.
+      - name: Save builder database
+        uses: actions/cache/save@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-${{ github.run_id }}-filled
 
   # Settings -> Pages -> Source: GitHub Actions (once). Each build replaces the whole site.
   deploy-site:
