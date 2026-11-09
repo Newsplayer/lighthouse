@@ -42,7 +42,8 @@ from .web import clean_url
 
 FORMAT = 1
 ASSETS = Path(__file__).resolve().parent.parent / "site"
-ASSET_FILES = ("index.html", "app.js", "logic.js", "app.css")
+# The page: every file in site/ (.github/workflows/website.yml publishes the same files on its own).
+ASSET_FILES = tuple(sorted(p.name for p in ASSETS.iterdir() if p.is_file())) if ASSETS.is_dir() else ()
 DETAIL_PER_FILE = 128
 MAX_PLACES = 25                    # places kept per role in the list (all of them in its details)
 EXCERPT_CHARS = 600

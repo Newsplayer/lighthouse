@@ -138,6 +138,17 @@ replaces the whole site.
 If the website step fails, the job index is still published and the cache still saved. The site
 keeps its previous version, and the *Build* log shows why.
 
+**Changing only the page (`site/`) doesn't need a build.** Each build keeps the website it wrote in
+the Actions cache. A push to `main` that changes `site/` runs the *Website* workflow
+(`website.yml`), which puts the new page files on the last build's job data and deploys in a minute
+or two: no crawling, and the builder database isn't touched. Its *Run workflow* button does the same
+for whatever `main` has.
+- If the push also changes `lighthouse/` (how the job files are written), the *Website* run deploys
+  nothing and says so in its summary. The change goes live with the next build, which writes
+  everything again.
+- A build that was already running when you pushed uses the newest page files from `main` too, so it
+  doesn't put the old page back.
+
 ### 9. Optional: protect `main`
 
 **Settings → Rules → Rulesets → New branch ruleset:** target the default branch, enable
@@ -359,6 +370,7 @@ once a week, or when the changes add up to half the base.
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |
 | *deploy-site* fails with "Not Found" / Pages not enabled | Settings → Pages → Source: GitHub Actions (step 8b) |
+| A page change pushed to `main` isn't live; the *Website* run deployed nothing | its summary says why: no build has kept a website yet (the first build after this workflow was added does), or the push also changed `lighthouse/` (wait for the next build, or *Run workflow* on *Job index*) |
 
 ## Testing a build locally
 
