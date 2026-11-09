@@ -144,3 +144,19 @@ def test_counts_are_capped(tmp_path, monkeypatch):
     n = db.count_jobs(conn, db.Filters(), cap=10)
     assert n == 10 and n.capped
     assert not db.count_jobs(conn, db.Filters(), cap=100).capped
+
+
+def test_geo_north_america_shapes():
+    """Real location strings from the large-employer build, for a US/Canada/Mexico scope."""
+    cases = {"Tampa Florida United States": {"US"}, "Erie PA, 16502, 232 West 25th St": {"US"},
+             "Mississauga Ontario Canada": {"CA"}, "CA-QC-LONGUEUIL-J01 ~ 1000 Blvd Marie-Vi": {"CA"},
+             "Querétaro, Mexico": {"MX"}, "Tijuana, Baja California": {"MX"}, "Monterrey, NL": {"MX"},
+             "Albuquerque, New Mexico": {"US"}, "St. John's, NL": {"CA"}, "Ontario, CA": {"US"},
+             "Wilmington, DE": {"US"}, "DE - Berlin": {"DE"}, "GB - Luton - Cap. Green 300": {"GB"},
+             "IT - Roma - Via Faustiniana": {"IT"}, "Toulouse": {"FR"}, "Vélizy-Villacoublay": {"FR"},
+             "Schenectady": {"US"}, "IN - TDC 1 (IN110)": set()}
+    for loc, want in cases.items():
+        assert set(geo.countries(loc)) == want, loc
+    # A bare name a North American city also has is never placed abroad (it would hide a local job).
+    assert geo.countries("Birmingham") == frozenset() and geo.countries("Stafford") == frozenset()
+    assert geo.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not geo.in_scope(["Toulouse"], {"US", "CA", "MX"})

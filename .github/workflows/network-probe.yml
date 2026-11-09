@@ -1,0 +1,50 @@
+# Run a script from GitHub's network: the only place careers sites can be reached from while
+# developing (Claude Code's sandbox and many laptops can't reach them directly). Publishes nothing.
+#
+#   1. Put a script at probe/run.py on a branch named probe/<topic> (never on main).
+#   2. Push: this runs it. Or: gh workflow run network-probe.yml --ref probe/<topic>
+#   3. Read the output: gh run view <id> --log   (print one JSON line per result: easy to grep)
+#
+# Add an empty file probe/run-build on the branch to run a full test build instead
+# (nothing is published); it prints the manifest and BUILD_SECONDS.
+name: Network probe
+on:
+  push:
+    branches: ["probe/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -r requirements.txt
+      - name: Run probe/run.py
+        if: hashFiles('probe/run.py') != '' && hashFiles('probe/run-build') == ''
+        run: python probe/run.py
+      - name: Test build (nothing is published)
+        if: hashFiles('probe/run-build') != ''
+        run: |
+          start=$(date +%s)
+          python -m lighthouse index build --out dist --db data/test-builder.db --detail-calls 100
+          echo "BUILD_SECONDS $(( $(date +%s) - start ))"
+          python -c "import json; m = json.load(open('dist/manifest.json')); m.pop('switched_off', None); print('MANIFEST', json.dumps(m))"
+          start=$(date +%s)
+          python -m lighthouse site --db data/test-builder.db --out site_out
+          echo "SITE_SECONDS $(( $(date +%s) - start ))"
+          python - <<'PY'
+          import glob, gzip, json, os
+          d = "site_out/data"; latest = json.load(open(f"{d}/latest.json"))
+          gz = lambda p: len(gzip.compress(open(p, "rb").read(), 6))
+          det = sorted(glob.glob(f"{d}/{latest['detail']}/*.json"))
+          words = sorted(gz(p) for p in glob.glob(f"{d}/{latest['words']}/*.json"))
+          print("SITE", json.dumps({"jobs": latest["jobs"], "companies": latest["companies"],
+                "site_mb": round(sum(os.path.getsize(p) for p in glob.glob("site_out/**", recursive=True) if os.path.isfile(p)) / 1e6, 1),
+                "list_gzip_mb": round(gz(f"{d}/{latest['base']['file']}") / 1e6, 2),
+                "detail_files": len(det), "detail_gzip_kb_median": round(sorted(gz(p) for p in det[:200])[min(len(det), 200) // 2] / 1e3, 1) if det else 0,
+                "word_files": len(words), "word_gzip_kb_max": round(words[-1] / 1e3, 1) if words else 0}))
+          PY

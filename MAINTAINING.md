@@ -65,11 +65,15 @@ a database or anything personal: `git log --all --stat -- data` should list no `
 - **Fork pull request workflows:** "Require approval for all outside collaborators". This workflow
   doesn't run on pull requests anyway, so a pull request can never publish an index.
 
-### 5. Optional: limit the index to some countries
+### 5. Countries in the index
 
-**Settings → Secrets and variables → Actions → Variables → New repository variable:**
-`LIGHTHOUSE_COUNTRIES` = `US` (or `US,CA,GB`). Postings located only elsewhere are skipped, which
-makes builds faster and downloads smaller. Leave it unset for everything. Users can always narrow
+The index covers the **US, Canada and Mexico** (`US,CA,MX`). Postings located only elsewhere are
+skipped before any description download, which makes builds faster and downloads smaller. A
+posting with no recognisable country ("Remote", "Multiple locations") is kept. A bare city name is
+never placed abroad when a North American city has that name too.
+
+To change the scope, add a repository variable under **Settings → Secrets and variables →
+Actions → Variables**: `LIGHTHOUSE_COUNTRIES` = e.g. `US` or `US,CA,MX,GB`. Users can narrow
 further with their Profile countries, but they can't get countries the index left out.
 
 ### 5b. Optional: let Claude read what the rules can't
@@ -124,6 +128,16 @@ The **Sources** page shows "Jobs as of … · N open roles from M boards".
 The first import replaces your locally fetched jobs with the index. Your profile, saved/applied/hidden
 marks and Claude verdicts carry over: they're keyed by posting, and the postings are the same ones.
 
+### 8b. The website (GitHub Pages)
+
+**Settings → Pages → Build and deployment → Source: GitHub Actions** (once). After each build the
+workflow writes the website from the builder database (`python -m lighthouse site`, step *Write the
+website*), and the *deploy-site* job publishes it at `https://<owner>.github.io/<repo>/`. Each deploy
+replaces the whole site.
+
+If the website step fails, the job index is still published and the cache still saved. The site
+keeps its previous version, and the *Build* log shows why.
+
 ### 9. Optional: protect `main`
 
 **Settings → Rules → Rulesets → New branch ruleset:** target the default branch, enable
@@ -131,6 +145,13 @@ marks and Claude verdicts carry over: they're keyed by posting, and the postings
 **Settings → Collaborators**), so this just guards against accidents.
 
 ---
+
+## Trying something against real careers sites
+
+Most development sandboxes (including Claude Code's) can't reach careers sites. Push a script as
+`probe/run.py` on a branch named `probe/<topic>`. The **Network probe** workflow runs it from
+GitHub's network; read its output in the run's log. Add an empty `probe/run-build` file to run a
+full test build instead. Nothing is published either way. Delete the branch when done.
 
 ## Day to day
 
@@ -292,7 +313,20 @@ once a week, or when the changes add up to half the base.
    The files are written by whitelist (jobs, boards, rule extractions, history, coverage), so nothing
    personal can be in them. Ghost reasons are stored as dates ("open since 2026-08-26"), not day
    counts, so an unchanged posting doesn't change every day.
-4. **Publish** data files first and `manifest.json` last, then save the builder database to the cache.
+4. **Publish** data files first and `manifest.json` last.
+5. **Write the website** (`lighthouse/site.py`), then save the builder database to the cache. The
+   website is static files, so there's no server:
+   - **Job list:** one entry per role, as columns, in a weekly file. A small "changed since then" file
+     comes with every build: added or changed roles, and ids gone.
+   - **Keyword index:** split into files by the first two letters.
+   - **Job details:** in files of 128. Each holds an excerpt that skips company boilerplate, every
+     apply link, places and ghost reasons.
+   - **Browser:** it keeps the weekly file in its cache storage, so a return visit downloads only the
+     changes.
+   - **Builder database:** it remembers each role's id for the week (`site_ids`) and keeps the weekly
+     file (`site_files`), so it travels in the Actions cache.
+
+   A new weekly file is written after 7 days, or when the changes exceed a quarter of it.
    If publishing fails, the cache isn't saved. The next run also compares the published manifest with
    its own state and writes a fresh base if they disagree, so readers can never get a delta that
    doesn't match their base.
@@ -303,6 +337,7 @@ once a week, or when the changes add up to half the base.
 |---|---|---|
 | Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
+| GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | ~50 MB per 73k roles; a first visit is ~1.7 MB, so ~60k first visits a month at 255k roles |
 | Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
@@ -322,6 +357,8 @@ once a week, or when the changes add up to half the base.
 | Manifest's `llm` entry stays at 0 descriptions | the `ANTHROPIC_API_KEY` secret is missing or misspelled; the *Build* log says `gap fill: ... skipped` |
 | `llm.pending` keeps growing | the monthly cap is reached (raise `LIGHTHOUSE_LLM_CAP_USD`) or batches take longer than the wait; they're collected next build |
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
+| *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |
+| *deploy-site* fails with "Not Found" / Pages not enabled | Settings → Pages → Source: GitHub Actions (step 8b) |
 
 ## Testing a build locally
 
