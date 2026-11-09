@@ -5,7 +5,10 @@ and does all searching and filtering in the browser. Nothing is ever sent anywhe
 only to its own GitHub Pages origin, and a user's profile and saved jobs live in their browser.
 
     data/latest.json               what's current (fetched with a cache-busting query, ~1 KB)
-    data/jobs-<base>.json          one entry per role (de-duplicated, in scope), as columns; weekly
+    data/jobs-<base>.json          one entry per role (de-duplicated, in scope), as columns; weekly.
+                                   Its places are normalized ("US|TX|Austin|austin": country, state or
+                                   province, city, metro area); a place that can't be read stays as
+                                   the employer wrote it ("~Plant 7")
     data/delta-<build>.json        entries added or changed since that base, and ids gone; every build
     data/keys-<base>.json          a short stable key per base entry (to keep saved jobs across bases)
     data/w-<build>/<xx>.json       keyword index over title, company, places, skills, function,
@@ -36,11 +39,11 @@ import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import classify, db
+from . import classify, db, geo, places
 from .sanitize import html_to_text
 from .web import clean_url
 
-FORMAT = 1
+FORMAT = 2                         # 2: normalized places (dict loc, column L); internships are a level
 ASSETS = Path(__file__).resolve().parent.parent / "site"
 # The page: every file in site/ (.github/workflows/website.yml publishes the same files on its own).
 ASSET_FILES = tuple(sorted(p.name for p in ASSETS.iterdir() if p.is_file())) if ASSETS.is_dir() else ()
@@ -65,7 +68,7 @@ INTERVALS = ["", "year", "hour"]
 # Columns of the job list, in order. The page reads them by name from the file.
 COLUMNS = ("t", "c", "L", "cc", "h", "f", "s", "e", "w", "p0", "p1", "pi", "cur", "y", "ys",
            "v", "z", "k", "g", "gh", "n", "sk", "b", "tr", "lg")
-DICTS = ("company", "place", "function", "currency", "skill", "language")
+DICTS = ("company", "function", "currency", "skill", "language", "loc")
 
 
 # ------------------------------------------------------------------ helpers
@@ -184,10 +187,10 @@ def _rows(conn, countries) -> list[dict]:
 
 def _places(r) -> list[str]:
     try:
-        places = json.loads(r["cluster_locations"] or "[]")
+        locs = json.loads(r["cluster_locations"] or "[]")
     except ValueError:
-        places = []
-    return [p for p in places if isinstance(p, str) and p.strip()] or ([r["location"]] if r["location"] else [])
+        locs = []
+    return [p for p in locs if isinstance(p, str) and p.strip()] or ([r["location"]] if r["location"] else [])
 
 
 def _card(r, dicts: dict[str, dict]) -> list:
@@ -205,11 +208,11 @@ def _card(r, dicts: dict[str, dict]) -> list:
     return [
         r["title"] or "",
         ix("company", r["company"] or ""),
-        [ix("place", p) for p in _places(r)[:MAX_PLACES]],
+        [ix("loc", e) for e in _loc_entries(r)],
         cc,
         _hours(r["effective_first_seen"]),
         ix("function", r["job_function"] or ""),
-        SENIORITIES.index(r["seniority"]) if r["seniority"] in SENIORITIES else 0,
+        SENIORITIES.index(level_of(r)) if level_of(r) in SENIORITIES else 0,
         EMP_TYPES.index(r["emp_type"]) if r["emp_type"] in EMP_TYPES else 0,
         WORKPLACES.index(r["workplace_eff"]) if r["workplace_eff"] in WORKPLACES else 0,
         round(r["pay_min_annual"] or 0),
@@ -229,6 +232,31 @@ def _card(r, dicts: dict[str, dict]) -> list:
         TRAVELS.index(r["travel"]) if r["travel"] in TRAVELS else 0,
         [ix("language", lang) for lang in classify.decode_skills(r["languages"])],
     ]
+
+
+def place_names() -> dict:
+    """Names for the normalized places (in the weekly base: they change only with places.VERSION)."""
+    return {"countries": {**dict(geo.CHOICES), **places.COUNTRY_NAMES},
+            "regions": {f"{cc}-{code}": name for cc, t in places.REGION_NAMES.items() for code, name in t.items()},
+            "metros": {slug: [label, cc, *aliases] for slug, (label, cc, _, aliases) in places.metros().items()},
+            "nicknames": places.nicknames()}
+
+
+def level_of(r) -> str | None:
+    """The page's Experience level: the seniority, with every internship (by title or by the ATS's
+    employment type) an internship, so the page needs no separate "Internship" job type."""
+    return "intern" if r["emp_type"] == "internship" else r["seniority"]
+
+
+def _loc_entries(r) -> list[str]:
+    """A role's places for the list: normalized ("US|TX|Austin|austin"), or the employer's words
+    ("~Plant 7") where they can't be read, in order, without repeats."""
+    out: list[str] = []
+    for p in _places(r)[:MAX_PLACES]:
+        for e in [x.entry() for x in places.parse(p)] or ["~" + " ".join(p.split())]:
+            if e not in out:
+                out.append(e)
+    return out
 
 
 def _columns(cards: list[list]) -> dict:
@@ -278,7 +306,7 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
         age_days = ((now - datetime.fromisoformat(state["built_at"])).total_seconds() / 86400
                     if state.get("built_at") else None)
         reason = ("asked for" if new_base else "first site" if not state
-                  else "format changed" if state.get("format") != FORMAT
+                  else "format changed" if state.get("format") != FORMAT or state.get("places") != places.VERSION
                   else "weekly" if age_days is None or age_days >= BASE_EVERY_DAYS
                   else "base file missing" if not _has_base_file(conn, state["stamp"]) else None)
         delta = None
@@ -302,12 +330,12 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
                 conn.execute("DELETE FROM site_ids")
                 conn.executemany("INSERT INTO site_ids (uid, id, sig, in_base) VALUES (?, ?, ?, 1)",
                                  [(r["uid"], i, _sig(cards[r["uid"]])) for i, r in enumerate(ordered)])
-            state = {"format": FORMAT, "stamp": stamp, "built_at": now.isoformat(), "count": len(ordered),
-                     "next_id": len(ordered), "dicts": {k: _dict_list(v) for k, v in dicts.items()}}
+            state = {"format": FORMAT, "places": places.VERSION, "stamp": stamp, "built_at": now.isoformat(),
+                     "count": len(ordered), "next_id": len(ordered), "dicts": {k: _dict_list(v) for k, v in dicts.items()}}
             state["base_lens"] = {k: len(v) for k, v in state["dicts"].items()}
             _store_base_file(conn, f"jobs-{stamp}.json", clear=True, obj={
                 "format": FORMAT, "base": stamp, "n": len(ordered), "dicts": state["dicts"],
-                "cols": _columns([cards[r["uid"]] for r in ordered])})
+                "cols": _columns([cards[r["uid"]] for r in ordered]), "places": place_names()})
             _store_base_file(conn, f"keys-{stamp}.json", [key_of(r["uid"]) for r in ordered])
         else:
             new_ids = []
