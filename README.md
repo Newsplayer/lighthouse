@@ -254,7 +254,7 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
 | Field extraction; function, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
-| Claude gap fill in the build (postings the rules couldn't settle) | `lighthouse/llm_fill.py` |
+| Gap fill in the build: a free open model reads what the rules couldn't settle; categories from similar titles | `lighthouse/llm_fill.py`, `lighthouse/local_llm.py`, `lighthouse/categorize.py`, `scripts/get_llm.sh` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |

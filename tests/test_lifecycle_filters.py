@@ -452,3 +452,44 @@ def test_filter_bar_and_job_page(tmp_path, cfg_path):
     assert "Data Analyst" not in client.get("/?language=english").get_data(as_text=True)
     detail = client.get("/job/greenhouse:acme:1").get_data(as_text=True)
     assert "read by Claude" in detail and "Equity / stock" in detail and "German" in detail
+
+
+FAKE_LLAMA_SERVER = '''#!/usr/bin/env python3
+import http.server, json, sys
+port = int(sys.argv[sys.argv.index("--port") + 1])
+assert "--host" in sys.argv and sys.argv[sys.argv.index("--host") + 1] == "127.0.0.1"
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        sys.stderr.write("request\\n" * 50)            # chatty, like llama-server: must not stall it
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b'{"status": "ok"}')
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        assert body["temperature"] == 0 and body["response_format"]["type"] == "json_schema"
+        props = body["response_format"]["json_schema"]["schema"]["properties"]
+        ans = {k: ("" if k.endswith("_quote") else None) for k in props}
+        b = json.dumps({"choices": [{"message": {"content": json.dumps(ans)}}], "usage": {}}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+'''
+
+
+def test_local_server_starts_answers_and_stops(tmp_path):
+    from lighthouse import local_llm
+    exe = tmp_path / "llama-server"
+    exe.write_text(FAKE_LLAMA_SERVER)
+    exe.chmod(0o755)
+    model = tmp_path / "tiny-model-Q4_K_M.gguf"
+    model.write_bytes(b"GGUF")
+    with local_llm.Server(exe, model, parallel=2, start_seconds=30) as server:
+        assert server.name == "tiny-model-Q4_K_M" and server.url.startswith("http://127.0.0.1:")
+        for _ in range(300):                       # well past a pipe's worth of log lines
+            ans, _ = server.chat([{"role": "user", "content": "x"}], llm_fill.schema_for(["visa"]))
+        assert ans == {"visa_sponsorship": None, "visa_quote": ""}
+        proc = server.proc
+    assert proc.poll() is not None                 # stopped with the block
+    broken = tmp_path / "broken"
+    broken.write_text("#!/bin/sh\necho 'cannot load model' >&2\nexit 3\n")
+    broken.chmod(0o755)
+    with pytest.raises(RuntimeError, match="cannot load model"):
+        local_llm.Server(broken, model, start_seconds=10).__enter__()
