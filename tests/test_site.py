@@ -465,7 +465,9 @@ def _free_port():
 
 
 @pytest.fixture
-def served_site(tmp_path):
+def site_server(tmp_path):
+    """A builder, its site in tmp_path/site, and a local server for that folder. Regenerating the
+    site replaces the folder, as a Pages deploy replaces the site."""
     b = varied_builder(tmp_path, n=60)
     out = tmp_path / "site"
     gen(b, out, now=datetime.now(timezone.utc))
@@ -473,8 +475,23 @@ def served_site(tmp_path):
     handler.log_message = lambda *a, **k: None
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", _free_port()), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}/"
+    yield f"http://127.0.0.1:{srv.server_address[1]}/", b, out
     srv.shutdown()
+
+
+@pytest.fixture
+def served_site(site_server):
+    return site_server[0]
+
+
+def _browser_page(p, sync):
+    try:
+        browser = p.chromium.launch()
+    except Exception as e:  # no browser installed here
+        pytest.skip(f"no Chromium: {e}")
+    # bypass_csp: Playwright's own polling would be blocked by the page's strict policy (as intended)
+    ctx = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True)
+    return browser, ctx.new_page()
 
 
 def test_page_has_a_strict_policy():
@@ -487,13 +504,7 @@ def test_page_has_a_strict_policy():
 def test_page_works_in_a_browser(served_site):
     sync = pytest.importorskip("playwright.sync_api")
     with sync.sync_playwright() as p:
-        try:
-            browser = p.chromium.launch()
-        except Exception as e:  # no browser installed here
-            pytest.skip(f"no Chromium: {e}")
-        # bypass_csp: Playwright's own polling would be blocked by the page's strict policy (as intended)
-        ctx = browser.new_context(viewport={"width": 1200, "height": 900}, bypass_csp=True)
-        page = ctx.new_page()
+        browser, page = _browser_page(p, sync)
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(served_site)
@@ -556,5 +567,50 @@ def test_page_works_in_a_browser(served_site):
         page.click("details[data-facet=companies] summary")                # its panel is a sheet on a phone
         page.wait_for_timeout(200)
         assert page.evaluate("document.documentElement.scrollWidth") <= 380
+        assert not errors, errors
+        browser.close()
+
+
+def test_page_keeps_working_when_the_site_is_redeployed_under_it(site_server):
+    """A deploy removes the previous build's search and job files. A page left open must catch up
+    instead of showing no matches or a job without apply links."""
+    sync = pytest.importorskip("playwright.sync_api")
+    url, b, out = site_server
+    start = datetime.now(timezone.utc)
+    count = lambda page: int(page.inner_text("#summary").split(" roles")[0].replace(",", ""))
+    with sync.sync_playwright() as p:
+        browser, page = _browser_page(p, sync)
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        total = count(page)
+
+        gen(b, out, now=start + timedelta(hours=1))                 # a build within the week
+        page.fill("#f-q", "software")
+        page.wait_for_function("document.querySelector('#notice') && !document.querySelector('#notice').hidden")
+        page.wait_for_timeout(300)
+        assert 0 < count(page) < total and "Updated just now" in page.inner_text("#notice")
+
+        gen(b, out, now=start + timedelta(hours=2))
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job .apply a")                    # same ids: the same job, with its links
+        page.locator("#job .close button").click()
+
+        page.reload()                                              # job files already read stay usable,
+        page.wait_for_selector("#results li.job")                  # so start without any
+        assert gen(b, out, now=start + timedelta(days=8))["new_base"] == "weekly"   # jobs renumbered
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job p:has-text('just updated')")
+        page.locator("#job .close button").click()
+        page.locator("#results li.job .title").first.click()
+        page.wait_for_selector("#job .apply a")
+        page.locator("#job .close button").click()
+
+        page.reload()
+        page.wait_for_selector("#results li.job")
+        gen(b, out, now=start + timedelta(days=8, hours=1))
+        page.locator("#results li.job .mark").first.click()
+        page.wait_for_function("document.querySelector('#tab-saved .count').textContent === '1'")
         assert not errors, errors
         browser.close()

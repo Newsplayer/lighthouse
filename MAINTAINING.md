@@ -133,10 +133,16 @@ marks and Claude verdicts carry over: they're keyed by posting, and the postings
 **Settings → Pages → Build and deployment → Source: GitHub Actions** (once). After each build the
 workflow writes the website from the builder database (`python -m lighthouse site`, step *Write the
 website*), and the *deploy-site* job publishes it at `https://<owner>.github.io/<repo>/`. Each deploy
-replaces the whole site.
+replaces the whole site at once, so the site is never down during a deploy.
 
-If the website step fails, the job index is still published and the cache still saved. The site
-keeps its previous version, and the *Build* log shows why.
+- **Pages of visitors who already have the site open** still name the previous build's search and
+  job files, which the deploy removed. When one is missing, the page loads the new build and draws
+  the list again. After the weekly list (when jobs are renumbered), a job opened at that moment asks
+  to be opened again.
+- **If the website step or the deploy fails,** the job index is still published and the cache still
+  saved. The site keeps its previous version, and the *Build* log shows why. The next build fixes it.
+- **What visitors download per build** is only the change file. What's regenerated each build (search
+  and job files) is redone from cached excerpts in under a minute.
 
 **Changing only the page (`site/`) doesn't need a build.** Each build keeps the website it wrote in
 the Actions cache. A push to `main` that changes `site/` runs the *Website* workflow

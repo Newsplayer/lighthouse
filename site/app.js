@@ -115,19 +115,52 @@ async function loadData() {
   if (Object.keys(state.marks).length) await remapMarks();
 }
 
+// Each deploy replaces the whole site, so a page left open still names the previous build's search
+// and job files, which are gone. A file that won't load returns MISSING (and isn't remembered, so
+// the next try asks again); catchUp() then looks for the new build and reloads.
+const MISSING = Symbol("missing");
+
+async function cachedFile(map, n, url) {
+  let p = map.get(n);
+  if (!p) map.set(n, (p = getJSON(url).catch(() => MISSING)));
+  const got = await p;
+  if (got === MISSING && map.get(n) === p) map.delete(n);
+  return got;
+}
+
 async function getShard(name) {
-  if (!state.shards.has(name)) {
-    state.shards.set(name, getJSON(`data/${state.latest.words}/${name}.json`).catch(() => null));
-  }
-  return state.shards.get(name);
+  return cachedFile(state.shards, name, `data/${state.latest.words}/${name}.json`);
 }
 
 async function getDetail(id) {
   const n = Math.floor(id / state.latest.per_detail);
-  if (!state.details.has(n)) {
-    state.details.set(n, getJSON(`data/${state.latest.detail}/${n}.json`).catch(() => ({})));
+  const file = await cachedFile(state.details, n, `data/${state.latest.detail}/${n}.json`);
+  return file === MISSING ? MISSING : file[String(id)] || null;
+}
+
+// Job ids stay the same until the weekly list is replaced, so after a reload within the week the
+// same id is the same job.
+let catchingUp = null;
+function catchUp() {
+  if (!catchingUp) {
+    const before = state.latest;
+    catchingUp = checkForUpdate().then(() => ({
+      changed: state.latest.stamp !== before.stamp,
+      sameIds: state.latest.base.stamp === before.base.stamp,
+    })).finally(() => { catchingUp = null; });
   }
-  return (await state.details.get(n))[String(id)] || null;
+  return catchingUp;
+}
+
+// A job's details, catching up with a new build first if needed. null: the weekly list was just
+// replaced, so this id no longer names the same job (the list has been redrawn).
+async function detailOf(i) {
+  const d = await getDetail(i);
+  if (d !== MISSING) return { d };
+  const { changed, sameIds } = await catchUp();
+  if (changed && !sameIds) return null;
+  const again = await getDetail(i);
+  return { d: again === MISSING ? null : again, partial: again === MISSING };
 }
 
 // Saved/applied/hidden are kept by a key that survives new weekly bases; ids are looked up again.
@@ -169,8 +202,22 @@ const context = () => ({ now: nowHours(), profile: profileFrom(state.answers), m
 async function run({ keepScroll = false } = {}) {
   const f = state.filters;
   const token = ++state.searchToken;
-  const allowed = f.q ? await searchIds(f.q, getShard) : null;
+  let missed = false;
+  const shard = async (name) => {
+    const got = await getShard(name);
+    if (got !== MISSING) return got;
+    missed = true;
+    return null;
+  };
+  const allowed = f.q ? await searchIds(f.q, shard) : null;
   if (token !== state.searchToken) return;               // a newer search started meanwhile
+  if (missed) {
+    // A new build redraws the list itself. If a catch-up is already running, this may be its own
+    // redraw: don't wait for it (it would be waiting for this).
+    const { changed } = catchingUp ? { changed: false } : await catchUp();
+    if (changed || token !== state.searchToken) return;
+    alertBox("Part of the search couldn't be loaded, so some roles may be missing. Check your connection and search again.");
+  }
   state.allowed = allowed;
   state.placeCount = null;
   const ctx = context();
@@ -285,16 +332,26 @@ function card(i) {
 function markButton(i, status, label, current) {
   return el("button", { type: "button", class: "mark" + (current === status ? " on" : ""), "aria-pressed": current === status ? "true" : "false",
     text: current === status ? `✓ ${label === "Hide" ? "Hidden" : label === "Save" ? "Saved" : label}` : label,
-    onclick: async () => { await setMark(i, status, await getDetail(i)); await run({ keepScroll: true }); } });
+    onclick: async () => {
+      const got = await detailOf(i);                    // null: the list was just renumbered and redrawn
+      if (got) { await setMark(i, status, got.d); await run({ keepScroll: true }); }
+    } });
 }
 
 // ---------------------------------------------------------------- the job panel
 async function openJob(i) {
-  const s = state.store, c = s.cols, v = s.vocab, L = state.latest.labels;
   const panel = $("#job");
   panel.replaceChildren(el("p", { class: "meta", text: "Loading…" }));
   if (!panel.open) panel.showModal();
-  const d = await getDetail(i) || {};
+  const got = await detailOf(i);
+  if (!got) {
+    panel.replaceChildren(
+      el("form", { method: "dialog", class: "close" }, el("button", { type: "submit", "aria-label": "Close", text: "×" })),
+      el("p", { text: "The job list was just updated. Close this and open the job again from the list." }));
+    return;
+  }
+  const d = got.d || {};
+  const s = state.store, c = s.cols, v = s.vocab, L = state.latest.labels;   // after any reload
   const places = placeLabels(s, i);
   const extra = Math.max(0, (d.L || []).length - 25);    // the list keeps a role's first 25 (site.MAX_PLACES)
   const benefits = v.benefits.filter((b, bit) => c.b[i] & (1 << bit)).map((b) => L.benefits[b] || b);
@@ -330,7 +387,8 @@ async function openJob(i) {
     (d.gr || []).length && el("p", { class: "warn", text: `Ghost signals: ${(d.gr || []).map((r) => ghostLabel(r)).join("; ")}` }),
     el("div", { class: "apply" },
       links.length ? links.map((u, n) => el("a", { class: n ? "btn secondary" : "btn", href: safeUrl(u), target: "_blank",
-        rel: "noopener noreferrer", text: `Apply on ${host(u)}` })) : el("span", { class: "meta", text: "No apply link listed." })),
+        rel: "noopener noreferrer", text: `Apply on ${host(u)}` }))
+        : el("span", { class: "meta", text: got.partial ? "The apply links couldn't be loaded. Check your connection and open the job again." : "No apply link listed." })),
     facts.length && el("dl", { class: "facts" }, facts.map(([k, val]) => [el("dt", { text: k }), el("dd", { text: val })])),
     (c.sk[i] || []).length && el("div", { class: "tags" }, (c.sk[i] || []).map((x) => el("span", { class: "tag", text: s.dicts.skill[x] }))),
     d.x && el("p", { class: "excerpt", text: d.x }),
@@ -759,9 +817,14 @@ function wire() {
 async function start() {
   try {
     await loadData();
-  } catch (e) {
-    $("#summary").textContent = "The job list couldn't be loaded. Try again in a few minutes.";
-    return;
+  } catch {
+    try {                                          // arrived mid-deploy: the new build is up in moments
+      await new Promise((ok) => setTimeout(ok, 3000));
+      await loadData();
+    } catch {
+      $("#summary").textContent = "The job list couldn't be loaded. Try again in a few minutes.";
+      return;
+    }
   }
   const visit = load(STORE.visit, null);         // "new since your last visit" = since the previous visit
   state.since = visit ? visit.h : undefined;
