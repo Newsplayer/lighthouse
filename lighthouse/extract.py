@@ -183,6 +183,21 @@ def _money(num: str, k: str | None) -> float:
     return v * 1000 if k else v
 
 
+_TITLE_SEP = re.compile(r"[()\[\]|,/:–—]|\s-\s|^-|-$")
+_TITLE_TAG = re.compile(r"^(?:fully |100% )?(remote|hybrid)(?: (?:us|usa|u\.s\.|canada|mexico|first|friendly|optional|"
+                        r"eligible|role|position|opportunity|work|based))?$", re.I)
+
+
+def _title_workplace(title: str) -> str | None:
+    """"Engineer (Remote)", "Analyst - Hybrid", "Remote - US": a part of the title that's only the workplace.
+    Not "Remote Sensing Scientist" or "Hybrid Cloud Architect"."""
+    for part in _TITLE_SEP.split(title or ""):
+        m = _TITLE_TAG.match(" ".join(part.split()))
+        if m:
+            return m.group(1).lower()
+    return None
+
+
 def rules(text: str, title: str = "", location: str = "") -> dict:
     out = {k: _f() for k in FIELDS}
     low = text.lower()  # cheap keyword gates keep the expensive regexes off most postings
@@ -196,11 +211,11 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
             out["salary"] = _f({"min": a, "max": b, "currency": _CUR.get(m["cur"].upper(), m["cur"]), "interval": per},
                                _line(text, m.start(), m.end()))
 
-    loc_title = f"{title} {location}".lower()
-    if "remote" in loc_title:
-        out["workplace"] = _f("remote", location or title)
-    elif "hybrid" in loc_title:
-        out["workplace"] = _f("hybrid", location or title)
+    tagged = _title_workplace(title)
+    if re.search(r"\bremote\b", location or "", re.I) or tagged == "remote":
+        out["workplace"] = _f("remote", location if re.search(r"\bremote\b", location or "", re.I) else title)
+    elif re.search(r"\bhybrid\b", location or "", re.I) or tagged == "hybrid":
+        out["workplace"] = _f("hybrid", location if re.search(r"\bhybrid\b", location or "", re.I) else title)
     else:
         for value, pat in (("remote", _REMOTE), ("hybrid", _HYBRID), ("onsite", _ONSITE)):
             mm = pat.search(text)
