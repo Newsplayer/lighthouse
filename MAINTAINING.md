@@ -92,11 +92,11 @@ open model reads that posting on the build machine itself. There's no key, accou
 - **Job categories:** a title no rule recognises takes the category of the most similar titles the
   rules did place, from a small embedding model (model2vec). If those titles don't clearly agree, the
   category stays unknown. These are marked `"by": "titles"`.
-- **How long:** 45 minutes per build, newest postings first (about 1,500 an hour, so about 4,500 a
-  day: more than the 2,500 or so new ones a day that need it). To change it, add a repository variable
-  `LIGHTHOUSE_LLM_MINUTES`.
+- **How long:** 60 minutes per build, newest postings first. That's 700–1,500 postings an hour,
+  depending on the machine GitHub assigns, so about 2,800–6,000 a day, against the 2,500 or so new
+  ones a day that need it. To change it, add a repository variable `LIGHTHOUSE_LLM_MINUTES`.
 - **Setup:** none. The first *fill* job runs `scripts/get_llm.sh`, which builds llama.cpp and downloads
-  the two models (1.3 GB; about 8 minutes). They're kept in the Actions cache, so later runs start at
+  the two models (1.3 GB; about 10 minutes). They're kept in the Actions cache, so later runs start at
   once. If the *fill* job fails, nothing is lost: the next build starts from the build job's database,
   and the rule answers stand.
 - **Changing the model:** edit the pins in `scripts/get_llm.sh` (the cache key follows the file).
@@ -318,7 +318,7 @@ once a week, or when the changes add up to half the base.
    - **Open-model gap fill** (step 5b; the *fill* job, after publishing). First, titles the rules
      couldn't place get a category from the most similar placed titles. Then the rules' list of gaps
      (per description, the fields it talks about that they couldn't settle) goes to the open model,
-     newest open, de-duplicated, non-ghost postings first, for 45 minutes. Grounded answers are merged
+     newest open, de-duplicated, non-ghost postings first, for 60 minutes. Grounded answers are merged
      into the extraction for the empty fields only, marked `"by": "model"`, and the builder database is
      saved again; the next build publishes them. If the job fails, the rule answers stand. Descriptions
      already read are recovered from the published base when seeding.

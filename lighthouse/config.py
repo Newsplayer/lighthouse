@@ -89,7 +89,7 @@ class IndexSettings:
     # Builder only (`index build`, i.e. the GitHub Action): postings whose filter fields the rules
     # couldn't settle are read by a free open model on the build machine (llm_fill.py); readers ignore these.
     llm_fill: bool = True
-    llm_minutes: float = 45            # reading time per build, newest postings first; the rest wait
+    llm_minutes: float = 60            # reading time per build, newest postings first; the rest wait
     llm_parallel: int = 2              # questions the model works on at once
     llm_max_per_run: int = 20000
 

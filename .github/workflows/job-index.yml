@@ -153,13 +153,13 @@ jobs:
 
   # The free gap fill, after the index and the site are out (it runs alongside the deploy): a free, open
   # model on this machine reads the newest postings the rules couldn't settle, for LIGHTHOUSE_LLM_MINUTES
-  # (variable, default 45), and titles no rule places get a category from similar titles. No key, no
+  # (variable, default 60), and titles no rule places get a category from similar titles. No key, no
   # account. The builder database is saved again with the answers, and the next build publishes them.
   # If anything here fails, nothing is lost: the next build starts from the build job's database.
   fill:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 110
     steps:
       - uses: actions/checkout@v4
 
@@ -203,7 +203,7 @@ jobs:
           LIGHTHOUSE_LLM_SERVER: llm/bin/llama-server
           LIGHTHOUSE_LLM_MODEL: llm/model.gguf
           LIGHTHOUSE_EMBED_MODEL: llm/embed
-        run: python -m lighthouse index fill --minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES || 45 }}"
+        run: python -m lighthouse index fill --minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES || 60 }}"
 
       # Newer than the build job's entry, so the next build starts from this one.
       - name: Save builder database

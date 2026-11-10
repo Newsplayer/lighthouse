@@ -176,6 +176,26 @@ def _travel_from_percent(quote: str, said):
     return "none" if top == 0 else "occasional" if top <= 25 else "frequent"
 
 
+_NOT_REQUIRED = re.compile(r"\b(?:preferred|preferably|nice to have|a plus|desired|or equivalent|equivalent "
+                           r"(?:work |professional )?experience|in lieu of)\b", re.I)
+_LEVEL_WORDS = {"secret": r"(?<!top )\bsecret\b", "ts": r"\b(?:top secret|ts)\b(?!\s*/\s*sci)", "ts_sci": r"\bsci\b",
+                "public_trust": r"\bpublic trust\b"}
+
+
+def _consistent(field: str, value, quote: str) -> bool:
+    """Checks a small model gets wrong in plain sight. A degree that's only preferred, or that equivalent
+    experience can replace, isn't required. A clearance level must be named in its quote (and
+    "unspecified" means none is)."""
+    if value in (None, ""):
+        return True
+    if field == "degree":
+        return not _NOT_REQUIRED.search(quote or "")
+    if field == "clearance":
+        named = {lvl for lvl, pat in _LEVEL_WORDS.items() if re.search(pat, quote or "", re.I)}
+        return not named if value == "unspecified" else value in named
+    return True
+
+
 def to_fields(ans: dict, fields: list[str], shown: str) -> tuple[dict, list[str]]:
     """The model's answer -> extraction fields ({field: {"value", "evidence", "by"}}), keeping only grounded,
     known values. Returns (fields, names dropped as ungrounded)."""
@@ -213,7 +233,8 @@ def to_fields(ans: dict, fields: list[str], shown: str) -> tuple[dict, list[str]
         ans = {**ans, "travel": _travel_from_percent(ans.get("travel_quote") or "", ans.get("travel"))}
     for f, (key, allowed) in simple.items():
         if f in fields:
-            keep(f, one(ans.get(key), allowed), ans.get(f"{f}_quote") or "")
+            q = ans.get(f"{f}_quote") or ""
+            keep(f, one(ans.get(key), allowed), q, ok=_consistent(f, ans.get(key), q))
     if "citizenship" in fields:
         c = ans.get("citizenship_required")
         keep("citizenship", c if isinstance(c, bool) else None, ans.get("citizenship_quote") or "")

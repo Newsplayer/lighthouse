@@ -199,6 +199,16 @@ def test_answer_checks():
                          ("Travel Required: 00% - 25%", "occasional"), ("Travel: 50%", "frequent"), ("0% travel", "none")):
         got = llm_fill.to_fields({"travel": "frequent", "travel_quote": quote}, ["travel"], f"Excerpts: {quote}")[0]
         assert got["travel"]["value"] == level, quote                              # the quoted share decides
+    for quote, value, kept in (("Bachelor's degree preferred", "bachelors", False),
+                               ("Bachelor's Degree or equivalent work experience", "bachelors", False),
+                               ("Bachelor of Science degree in Chemistry required", "bachelors", True)):
+        got = llm_fill.to_fields({"degree_required": value, "degree_quote": quote}, ["degree"], f"Excerpts: {quote}")[0]
+        assert ("degree" in got) == kept, quote                                    # preferred isn't required
+    for quote, value, kept in (("DoD Clearance: Secret", "secret", True), ("SC level security clearance", "secret", False),
+                               ("Active Secret clearance and the ability to obtain TS/SCI", "secret", True),
+                               ("Active TS/SCI with poly", "ts", False), ("Must hold a security clearance", "unspecified", True)):
+        got = llm_fill.to_fields({"clearance": value, "clearance_quote": quote}, ["clearance"], f"Excerpts: {quote}")[0]
+        assert ("clearance" in got) == kept, quote                                 # the level is named in the quote
     bad = {**ans, "salary_max": 120000}
     assert "salary" in llm_fill.to_fields(bad, ["salary"], shown)[1]               # 120,000 isn't in the quote
     assert llm_fill.snippet("x " * 400 + "We will not sponsor a visa for this role. " + "y " * 400, ["visa"]).count("sponsor") == 1
