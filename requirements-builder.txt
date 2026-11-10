@@ -1,0 +1,4 @@
+# Extra packages for the builder (the job-index GitHub Action) only; the website and the local app don't
+# need them. model2vec: the small embedding model that places job titles (lighthouse/categorize.py).
+# huggingface_hub (a model2vec dependency) also fetches the open models (scripts/get_llm.sh).
+model2vec==0.10.0

@@ -788,7 +788,7 @@ POSTINGS_SELECT = """SELECT
     (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))) AS ghost_signals,
     EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid) AS has_description,
     (SELECT group_concat(f.key, ', ') FROM extractions e, json_each(e.data) f
-      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') = 'claude') AS filled_by_claude,
+      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') IS NOT NULL) AS filled_by_ai,
     j.url,
     j.source AS ats,
     j.source_board AS board

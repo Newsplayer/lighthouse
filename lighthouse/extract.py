@@ -4,8 +4,9 @@ citizenship, degree, visa-sponsorship language, pipeline wording, benefits, trav
 Tiers, all cached by description hash so identical text is never processed twice:
   rules    — free regexes, run on every new description during fetch
   gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
-             rules can't settle it (unresolved()), Claude reads it once and fills that gap. Rule answers
-             are never overwritten; filled fields carry "by": "claude".
+             rules can't settle it (unresolved()), a free open model on the build machine reads it once
+             and fills that gap; categorize.py places titles the rules can't. Rule answers are never
+             overwritten; filled fields carry "by": "model" or "titles" ("claude" in older indexes).
   claude   — optional, your own key (claude_api.py); replaces the rules result when present
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
@@ -40,12 +41,14 @@ _NUMWORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "se
              "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "a": 1}
 _N = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen)"
 # "5+ years of (relevant, hands-on...) experience", "4+ years’ experience", "3-5 yrs of industry experience"
-_YOE = re.compile(_N + r"(?:\s*\(\d{1,2}\+?\))?\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?"
+_YOE = re.compile(_N + r"(?:[ \t]*\(\d{1,2}\+?\))?[ \t]*(?:\+|plus)?[ \t]*(?:(?:-|–|to)[ \t]*\d{1,2}[ \t]*\+?[ \t]*)?"
                   r"(?:(?:total|full|professional|relevant|combined|overall)\s+)?(?:years?|yrs?)\b['’]?(?:\s+of)?"
                   r"(?:\s+[\w/&,.'’()+-]+){0,8}?\s+(?:experience|exp\b|work(?:ing)?\b|industry|background)", re.I)
 # "minimum 2-5 years", "at least one year", "minimum of 3 years"
-_YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)\s+(?:of\s+)?" + _N +
-                      r"(?:\s*(?:-|–|to)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b", re.I)
+_YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)[ \t]+(?:of[ \t]+)?" + _N +
+                      r"(?:[ \t]*(?:-|–|to)[ \t]*\d{1,2})?[ \t]*\+?[ \t]*(?:years?|yrs?)\b", re.I)
+# "must be 18 years of age", "21+ years old", "18 years or older": an age, not experience
+_AGE = re.compile(r"\b\d{2}[ \t]*\+?[ \t]*(?:years?|yrs?)[ \t]*(?:of[ \t]+age|old\b|or[ \t]+older|and[ \t]+older)", re.I)
 _HEADING_PREF = re.compile(r"\b(preferred|nice to have|nice-to-have|bonus|plus|desired|ideally)\b", re.I)
 _CLEARANCE = [
     ("ts_sci", re.compile(r"\bTS\s*/\s*SCI\b|top secret\s*/\s*sci", re.I)),
@@ -182,6 +185,21 @@ def _money(num: str, k: str | None) -> float:
     return v * 1000 if k else v
 
 
+_TITLE_SEP = re.compile(r"[()\[\]|,/:–—]|\s-\s|^-|-$")
+_TITLE_TAG = re.compile(r"^(?:fully |100% )?(remote|hybrid)(?: (?:us|usa|u\.s\.|canada|mexico|first|friendly|optional|"
+                        r"eligible|role|position|opportunity|work|based))?$", re.I)
+
+
+def _title_workplace(title: str) -> str | None:
+    """"Engineer (Remote)", "Analyst - Hybrid", "Remote - US": a part of the title that's only the workplace.
+    Not "Remote Sensing Scientist" or "Hybrid Cloud Architect"."""
+    for part in _TITLE_SEP.split(title or ""):
+        m = _TITLE_TAG.match(" ".join(part.split()))
+        if m:
+            return m.group(1).lower()
+    return None
+
+
 def rules(text: str, title: str = "", location: str = "") -> dict:
     out = {k: _f() for k in FIELDS}
     low = text.lower()  # cheap keyword gates keep the expensive regexes off most postings
@@ -195,11 +213,11 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
             out["salary"] = _f({"min": a, "max": b, "currency": _CUR.get(m["cur"].upper(), m["cur"]), "interval": per},
                                _line(text, m.start(), m.end()))
 
-    loc_title = f"{title} {location}".lower()
-    if "remote" in loc_title:
-        out["workplace"] = _f("remote", location or title)
-    elif "hybrid" in loc_title:
-        out["workplace"] = _f("hybrid", location or title)
+    tagged = _title_workplace(title)
+    if re.search(r"\bremote\b", location or "", re.I) or tagged == "remote":
+        out["workplace"] = _f("remote", location if re.search(r"\bremote\b", location or "", re.I) else title)
+    elif re.search(r"\bhybrid\b", location or "", re.I) or tagged == "hybrid":
+        out["workplace"] = _f("hybrid", location if re.search(r"\bhybrid\b", location or "", re.I) else title)
     else:
         for value, pat in (("remote", _REMOTE), ("hybrid", _HYBRID), ("onsite", _ONSITE)):
             mm = pat.search(text)
@@ -210,8 +228,9 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
     best, pref = None, None   # required wins; a preferred-only number is kept, labelled
     if "year" in low or "yr" in low:
         yspans = _spans(text, low, ("year", "yr"), 60, 170)
+        ytext = _AGE.sub(lambda a: " " * len(a.group(0)), text) if "age" in low or "old" in low else text
         for pat in (_YOE, _YOE_MIN):
-            for mm in _iter(pat, text, yspans):
+            for mm in _iter(pat, ytext, yspans):
                 n = _NUMWORDS.get(mm.group(1).lower()) or (int(mm.group(1)) if mm.group(1).isdigit() else 0)
                 if not 0 < n <= 20:
                     continue
@@ -344,20 +363,23 @@ def unresolved(text: str, data: dict, title: str = "", departments: str = "", at
     return out
 
 
+READ_MARKERS = ("llm_read", "claude_read")   # "this description was read by the gap fill"
+
+
 def merge_llm(data: dict, llm: dict | None) -> dict:
-    """Fill the gaps in a rule extraction from Claude's reading; a rule answer always stays.
-    llm None: never sent to Claude. {} (asked, nothing usable) still leaves a claude_read marker, so a
-    builder restarted from the published index knows not to pay for that description again."""
+    """Fill the gaps in a rule extraction from the gap fill's reading; a rule answer always stays.
+    llm None: never read. {} (read, nothing usable) still leaves an llm_read marker, so a builder restarted
+    from the published index knows not to read that description again."""
     if llm is None:
         return data
     out = dict(data)
-    out["claude_read"] = {"value": True}
+    out["llm_read"] = {"value": True}
     for k, v in llm.items():
         if not isinstance(v, dict) or v.get("value") in (None, [], ""):
             continue
         cur = out.get(k) if isinstance(out.get(k), dict) else {}
         if cur.get("value") in (None, [], ""):
-            out[k] = {**v, "by": "claude"}
+            out[k] = {**v, "by": v.get("by") or "claude"}   # Claude's older fills carried no mark of their own
     return out
 
 

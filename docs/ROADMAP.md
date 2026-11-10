@@ -118,7 +118,8 @@ Work top to bottom.
       Changes are cumulative for the week, so later visits download more as the week goes on.
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
-    the postings whose filter fields the rules couldn't settle (`llm_fill.py`).
+    the postings whose filter fields the rules couldn't settle (`llm_fill.py`). **Replaced 2026-11-09**
+    by a free open model on the build machine (D8).
   - **Mass-closure hold:** this is P0-1.
   - **Old postings deleted:** after 45 days closed.
   - **Builds of about an hour:** a 40-minute fetch limit, stalest boards first.
@@ -206,11 +207,13 @@ Job boards change all day, so freshness is a core feature.
 
 | Option | Use | Verdict |
 |---|---|---|
-| **Gemini API free tier, with the maintainer's key** (repo secret) | Filter fields and a short summary per posting (P3-1) | **Adopt.** About 500 requests a day per model for Flash-Lite as of Nov 2026, with separate quotas per model. At 20–25 postings per request that's ~10–12k postings a day per model. Free-tier content may be used by Google to improve its products; send only public posting text. Use the OpenAI-compatible endpoint, so the provider can be swapped. |
+| **Open model on the runner's CPU, shown only the sentences around each gap** (llama.cpp + Qwen3.5 2B, Apache-2.0; `llm_fill.py`) | Filter fields the rules couldn't settle | **Adopted 2026-11-09 (D8).** Measured on the real builder database: 700–1,500 postings an hour on the free 4-core runner (it depends on the machine); agreed with the rules' answers 89% of the time where both answered (several disagreements were rule mistakes); answers kept only when the quote is in the text. Runs 60 min per build after publishing. |
+| **model2vec static embeddings, nearest placed titles** (`categorize.py`) | Job category for titles no rule places | **Adopted 2026-11-09.** 92% right on held-out placed titles, guessing 76% of them; placed 18,673 of 63,551 unplaced titles in 41 s. |
+| Gemini API free tier, with the maintainer's key (repo secret) | Filter fields and a short summary per posting (P3-1) | **Not needed now.** Was the plan: about 500 requests a day per model for Flash-Lite as of Nov 2026, with separate quotas per model. At 20–25 postings per request that's ~10–12k postings a day per model. Free-tier content may be used by Google to improve its products; send only public posting text. Use the OpenAI-compatible endpoint, so the provider can be swapped. |
 | Groq free tier (maintainer's key) | Small second provider | 1,000 requests/day but 200k tokens/day per model, so only ~250 postings a day. Fallback only. |
 | **model2vec static embeddings** (`model2vec` 0.10, numpy only, MIT; e.g. `potion-base-8M`, `potion-retrieval-32M`) | Semantic search, "more like this", resume similarity, title → occupation | **Adopt (P3-3).** Up to ~500× faster than the original transformer on CPU: minutes for every posting, incremental after that. Ship 256-bit binary vectors (~32 B per posting). |
 | ONNX sentence-transformers (bge-small / e5-small via `fastembed`) | Higher-quality embeddings | Only if the eval set shows model2vec isn't enough; ~100× slower |
-| Generative LLM on the runner's CPU (llama.cpp / Ollama) | Field extraction | **Reject at scale:** ~7–10 tokens/s, so it can't keep up with thousands of new postings a day |
+| Generative LLM on the runner's CPU, whole postings, for every field | Field extraction | **Rejected, measured 2026-11-10** on 60 recent real postings (Qwen3.5 2B): 174 postings an hour (42 s each) against 5.6 s for excerpts, so it can't keep up with new postings; and it invents answers when a posting says nothing (sponsorship "yes" quoted from "eligible for equity and benefits", in 10 of 12 cases where only it answered; workplace from a city name). Where rules and the model both answered they nearly always agreed (pay 17 of 18, years 36 of 39). Rules stay first; the model reads excerpts only where a posting talks about a field. |
 | GitHub Models via `GITHUB_TOKEN` | — | **Gone:** retired 2026-07-30 |
 | Cerebras, OpenRouter free, Cloudflare Workers AI, SambaNova | — | Trials or tiny daily limits (50 requests, 10k "neurons", 20 requests); not worth the code |
 
@@ -411,9 +414,10 @@ means. Keep every change incremental and measured (§2 baselines).
 
 ### P3: richer filters
 
-1. **Filter fields from an LLM in the builder** (maintainer's key only).
-   - **Partly done on `main`:** the owner chose Claude Haiku via the Batch API, capped monthly
-     (`llm_fill.py`). It fills only the fields the rules couldn't settle.
+1. **Filter fields from an LLM in the builder.**
+   - **Done, free (2026-11-09):** an open model on the build machine fills only the fields the rules
+     couldn't settle (`llm_fill.py`), and similar titles give missing categories (`categorize.py`).
+     It replaced Claude Haiku with the maintainer's key.
    - What's left: summaries and the extra fields below. Gemini's free tier remains an alternative.
    - New builder step `lighthouse/enrich.py`. It's skipped when the `LLM_API_KEY` secret is unset,
      and stops when the day's quota or a 60-minute cap is used.
@@ -472,9 +476,9 @@ means. Keep every change incremental and measured (§2 baselines).
 | D2 | Countries in the public index? | **US, Canada, Mexico** (done in PR #1) |
 | D3 | Community ghost/closed reports? | **Not for now** |
 | D4 | AI on the user's computer? | **Yes, linked locally** (loopback, no sign-in or key), **but deferred** with AI fit |
-| D5 | Paid/keyed APIs? | **Users: none. Builder: free-tier LLM API with the maintainer's key** for filter fields (P3-1) |
+| D5 | Paid/keyed APIs? | **None.** Users never need one; the builder uses a free open model on its own machine (D8) |
 | D6 | Hosting? | **A website on GitHub Pages; users download nothing** (P1, built). The local app is frozen. |
-| D8 | LLM in the builder? | **Claude Haiku with the maintainer's key, capped at $10/month** (owner, on `main`), for fields the rules couldn't settle |
+| D8 | LLM in the builder? | **A free open model on the build machine** (owner, 2026-11-09; was Claude Haiku with the maintainer's key), for fields the rules couldn't settle |
 | D7 | Priority? | **A functional, effective aggregator first; AI fit later** |
 | — | Update frequency | **As close to constant as polite crawling allows** (P2-1) |
 

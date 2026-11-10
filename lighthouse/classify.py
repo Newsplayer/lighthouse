@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-DERIVE_VERSION = "d2"   # bump when these rules change, so every row is re-labelled once
+DERIVE_VERSION = "d3"   # bump when these rules change, so every row is re-labelled once
 
 # ------------------------------------------------------------------ job function
 # Checked in order; the first match wins ("Machine Learning Engineer" is ML, not Software).
@@ -125,17 +125,25 @@ _SEN = [(lvl, re.compile(p, re.I)) for lvl, p in (
 )]
 
 
+def _by_years(yoe: int) -> str:
+    return "entry" if yoe <= 1 else "mid" if yoe <= 4 else "senior" if yoe <= 7 else "lead"
+
+
 def seniority(title: str, yoe: int | None = None, yoe_source: str | None = None) -> str | None:
+    """The level from the title; from the stated minimum years when the title doesn't say. A title that
+    reads entry level ("Associate", "Analyst I", "Entry Level ...") but asks for 3+ years isn't entry
+    level: the stated years win (an "Associate" in banking or consulting is often 3-5 years in)."""
     t = title or ""
+    stated = yoe if yoe is not None and yoe_source == "stated" else None
     for lvl, pat in _SEN:
         if pat.search(t):
             if lvl == "manager" and re.search(r"\b(account|product|project|program|case|property|territory)\s+manager\b",
                                                t, re.I) and not re.search(r"\b(senior|sr|lead)\b", t, re.I):
                 return "mid"   # "Account Manager" is an individual role, not people management
+            if lvl == "entry" and stated is not None and stated >= 3:
+                return _by_years(stated)
             return lvl
-    if yoe is not None and yoe_source == "stated":
-        return "entry" if yoe <= 1 else "mid" if yoe <= 4 else "senior" if yoe <= 7 else "lead"
-    return None
+    return _by_years(stated) if stated is not None else None
 
 
 # ------------------------------------------------------------------ employment type

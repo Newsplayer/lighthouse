@@ -74,17 +74,24 @@ def _index(args) -> None:
             raise SystemExit("usage: python -m lighthouse index seed base.db.xz [--db data/builder.db]")
         print(f"Seeded {snapshot.seed_builder(args.file, args.db or snapshot.BUILDER_DB)} postings.")
         return
+    def num(v):   # the workflow passes repository variables, which may be empty
+        try:
+            return float(v) if v not in (None, "") else None
+        except ValueError:
+            raise SystemExit(f"not a number: {v!r}")
+    if args.action == "fill":   # builder: the open-model gap fill alone, on the builder database
+        from . import db
+        conn = db.connect(args.db or snapshot.BUILDER_DB)
+        try:
+            print(json.dumps(snapshot.fill_gaps(conn, cfg, num(args.minutes)), indent=2))
+        finally:
+            conn.close()
+        return
     if args.action == "build":
-        def num(v):   # the workflow passes repository variables, which may be empty
-            try:
-                return float(v) if v not in (None, "") else None
-            except ValueError:
-                raise SystemExit(f"not a number: {v!r}")
         m = snapshot.build(args.out, countries=args.countries.split(",") if args.countries else (),
                            db_path=args.db or snapshot.BUILDER_DB, detail_calls=args.detail_calls,
                            published=args.published, full=args.full, llm=not args.no_llm,
-                           llm_cap_usd=num(args.llm_cap), llm_wait_minutes=num(args.llm_wait),
-                           fetch_minutes=num(args.fetch_minutes))
+                           llm_minutes=num(args.llm_minutes), fetch_minutes=num(args.fetch_minutes))
         print(json.dumps(m, indent=2))
         return
     if args.action == "csv":
@@ -165,7 +172,8 @@ def main() -> None:
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     p = sub.add_parser("index", help="the shared job index")
-    p.add_argument("action", choices=["status", "import", "build", "seed", "csv"])
+    p.add_argument("action", choices=["status", "import", "build", "seed", "csv", "fill"])
+    p.add_argument("--minutes", default=None, help="fill: minutes the open model reads (default from config)")
     p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
     p.add_argument("--out", default="dist", help="build: output folder")
     p.add_argument("--db", default=None, help="build: builder database (default data/builder.db)")
@@ -174,9 +182,10 @@ def main() -> None:
                    help="build: description calls per SmartRecruiters/Workday board per run")
     p.add_argument("--published", default=None, help="build: the manifest.json currently published")
     p.add_argument("--full", action="store_true", help="build: write a new base file even if a delta would do")
-    p.add_argument("--no-llm", action="store_true", help="build: rules only, even if ANTHROPIC_API_KEY is set")
-    p.add_argument("--llm-cap", default=None, help="build: monthly USD cap for Claude gap fills (default from config)")
-    p.add_argument("--llm-wait", default=None, help="build: minutes to wait for the Claude batch (default from config)")
+    p.add_argument("--no-llm", action="store_true",
+                   help="build: rules only (no open-model gap fill, no category guesses)")
+    p.add_argument("--llm-minutes", default=None,
+                   help="build: minutes the open model reads unsettled postings (default from config, 20)")
     p.add_argument("--fetch-minutes", default=None,
                    help="build: start no new board or description call after this many minutes (default 40)")
     p = sub.add_parser("site", help="write the website (static files for GitHub Pages) from the builder database")

@@ -123,7 +123,7 @@ Every build also publishes **`jobs.csv.gz`** on the repo's `job-index` release: 
 job_function, years_experience, years_experience_source, degree, visa_sponsorship, clearance,
 us_citizens_only, pay_min_per_year, pay_max_per_year, pay_currency, pay_stated_per, skills, benefits,
 travel, languages_required, departments, posted_on, first_seen_on, times_listed, reposts, ghost_score,
-ghost_signals, has_description, filled_by_claude, url, ats, board`
+ghost_signals, has_description, filled_by_ai, url, ats, board`
 
 Empty means the posting doesn't say. Pay is per year (hourly × 2080; `pay_stated_per` says how the
 posting gave it). Open it in a spreadsheet or pandas. The same table is the `postings` view inside
@@ -254,7 +254,7 @@ is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.m
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
 | Field extraction; function, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
-| Claude gap fill in the build (postings the rules couldn't settle) | `lighthouse/llm_fill.py` |
+| Gap fill in the build: a free open model reads what the rules couldn't settle; categories from similar titles | `lighthouse/llm_fill.py`, `lighthouse/local_llm.py`, `lighthouse/categorize.py`, `scripts/get_llm.sh` |
 | Profile, eligibility, redaction | `lighthouse/profile.py` |
 | Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
 | Sponsorship data | `lighthouse/sponsors.py` |

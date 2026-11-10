@@ -25,13 +25,16 @@ goal, the prioritized work, and the decisions waiting on the owner.
   - Optional extras need no sign-in: a local AI app reached on `127.0.0.1` only (Ollama, LM
     Studio, llama.cpp), Chrome's built-in model, or the user's own Claude (API key or Claude app
     via MCP).
-  - **The builder may use an LLM API with the maintainer's key**, stored as a repo secret, to fill
-    filter fields. Today that's Claude Haiku via `llm_fill.py`, capped monthly; a free tier such as
-    Gemini would also fit.
-    - It sends only public posting text.
-    - It's skipped when no key is set, and stops when the quota runs out.
+  - **The builder fills filter fields with a free, open model on the build machine** (no key, no
+    account): llama.cpp + Qwen3.5 2B via `llm_fill.py`, and job categories from similar titles via
+    `categorize.py` (model2vec), in the workflow's *fill* job after publishing. Both are fetched by
+    `scripts/get_llm.sh` (pinned versions; measure a new model with `scripts/eval_fill.py` first).
+    - Only the sentences around an unsettled field are shown, and an answer is kept only when its
+      quote is really in the text.
+    - It's skipped when the model isn't there, and is time-boxed per build.
     - The build must always succeed on rules alone.
-  - GitHub Models was shut down on 2026-07-30. Options are in `docs/ROADMAP.md` §5.
+  - GitHub Models was shut down on 2026-07-30, and the owner moved off the Claude API key on
+    2026-11-09. Other options are in `docs/ROADMAP.md` §5.
 - **Personal data never leaves the user's machine.**
   - Published files (index and website) are built by whitelist (`snapshot.py` export, `site.py`),
     and a test checks it. Never add a table or column to them without checking it's
@@ -66,7 +69,9 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Location → city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild the table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/places.tsv.gz` |
 | Ghost score | `lighthouse/ghost.py` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
-| Claude fit / MCP server | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
+| Builder gap fill: open model on the build machine / its server / job categories from similar titles | `lighthouse/llm_fill.py` / `lighthouse/local_llm.py` / `lighthouse/categorize.py` |
+| Getting the models (pinned) / measuring them on real data | `scripts/get_llm.sh` / `scripts/eval_fill.py` |
+| Claude fit / MCP server (the local app; the user's own key or Claude app) | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
 | Workflows: builder, page-only deploy, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `network-probe.yml`, `tidy-branches.yml` |
@@ -87,7 +92,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (138 pass) before every commit. No CI runs them yet
+- **Tests:** run `python -m pytest -q` (144 pass) before every commit. No CI runs them yet
   (ROADMAP P0-4).
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
   - Filters, eligibility and search words must give exactly the same results as the Python code.

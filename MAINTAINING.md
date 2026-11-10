@@ -76,30 +76,34 @@ To change the scope, add a repository variable under **Settings → Secrets and 
 Actions → Variables**: `LIGHTHOUSE_COUNTRIES` = e.g. `US` or `US,CA,MX,GB`. Users can narrow
 further with their Profile countries, but they can't get countries the index left out.
 
-### 5b. Optional: let Claude read what the rules can't
+### 5b. The open model that reads what the rules can't (nothing to set up)
 
 The free rules read every filter field. When a posting clearly talks about one of them but no rule can
-read the answer (sponsorship in unusual wording, years written oddly, a title no rule recognises), the
-build can ask Claude about that posting. Claude only fills that gap, never overrides a rule answer, and
-reads each description at most once. Without a key, the build simply stays rules-only.
+read the answer (sponsorship in unusual wording, years written oddly, a pay band we can't parse), a free,
+open model reads that posting on the build machine itself. There's no key, account or cost.
 
-1. Create an API key at [platform.claude.com](https://platform.claude.com/), and set a monthly spend limit
-   on its workspace there as a backstop. API use is billed per token to that account; a Claude Pro or
-   Max subscription doesn't cover it, and a GitHub Action can't use one.
-   To store it without pasting it anywhere else: `gh secret set ANTHROPIC_API_KEY` (it asks for the value).
-2. **Settings → Secrets and variables → Actions → Secrets → New repository secret:** `ANTHROPIC_API_KEY`.
-   Secrets are only given to workflow runs on this repo (never to pull requests from forks; this
-   workflow doesn't run on pull requests at all).
-3. Optional, **Variables:** `LIGHTHOUSE_LLM_CAP_USD` = the most to spend per calendar month (default `10`).
-
-**What it costs:** Claude Haiku 5.5 through the Batch API (half price). The build estimates about
-$0.0005 per description it sends (deliberately on the high side) and stops sending once the month's
-spend plus open batches would pass the cap. Measured on the Anthropic and Stripe boards, about 1
-description in 7 needs Claude. A 50,000-posting index therefore costs roughly $3–4 to fill once.
-After that it depends on how many new descriptions arrive: 3,000 a day comes to about $6 a month.
-Each build waits up to 5 minutes for its batch (`[index] llm_wait_minutes`), so a build stays near an
-hour. Anything still running is collected by the next build and ships with it. The manifest's `llm` entry shows the month's spend and how many
-descriptions are still waiting.
+- **What runs:** llama.cpp's server with Qwen3.5 2B (Apache-2.0), on the runner's CPU, in the *fill*
+  job after the index and the site are published, so it never delays new postings. What it fills goes
+  out with the next build. It's asked only about the unsettled fields, and shown only the sentences
+  around them (about a tenth of the posting).
+  An answer is kept only when the model quotes the words it read and the quote is really in the text;
+  numbers must appear in their quote. It fills empty fields only, never overrides a rule answer, and
+  reads each description at most once. Filled fields are marked `"by": "model"`.
+- **Job categories:** a title no rule recognises takes the category of the most similar titles the
+  rules did place, from a small embedding model (model2vec). If those titles don't clearly agree, the
+  category stays unknown. These are marked `"by": "titles"`.
+- **How long:** 60 minutes per build, newest postings first. That's 700–1,500 postings an hour,
+  depending on the machine GitHub assigns, so about 2,800–6,000 a day, against the 2,500 or so new
+  ones a day that need it. To change it, add a repository variable `LIGHTHOUSE_LLM_MINUTES`.
+- **Setup:** none. The first *fill* job runs `scripts/get_llm.sh`, which builds llama.cpp and downloads
+  the two models (1.3 GB; about 10 minutes). They're kept in the Actions cache, so later runs start at
+  once. If the *fill* job fails, nothing is lost: the next build starts from the build job's database,
+  and the rule answers stand.
+- **Changing the model:** edit the pins in `scripts/get_llm.sh` (the cache key follows the file).
+  First compare models with `scripts/eval_fill.py` through the network probe (see "Trying something
+  against real careers sites" below).
+- **Progress:** the manifest's `llm` entry shows how many descriptions the model has read, and how
+  many are still waiting.
 
 ### 6. Turn on Issues (for board suggestions)
 
@@ -262,7 +266,7 @@ Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthous
 - **You changed the field-extraction rules (`RULES_VERSION` in `workers.py`) or the filter labels
   (`DERIVE_VERSION` in `classify.py`):** the next build re-reads every description once (not just the
   boards that changed) and writes a fresh full file by itself (the manifest's rules version no longer
-  matches). Claude's earlier gap fills are kept, not paid for again.
+  matches). Earlier gap fills (the open model's, or Claude's from before 2026-11-09) are kept, not read again.
 - **0.8.0** (schema v7, builder only): two misses to close a posting on paged listings, a role's
   places on its canonical row only, one description per role in the published index, a 40-minute
   fetch limit, and the `postings` view plus `jobs.csv.gz`. The first build after the upgrade
@@ -311,13 +315,13 @@ once a week, or when the changes add up to half the base.
      deleted once no other listing in its cluster is open, or after a year regardless. Each deletion
      leaves a tombstone that the next delta carries, so readers delete it too. Postings you marked
      yourself (local mode) are never deleted.
-   - **Claude gap fill** (only with the `ANTHROPIC_API_KEY` secret, step 5b). The rules record, per
-     description, which fields the posting talks about but they couldn't settle. Newest open,
-     de-duplicated, non-ghost postings with such gaps go out in one Message Batch, within the monthly
-     cap. Results are merged into the extraction for the empty fields only, marked `"by": "claude"`. If
-     this step fails for any reason, the build publishes the rule answers. The month's spend is written
-     to the manifest and carried over if the cache is lost; descriptions Claude already read are
-     recovered from the published base when seeding.
+   - **Open-model gap fill** (step 5b; the *fill* job, after publishing). First, titles the rules
+     couldn't place get a category from the most similar placed titles. Then the rules' list of gaps
+     (per description, the fields it talks about that they couldn't settle) goes to the open model,
+     newest open, de-duplicated, non-ghost postings first, for 60 minutes. Grounded answers are merged
+     into the extraction for the empty fields only, marked `"by": "model"`, and the builder database is
+     saved again; the next build publishes them. If the job fails, the rule answers stand. Descriptions
+     already read are recovered from the published base when seeding.
 3. **Export.** Each posting has a fingerprint of everything readers get (and separate ones for its
    search text and its description). Changed fingerprints are stamped with the build time, and:
    - **new base** (first build, weekly, `full`, a new rules version, changes > half the base, or 40 deltas):
@@ -379,8 +383,9 @@ once a week, or when the changes add up to half the base.
 | Many Workday boards fail with "Pushed back" | Workday's bot protection answered with block pages; that data center was left alone for the run and goes first next time. If it lasts for days, lower `SHARED_LIMITS` in `net.py` or raise `WORKDAY_REFRESH_HOURS` in `snapshot.py`. Don't work around it |
 | The log says "time limit (40 min) reached: N boards not started" | normal on a first build or after a block; they go first next run |
 | Many boards fail with HTTP 429 | lower `per_host_requests_per_second` in `config/sources.toml` |
-| Manifest's `llm` entry stays at 0 descriptions | the `ANTHROPIC_API_KEY` secret is missing or misspelled; the *Build* log says `gap fill: ... skipped` |
-| `llm.pending` keeps growing | the monthly cap is reached (raise `LIGHTHOUSE_LLM_CAP_USD`) or batches take longer than the wait; they're collected next build |
+| Manifest's `llm` entry stays at 0 descriptions | the *fill* job failed: its *Get the open model* step says why (a download or the llama.cpp build). It's retried next build |
+| `llm.waiting` keeps growing | more new postings than the reading time covers; raise `LIGHTHOUSE_LLM_MINUTES` (the *fill* job gets longer; publishing doesn't) |
+| *deploy-site* fails with "Timeout reached" | GitHub was slow copying the files; it waits up to 30 minutes now, and the next build deploys anyway |
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |
 | *deploy-site* fails with "Not Found" / Pages not enabled | Settings → Pages → Source: GitHub Actions (step 8b) |

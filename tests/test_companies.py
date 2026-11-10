@@ -102,6 +102,22 @@ def test_classifiers():
     assert classify.seniority("Account Manager") == "mid" and classify.seniority("Engineering Manager") == "manager"
     assert classify.seniority("Vice President, Finance") == "executive"
     assert classify.seniority("Data Analyst", 6, "stated") == "senior" and classify.seniority("Data Analyst") is None
+    # A title that reads entry level but asks for 3+ years isn't entry level (reported: "entry-level", 4+ years)
+    assert classify.seniority("Entry Level Analyst", 4, "stated") == "mid"
+    assert classify.seniority("Associate", 5, "stated") == "senior"
+    assert classify.seniority("Analyst I", 2, "stated") == "entry"          # 0-2 years is still entry level
+    assert classify.seniority("Associate", 5, "title") == "entry"           # only stated years count
+    assert classify.seniority("Summer Intern", 4, "stated") == "intern"
+
+
+def test_workplace_from_the_title_only_when_it_is_a_tag():
+    from lighthouse import extract
+    wp = lambda title, loc="": extract.rules("We build things.", title, loc)["workplace"]["value"]
+    assert wp("Senior Engineer (Remote)") == "remote" and wp("Software Engineer - Remote") == "remote"
+    assert wp("Remote - Customer Success Manager") == "remote" and wp("Data Engineer | Hybrid") == "hybrid"
+    assert wp("Analyst", "Remote - US") == "remote" and wp("Analyst", "Hybrid - Chicago, IL") == "hybrid"
+    assert wp("Remote Sensing Scientist") is None and wp("Remote Monitoring Technician") is None
+    assert wp("Hybrid Cloud Architect") is None
     assert classify.employment_type("FULL_TIME") == "full_time"
     assert classify.employment_type(None, "Summer Intern 2026") == "internship"
     assert classify.employment_type(None, "Regular Analyst") is None
@@ -206,3 +222,14 @@ def test_existing_reader_database_is_converted(tmp_path):
     snapshot.cleanup(conn)
     assert (data / "lighthouse.db").exists()
     conn.close()
+
+
+def test_an_age_is_not_years_of_experience():
+    from lighthouse import extract
+    yoe = lambda t: extract.rules(t)["yoe_min"]["value"]
+    assert yoe("- Must be at least 18\n\n- 1 year of retail or consumer service experience") == 1
+    assert yoe("Must be 18+ years of age. 2 years of experience in sanitation.") == 2
+    assert yoe("Must be at least 18 years old.") is None
+    assert yoe("Applicants must be 21 years of age or older with 3 years driving experience") == 3
+    assert yoe("Minimum of 18 years of experience in sales") == 18
+    assert yoe("5+ years of relevant experience") == 5 and yoe("at least 3 years in a similar role") == 3
