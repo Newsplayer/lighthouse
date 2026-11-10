@@ -41,12 +41,14 @@ _NUMWORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "se
              "ten": 10, "eleven": 11, "twelve": 12, "fifteen": 15, "a": 1}
 _N = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen)"
 # "5+ years of (relevant, hands-on...) experience", "4+ years’ experience", "3-5 yrs of industry experience"
-_YOE = re.compile(_N + r"(?:\s*\(\d{1,2}\+?\))?\s*(?:\+|plus)?\s*(?:(?:-|–|to)\s*\d{1,2}\s*\+?\s*)?"
+_YOE = re.compile(_N + r"(?:[ \t]*\(\d{1,2}\+?\))?[ \t]*(?:\+|plus)?[ \t]*(?:(?:-|–|to)[ \t]*\d{1,2}[ \t]*\+?[ \t]*)?"
                   r"(?:(?:total|full|professional|relevant|combined|overall)\s+)?(?:years?|yrs?)\b['’]?(?:\s+of)?"
                   r"(?:\s+[\w/&,.'’()+-]+){0,8}?\s+(?:experience|exp\b|work(?:ing)?\b|industry|background)", re.I)
 # "minimum 2-5 years", "at least one year", "minimum of 3 years"
-_YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)\s+(?:of\s+)?" + _N +
-                      r"(?:\s*(?:-|–|to)\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?)\b", re.I)
+_YOE_MIN = re.compile(r"\b(?:minimum|at least|min\.?)[ \t]+(?:of[ \t]+)?" + _N +
+                      r"(?:[ \t]*(?:-|–|to)[ \t]*\d{1,2})?[ \t]*\+?[ \t]*(?:years?|yrs?)\b", re.I)
+# "must be 18 years of age", "21+ years old", "18 years or older": an age, not experience
+_AGE = re.compile(r"\b\d{2}[ \t]*\+?[ \t]*(?:years?|yrs?)[ \t]*(?:of[ \t]+age|old\b|or[ \t]+older|and[ \t]+older)", re.I)
 _HEADING_PREF = re.compile(r"\b(preferred|nice to have|nice-to-have|bonus|plus|desired|ideally)\b", re.I)
 _CLEARANCE = [
     ("ts_sci", re.compile(r"\bTS\s*/\s*SCI\b|top secret\s*/\s*sci", re.I)),
@@ -226,8 +228,9 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
     best, pref = None, None   # required wins; a preferred-only number is kept, labelled
     if "year" in low or "yr" in low:
         yspans = _spans(text, low, ("year", "yr"), 60, 170)
+        ytext = _AGE.sub(lambda a: " " * len(a.group(0)), text) if "age" in low or "old" in low else text
         for pat in (_YOE, _YOE_MIN):
-            for mm in _iter(pat, text, yspans):
+            for mm in _iter(pat, ytext, yspans):
                 n = _NUMWORDS.get(mm.group(1).lower()) or (int(mm.group(1)) if mm.group(1).isdigit() else 0)
                 if not 0 < n <= 20:
                     continue

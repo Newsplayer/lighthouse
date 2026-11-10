@@ -222,3 +222,14 @@ def test_existing_reader_database_is_converted(tmp_path):
     snapshot.cleanup(conn)
     assert (data / "lighthouse.db").exists()
     conn.close()
+
+
+def test_an_age_is_not_years_of_experience():
+    from lighthouse import extract
+    yoe = lambda t: extract.rules(t)["yoe_min"]["value"]
+    assert yoe("- Must be at least 18\n\n- 1 year of retail or consumer service experience") == 1
+    assert yoe("Must be 18+ years of age. 2 years of experience in sanitation.") == 2
+    assert yoe("Must be at least 18 years old.") is None
+    assert yoe("Applicants must be 21 years of age or older with 3 years driving experience") == 3
+    assert yoe("Minimum of 18 years of experience in sales") == 18
+    assert yoe("5+ years of relevant experience") == 5 and yoe("at least 3 years in a similar role") == 3
