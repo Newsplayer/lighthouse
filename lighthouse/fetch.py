@@ -200,6 +200,7 @@ def _run(config_path, db_path, only, use_snapshot=True, overrides=None):
     if late:
         log.info("time limit (%g min) reached: %d boards not started, first in line next run", s.fetch_minutes, late)
     log.info("fetched for %.1f min", (time.monotonic() - started) / 60)
+    touched |= db.close_expired(conn)   # pages not re-read this run whose closing date has passed
     # After an upgrade (new rules, filter fields or schema), every company is reprocessed once, not just the
     # ones whose boards changed this run, so the next index carries the new fields everywhere.
     postprocess(conn, cfg, None if db.get_meta(conn, "processed_versions") != processed_versions() else touched)

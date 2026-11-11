@@ -370,6 +370,13 @@ def _migrate_6_to_7(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE jobs SET cluster_id = NULL")
 
 
+def _migrate_7_to_8(conn: sqlite3.Connection) -> None:
+    """A posting's own closing date (builder only: readers just see the posting close)."""
+    if "expires_at" not in {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}:
+        conn.execute("ALTER TABLE jobs ADD COLUMN expires_at TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_expires ON jobs(expires_at) WHERE expires_at IS NOT NULL AND active = 1")
+
+
 MIGRATIONS = [
     lambda c: c.executescript(V1),  # 0 -> 1
     _migrate_1_to_2,                # 1 -> 2
@@ -378,6 +385,7 @@ MIGRATIONS = [
     _migrate_4_to_5,                # 4 -> 5
     _migrate_5_to_6,                # 5 -> 6
     _migrate_6_to_7,                # 6 -> 7
+    _migrate_7_to_8,                # 7 -> 8
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 
@@ -707,8 +715,8 @@ def create_empty_index(path: Path) -> None:
 
 
 # Job columns that never go into a published index: personal (eligibility is computed per reader),
-# or builder-only (near-duplicate signatures).
-INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of", "missed"}
+# or builder-only (near-duplicate signatures, closing bookkeeping).
+INDEX_EXCLUDED_COLUMNS = {"elig", "elig_reasons", "elig_version", "minhash", "minhash_of", "missed", "expires_at"}
 
 INDEX_TABLES = """
 CREATE TABLE IF NOT EXISTS job_content (uid TEXT PRIMARY KEY, html TEXT NOT NULL);
@@ -942,6 +950,28 @@ def board_result(conn, ats: str, slug: str, *, error: str | None = None, count: 
     return disabled
 
 
+def _close(conn, uids, now: str) -> set[str]:
+    """Mark postings closed, with a 'closed' event each. Returns their companies (to re-cluster)."""
+    uids = list(uids)
+    keys = set()
+    for i in range(0, len(uids), 500):
+        part = uids[i:i + 500]
+        keys |= {r[0] for r in conn.execute(
+            f"SELECT DISTINCT company_key FROM jobs WHERE uid IN ({','.join('?' * len(part))})", part)}
+    conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in uids])
+    conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?, 'closed', ?)", [(u, now) for u in uids])
+    return keys
+
+
+def close_expired(conn) -> set[str]:
+    """Close open postings whose own closing date has passed (a careers site's page can stay up, and in
+    its sitemap, long after). Returns their companies (to re-cluster)."""
+    now = utcnow()
+    with conn:
+        return _close(conn, [r[0] for r in conn.execute(
+            "SELECT uid FROM jobs WHERE active=1 AND expires_at IS NOT NULL AND expires_at <= ?", (now,))], now)
+
+
 def board_unchanged(conn, ats: str, slug: str) -> set[str]:
     """Board answered with exactly the same bytes as last run: mark it seen. Postings that run had
     already left out (held closures) are still left out, so they close now. Returns the companies
@@ -949,12 +979,7 @@ def board_unchanged(conn, ats: str, slug: str) -> set[str]:
     now = utcnow()
     gone = [r[0] for r in conn.execute("SELECT uid FROM jobs WHERE source=? AND source_board=? AND active=1 "
                                        "AND missed >= 1", (ats, slug))]
-    touched = set()
-    if gone:
-        touched = {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE source=? AND "
-                                              "source_board=? AND active=1 AND missed >= 1", (ats, slug))}
-        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
-        conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?, 'closed', ?)", [(u, now) for u in gone])
+    touched = _close(conn, gone, now)
     conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1", (now, ats, slug))
     conn.execute("UPDATE boards SET last_fetch=?, last_ok=?, last_error=NULL, fail_count=0, held_closures=0 "
                  "WHERE ats=? AND slug=?", (now, now, ats, slug))
@@ -986,6 +1011,8 @@ def _row_sig(j: Job, chash: str, marker: str) -> str:
     parts = (j.fingerprint, j.title, j.company, j.location, j.url, chash, json.dumps(j.departments), iso(j.posted_at),
              iso(j.updated_at), j.workplace, j.employment_type, j.salary_min, j.salary_max, j.salary_currency,
              j.salary_interval, json.dumps(j.locations), marker)
+    if j.expires_at:
+        parts += (iso(j.expires_at),)
     return hashlib.blake2b(repr(parts).encode(), digest_size=12).hexdigest()
 
 
@@ -1004,6 +1031,7 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
     untouched. If a board that had 20+ open postings suddenly lists fewer than half of them, that
     is far more often an API hiccup than mass closure: the closures are held (the postings stay open)
     and only carried out if the next successful fetch agrees.
+    A posting whose own closing date (expires_at) has passed is closed now, however the board lists it.
     An empty content_html never overwrites a stored copy (sources that need a detail
     call per posting only fetch new/changed ones).
     Rows whose fields are identical to last time (row_sig) are not rewritten; one UPDATE at
@@ -1019,11 +1047,14 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
         "WHERE source=? AND source_board=?", (source, board))}
     held_before = conn.execute("SELECT held_closures FROM boards WHERE ats=? AND slug=?", (source, board)).fetchone()
     fts = has_fts(conn)
-    seen, changed, touched = set(), set(), set()
+    seen, changed, touched, expired = set(), set(), set(), set()
     events = []
     with conn:
         for j in jobs:
-            if j.uid in seen:
+            if j.uid in seen or j.uid in expired:
+                continue
+            if j.expires_at and iso(j.expires_at) <= now:
+                expired.add(j.uid)
                 continue
             seen.add(j.uid)
             old = existing.get(j.uid)
@@ -1049,8 +1080,8 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                        company_key, location, url, content_hash, departments, posted_at,
                        updated_at, first_seen, last_seen, active, ghost_reasons, detail_marker, workplace,
                        employment_type, salary_min, salary_max, salary_currency, salary_interval, locations,
-                       effective_first_seen, cluster_id, row_sig)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'[]',?,?,?,?,?,?,?,?,?,?,?)
+                       effective_first_seen, cluster_id, row_sig, expires_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,'[]',?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(uid) DO UPDATE SET
                        fingerprint=CASE WHEN ? THEN jobs.fingerprint ELSE excluded.fingerprint END,
                        title=excluded.title, company=excluded.company, company_key=excluded.company_key,
@@ -1066,13 +1097,14 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                        salary_min=excluded.salary_min, salary_max=excluded.salary_max,
                        salary_currency=excluded.salary_currency, salary_interval=excluded.salary_interval,
                        locations=CASE WHEN ? THEN jobs.locations ELSE excluded.locations END,
+                       expires_at=CASE WHEN ? THEN jobs.expires_at ELSE excluded.expires_at END,
                        row_sig=excluded.row_sig, missed=0""",
                 (j.uid, j.fingerprint, j.source, j.source_board, j.external_id, j.title, j.company,
                  company_key(j.company), j.location, j.url, chash,
                  json.dumps(j.departments), iso(j.posted_at), iso(j.updated_at), now, now,
                  marker, j.workplace, j.employment_type, j.salary_min, j.salary_max,
                  j.salary_currency, j.salary_interval, json.dumps(j.locations or ([j.location] if j.location else [])),
-                 now, j.uid, sig, *([int(j.partial and old is not None)] * 5)))
+                 now, j.uid, sig, iso(j.expires_at), *([int(j.partial and old is not None)] * 6)))
             if j.content_html and (old is None or old["content_hash"] != chash or not old["active"] or fill):
                 conn.execute("INSERT INTO job_content(uid, html) VALUES (?, ?) "
                              "ON CONFLICT(uid) DO UPDATE SET html=excluded.html", (j.uid, pack(j.content_html)))
@@ -1085,7 +1117,8 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
                 touched.add(company_key(j.company))
                 if fts and j.content_html:
                     _fts_put(conn, j.uid, j.title, j.company, j.location, j.content_html)
-        unseen = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive]
+        unseen = [u for u, r in existing.items() if r["active"] and u not in seen and u not in keep_alive
+                  and u not in expired]
         was_open = sum(1 for r in existing.values() if r["active"])
         held = 0
         need = max(1, close_after)
@@ -1097,16 +1130,13 @@ def upsert_board(conn: sqlite3.Connection, source: str, board: str, jobs: list[J
         gone = [u for u in unseen if (existing[u]["missed"] or 0) + 1 >= need]
         closing = set(gone)
         missed = [u for u in unseen if u not in closing]
+        gone += [u for u in expired if u in existing and existing[u]["active"]]
         conn.executemany("UPDATE jobs SET missed=missed + 1 WHERE uid=?", [(u,) for u in missed])
         # last_seen: what the board listed this time (postings it left out keep theirs)
         conn.execute("UPDATE jobs SET last_seen=? WHERE source=? AND source_board=? AND active=1 AND missed=0",
                      (now, source, board))
-        conn.executemany("UPDATE jobs SET active=0, closed_at=?, missed=0 WHERE uid=?", [(now, u) for u in gone])
-        events += [(u, "closed", now) for u in gone]
         conn.executemany("INSERT INTO events(uid, kind, at) VALUES (?,?,?)", events)
-        if gone:
-            touched |= {r[0] for r in conn.execute(
-                f"SELECT DISTINCT company_key FROM jobs WHERE uid IN ({','.join('?' * len(gone))})", gone)}
+        touched |= _close(conn, gone, now)
     new = sum(1 for e in events if e[1] == "new")
     return {"new": new, "updated": len(changed) - new, "unchanged": len(seen) - len(changed),
             "closed": len(gone), "missed": len(missed), "held": held, "changed": changed, "touched": touched}

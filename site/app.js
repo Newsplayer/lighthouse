@@ -754,12 +754,19 @@ async function openSources() {
   filter.addEventListener("input", draw);
   which.addEventListener("change", draw);
   draw();
-  d.replaceChildren(
+  // How the last build went (written by the builder; absent on an older build's files).
+  const h = src.health || {}, hp = h.postings, hb = h.boards || {};
+  const health = hp && el("details", { class: "health" },
+    el("summary", { text: `Last update: ${fmt(hp.new || 0)} new postings, ${fmt(hp.closed || 0)} closed. Descriptions read for ${h.with_description_pct}% of postings.` }),
+    el("p", { class: "meta", text: `${fmt((hb.read || 0) + (hb.unchanged || 0))} job boards answered, ${fmt(hb.failed || 0)} didn't${hb.waiting ? `, ${fmt(hb.waiting)} wait for the next update` : ""}. ${h.ghost_pct}% of roles are flagged as likely ghost jobs.` }),
+    el("ul", { class: "meta" }, Object.entries(h.systems || {}).map(([name, s]) =>
+      el("li", { text: `${name}: ${fmt(s.postings)} open postings, descriptions read for ${s.with_description_pct}%` }))));
+  d.replaceChildren(...[
     el("form", { method: "dialog", class: "close" }, el("button", { type: "submit", "aria-label": "Close", text: "×" })),
     el("h2", { text: "Where the jobs come from" }),
     el("p", { text: `Postings are read straight from employers' own careers sites: ${covered} of ${src.companies.length} companies in the large-employer list are covered, plus ${src.boards.length.toLocaleString("en-US")} job boards in all. Roles are checked every few hours; duplicates are merged and likely ghost jobs are flagged.` }),
-    el("div", { class: "row" }, filter, which), shown,
-    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "Status", "Open roles"].map((h) => el("th", { text: h })))), body));
+    health, el("div", { class: "row" }, filter, which), shown,
+    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "Status", "Open roles"].map((t) => el("th", { text: t })))), body)].filter(Boolean));
 }
 
 function alertBox(text) {

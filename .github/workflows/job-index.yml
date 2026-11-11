@@ -22,7 +22,8 @@ on:
     paths: ["config/**", "lighthouse/**", "requirements.txt"]
 
 permissions:
-  contents: write                   # publish the release; nothing else
+  contents: write                   # publish the release
+  issues: write                     # keep one issue listing the boards that stopped answering
 
 concurrency:
   group: job-index
@@ -101,17 +102,25 @@ jobs:
           while read -r id name; do
             case " $keep manifest.json jobs.csv.gz " in *" $name "*) ;; *) gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$id" && echo "removed $name" ;; esac
           done
-          python - <<'PY'
-          import json; m = json.load(open("dist/manifest.json"))
-          new = [f for f in [m["base"], *m["deltas"]] if f["built_at"] == m["built_at"]]
-          print(f"{m['jobs']} open roles ({m.get('postings')} postings) from {m['boards']} boards; "
-                + (f"new {new[0]['file']}: {new[0]['rows']} rows, {new[0]['bytes']/1e6:.1f} MB" if new else "nothing changed")
-                + f"; {len(m['deltas'])} deltas since the base")
-          print("Companies list coverage:", m.get("coverage"))
-          print("Deleted (closed long ago):", m.get("deleted_this_run"), "· Open-model gap fill so far:", m.get("llm"))
-          print("Filled for this % of open roles:", m.get("fill"))
-          print("jobs.csv.gz:", m.get("csv"))
-          PY
+          # How the build went: on the run's summary page and in the log.
+          python -m lighthouse index summary dist/manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # One issue lists the boards that haven't answered for two days or were switched off. It is
+      # updated in place, and closed when every board answers again. Never stops the build.
+      - name: Report boards that need a look
+        continue-on-error: true
+        run: |
+          repo="${{ github.repository }}"
+          title="Job boards that need a look"
+          python -m lighthouse index summary dist/manifest.json --boards > boards.md
+          n=$(gh api "repos/$repo/issues?state=open&creator=github-actions%5Bbot%5D&per_page=100" \
+                --jq "[.[] | select(.title == \"$title\") | .number][0] // empty")
+          if [ -s boards.md ] && [ -n "$(tr -d '[:space:]' < boards.md)" ]; then
+            if [ -n "$n" ]; then gh api -X PATCH "repos/$repo/issues/$n" -F body=@boards.md --silent
+            else gh api "repos/$repo/issues" -f title="$title" -F body=@boards.md --silent; fi
+          elif [ -n "$n" ]; then
+            gh api -X PATCH "repos/$repo/issues/$n" -f state=closed -f body="Every board answers again." --silent
+          fi
 
       # The website (GitHub Pages): static files written from the same builder database. A failure here
       # never stops the index or the cache below; the site just keeps its previous version until next run.

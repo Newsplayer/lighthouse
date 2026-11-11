@@ -76,7 +76,7 @@ class EightfoldSource(Source):
                     detail_marker=str(p.get("t_update") or p["id"]), partial=True)
             if self.wanted(j):
                 jobs.append(j)
-        todo = [j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)][: self.max_detail_calls]
+        todo = self.detail_todo([j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)])
         with ThreadPoolExecutor(max_workers=4) as pool:
             for job, d in zip(todo, pool.map(lambda j: self._detail(host, domain, j), todo)):
                 if d and d.get("job_description"):

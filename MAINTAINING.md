@@ -59,7 +59,8 @@ a database or anything personal: `git log --all --stat -- data` should list no `
 **Settings → Actions → General:**
 - **Actions permissions:** "Allow all actions and reusable workflows". The workflow uses only
   GitHub's own `checkout`, `setup-python` and `cache`.
-- **Workflow permissions:** leave the default. The workflow asks for `contents: write` itself. If the
+- **Workflow permissions:** leave the default. The workflow asks for `contents: write` (and
+  `issues: write`, for the one issue that lists broken boards) itself. If the
   *Publish* step later fails with `Resource not accessible by integration` (403), pick
   **Read and write permissions** here.
 - **Fork pull request workflows:** "Require approval for all outside collaborators". This workflow
@@ -192,6 +193,10 @@ published either way. Delete the branch when done.
   Browser for SQLite and browse the `postings` view (same columns), or query `jobs` directly.
 - **How complete it is:** the manifest's `fill` entry says, per filter, the share of open roles it's
   known for, and how many have a description. Many postings simply don't mention a field.
+- **How the last build went:** open the run on the **Actions** tab. Its summary page shows the build
+  time, postings new and closed, boards that failed, and the share of descriptions read for each
+  careers system. The same numbers are in the manifest's `health` entry, and the website shows a short
+  version under **Sources**. To print it yourself: `python -m lighthouse index summary dist/manifest.json`.
 
 ### Add a large employer by its careers page
 
@@ -259,6 +264,15 @@ build, and they disappear for users with the next update.
 A board that answers "not found" two runs in a row is switched off automatically. The build's
 `manifest.json` lists them under `switched_off`. Fix the slug in the CSV (that counts as a new board)
 or set `enabled` to `no`. To retry them all, run the workflow with **full** ticked.
+
+The build also keeps one issue, **Job boards that need a look**, listing boards that were switched off
+or haven't answered for two days. It is updated by every build and closed when all boards answer again.
+
+### Check that boards belong to their companies
+
+`python -m lighthouse discover --report` lists the boards in `config/` whose id doesn't look like the
+company's name or website. It needs no network. Most are renamed companies or parent brands; a board
+that belongs to someone else lists the wrong jobs under this name, so fix or remove it.
 
 ### Ship an app update
 

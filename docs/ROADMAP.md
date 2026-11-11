@@ -8,6 +8,11 @@ with what the goal requires.
 filters, page-only deploys and open-page catch-up). The website is live and rebuilt by every build.
 No other branches are kept.
 
+**Update (2026-11-11):** P0-2 (closing dates), the P2-2 ordering and per-system fill rate, P2-3 (build
+health) and P2-5 (board name check) are done. Next in order: the eval set (P0-3), a week of change
+rates (P0-5), hourly runs with a cheap check first (P2-1), and more careers systems (P2-4). Each of
+those needs real sites or hand labels, so they start with a network probe.
+
 **Direction (owner, 2026-11-07):** the top priority is a functional, effective job aggregator.
 - **Hosting:** Lighthouse becomes a **website hosted on GitHub Pages**, so users install and
   download nothing (P1).
@@ -202,7 +207,7 @@ Job boards change all day, so freshness is a core feature.
 | Backfill from bought feeds | Not used (paid) | Non-goal |
 | Normalize titles, locations, salary, job type | Pay per hour/year, function, seniority, employment type; locations to city, state/province, metro area and country (GeoNames, P1-4) | No standard occupation (P3-2), no radius (P3-4), no currency conversion for MXN/CAD (P3-6) |
 | De-duplicate across postings | ✓ Fingerprint + MinHash per company; all apply links kept | None |
-| Re-crawl; expire filled or removed jobs | ✓ Every 6 h; a posting missing from its feed closes | Faster cycle (P2-1); `validThrough` / end dates ignored (P0-2) |
+| Re-crawl; expire filled or removed jobs | ✓ Every 6 h; a posting missing from its feed closes | Faster cycle (P2-1). A careers-site page past its `validThrough` date closes (P0-2 ✓) |
 | **"Kill and fill": keep the last-known-good set if a feed comes back empty or partial** | ✗ A successful but shrunken feed closes every missing posting; they "reopen" next run, which pollutes the repost and ghost signals | **P0-1** |
 | Ghost / spam controls, audits | ✓ Multi-signal ghost score with reasons | No measurement (P0-3). User reports: not for now (§8) |
 | Keyword search + filters (date, type, industry, location, salary, experience) | ✓ All of those except industry and radius; on the website as one-click pills with counts (P1-4) | Richer filters (P3-1); radius, industry (P3-4, P3-5) |
@@ -213,8 +218,8 @@ Job boards change all day, so freshness is a core feature.
 | Check application links | Postings come from live feeds | Sitemap pages (P0-2) |
 | Copyright: avoid reproducing descriptions verbatim | ✗ Full descriptions are republished in a public release | Excerpts only (P1-2, decided) |
 | Privacy (GDPR/CCPA) | ✓ No server, no accounts, personal data local | Keep it that way |
-| Source changes break crawlers | Per-board failure counts, auto switch-off, 14-day re-discovery | Alerts and health metrics (P2-3) |
-| Metrics / KPIs | Coverage table on the Sources page | Build health in the manifest, Actions summary and the website (P2-3) |
+| Source changes break crawlers | Per-board failure counts, auto switch-off, 14-day re-discovery; one GitHub issue lists boards that stopped answering (P2-3 ✓) | None |
+| Metrics / KPIs | ✓ Build health in the manifest, the Actions summary and the website's Sources view (P2-3) | Daily change rate over a week (P0-5) |
 | SEO pages, accounts, monetization, Stripe | n/a (private local app) | Non-goal |
 
 ## 5. LLM and ML options (verified 2026-11-07)
@@ -273,11 +278,17 @@ means. Keep every change incremental and measured (§2 baselines).
    - Show "held: feed shrank" in the manifest.
    - Done: a test shows one bad fetch produces no closed or reopened events, and a confirmed drop
      closes on the second run.
-2. **Expiry from the posting itself.**
-   - Honour `validThrough` (JSON-LD, `sources/jsonld.py`) and end/expiry dates other readers
-     return, where present.
-   - Past dates are closed at build time.
-   - Done: tests per reader.
+2. **✓ Expiry from the posting itself (2026-11-11).**
+   - Careers-site pages (`sources/jsonld.py`) give their closing date (`validThrough`; a bare date
+     counts to the end of that day). It is kept with the posting (`jobs.expires_at`, builder only).
+   - A posting past its date is closed: when its page is read again, and at every build for pages
+     that aren't re-read (`db.close_expired`). It reopens only if the page later gives a new date.
+     A posting that arrives already past its date is never stored.
+   - **Not used for Workday and Oracle:** they give an end date only in the description call, which
+     is made once per posting, and their live listings already drop a posting when it ends. A stored
+     end date the employer later extends would wrongly close an open role.
+   - Not measured on real sites yet: how many sitemap pages carry a date, and how many of those keep
+     a stale one while the role is still open. Check with a probe after the first builds.
 3. **Eval set and accuracy tests.**
    - Hand-label ~300 postings sampled across systems: YOE required, visa sponsorship,
      citizenship, clearance, degree, workplace, pay, function, seniority. Store them as fixtures
@@ -412,16 +423,23 @@ means. Keep every change incremental and measured (§2 baselines).
      - median time from a posting going live to it being on the site ≤ 2 h, on a probe sample
      - requests per day to any one careers system no higher than today's 6-hourly full listings
 2. **Description fill rate** (the builder needs full text to analyse and index).
-   - Spend the 120-minute description budget (`FETCH_DETAIL_MINUTES`) on new postings first, then
-     professional functions.
-   - Report fill rate per system in the manifest.
-   - Done: ≥ 95% within a week of a new base.
-3. **Build health.** Add to `latest.json` / `manifest.json` and the Actions job summary:
-   - coverage %, fill rate, postings new, closed and held, ghost rate
-   - boards failing or switched off, build minutes, file sizes
-
-   Show it on the site's Sources view, and open (or update) one GitHub issue listing boards that
-   broke.
+   - **✓ Order (2026-11-11):** each board's description calls for a run go to postings never seen
+     before, then titles with a known job category, newest first (`Source.detail_todo`, used by
+     Workday, Oracle, SmartRecruiters, Phenom and Eightfold; careers-site pages never read go first).
+     The number of calls is unchanged.
+   - **✓ Reported per system** in the manifest (`health.systems`), the Actions summary and the Sources
+     view.
+   - Left: reach ≥ 95% within a week of a new base. Read the per-system numbers from the next
+     builds first; they show which system holds the rate down.
+3. **✓ Build health (2026-11-11).** `snapshot.health` runs at the end of every build:
+   - build minutes; boards read, unchanged, failed, waiting and switched off
+   - postings new, closed, reopened and held; coverage %; descriptions read, overall and per careers
+     system; ghost rate; the boards that fail
+   - It goes into `manifest.json` (`health`), the Actions run's summary page
+     (`python -m lighthouse index summary`), and the site's Sources view ("Last update: …"). It is in
+     the sources file, which is fetched only when Sources is opened, so no visit downloads more.
+   - One GitHub issue, "Job boards that need a look", lists boards that haven't answered for two days
+     or were switched off. The build updates it in place and closes it when all answer again.
 4. **More careers systems.** These are the unsupported counts from the test build. For each one,
    probe with `network-probe.yml` first, and add a reader only if a public JSON/XML/JSON-LD feed
    exists.
@@ -444,8 +462,11 @@ means. Keep every change incremental and measured (§2 baselines).
      They now count as covered and the other 18 boards are switched on: 380 → 434 of 700.
    - Notable uncovered: Apple, Microsoft, Walmart, UnitedHealth Group, Goldman Sachs, Tesla,
      Netflix, Deloitte, McKinsey, Bloomberg.
-5. **Discovery sanity check.** Add `python -m lighthouse discover --report` to list companies whose
-   board name doesn't match the company, for a person to pin or reject.
+5. **✓ Discovery sanity check (2026-11-11).** `python -m lighthouse discover --report` lists the
+   boards in `config/` whose id doesn't look like their company's name or website, for a person to
+   check. No network. Today: 26 of 934. Most are renamed companies or parent brands (Exa was Metaphor,
+   FLIR is Teledyne); `greenhouse:figureai` listed under FightCamp looks wrong and needs the owner's
+   eye. (Boards found from careers pages are already checked this way when they are found.)
 
 ### P3: richer filters
 

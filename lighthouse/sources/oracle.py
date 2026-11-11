@@ -84,7 +84,7 @@ class OracleSource(Source):
         company = self.company_name(slug.split(".")[0])
         jobs = [self.parse_summary(host, site, raw, company) for raw in reqs if raw.get("Id")]
         jobs = [j for j in jobs if self.wanted(j)]
-        todo = [j for j in jobs if not known.get(j.uid, ("", False))[1]][: self.max_detail_calls]
+        todo = self.detail_todo([j for j in jobs if not known.get(j.uid, ("", False))[1]])
         with ThreadPoolExecutor(max_workers=4) as pool:
             for job, detail in zip(todo, pool.map(lambda j: self._detail(host, site, j), todo)):
                 if detail:

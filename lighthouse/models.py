@@ -4,7 +4,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass
@@ -32,6 +32,7 @@ class Job:
     locations: list[str] = field(default_factory=list)   # all locations, if the ATS lists several
     detail_marker: str = ""   # changes when the source's copy changes (used to skip detail calls)
     partial: bool = False     # summary-only listing (detail not fetched this run): keep stored date/locations
+    expires_at: datetime | None = None    # the posting's own closing date; past it, the posting is closed
 
     @property
     def uid(self) -> str:
@@ -102,6 +103,14 @@ def parse_dt(value) -> datetime | None:
             return None
     except (ValueError, OverflowError, OSError):
         return None
+
+
+def parse_expiry(value) -> datetime | None:
+    """A posting's closing date (schema.org validThrough). A bare date means the end of that day."""
+    dt = parse_dt(value)
+    if dt and isinstance(value, str) and len(value.strip()) <= 10:
+        dt += timedelta(days=1)
+    return dt
 
 
 def utcnow() -> str:

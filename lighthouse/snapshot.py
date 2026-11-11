@@ -31,6 +31,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,7 @@ from urllib.parse import urljoin
 
 from . import __version__, db, extract, workers
 from . import profile as profile_mod
+from .models import utcnow
 
 log = logging.getLogger("lighthouse.index")
 
@@ -124,6 +126,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     from . import config as config_mod
     from . import fetch, net
     config_path = Path(config_path or config_mod.DEFAULT_CONFIG)
+    started, t0 = utcnow(), time.monotonic()   # whole seconds, as events are stamped
     conn = db.connect(db_path)
     if db.has_fts(conn):   # the published index gets its own search index; the builder needs none
         conn.execute("DROP TABLE jobs_fts")
@@ -160,6 +163,8 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     if llm:   # optional steps: the rule answers are published whatever happens here
         fill_gaps(conn, cfg, llm_minutes)
     _company_openings(conn)
+    db.set_meta(conn, "build_health", health(conn, results, started, (time.monotonic() - t0) / 60,
+                                             s.ghost_hide_signals))
     if db.compact(conn):
         log.info("compacted the database")
     conn.close()
@@ -665,6 +670,7 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
     coverage = _coverage(conn)
     from . import llm_fill
     llm = llm_fill.summary(conn)
+    build_health = db.get_meta(conn, "build_health")
     conn.close()
     chain = [d for d in (pub or {}).get("deltas") or [] if d.get("base_built_at") == since]
     reason = ("asked for" if full else "first build" if not since
@@ -703,7 +709,8 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
                 "countries": list(countries), "jobs": roles, "postings": postings, "boards": _board_total(db_path),
                 "changed_this_run": changed, "deleted_this_run": deleted, "switched_off": _switched_off(db_path),
-                "coverage": coverage, "llm": llm, "fill": _fill_rates(db_path), "csv": csv_info,
+                "coverage": coverage, "llm": llm, "fill": _fill_rates(db_path), "health": build_health,
+                "csv": csv_info,
                 "base": base, "deltas": chain}
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
@@ -753,8 +760,92 @@ def _fill_rates(db_path) -> dict:
     finally:
         conn.close()
     total = row[0] or 0
-    pct = lambda v: round(100 * (v or 0) / total, 1) if total else 0.0
-    return {"roles": total, "with_description_pct": pct(row[1]), **{c: pct(v) for c, v in zip(use, row[2:])}}
+    return {"roles": total, "with_description_pct": _pct(row[1], total), **{c: _pct(v, total) for c, v in zip(use, row[2:])}}
+
+
+def _pct(part, whole) -> float:
+    return round(100 * (part or 0) / whole, 1) if whole else 0.0
+
+
+def health(conn, results, since: str, minutes: float, ghost_at: int = 3) -> dict:
+    """How the build that just ran went, for the manifest, the Actions summary and the website's Sources
+    view: what the boards answered, what opened and closed, and how much of the index is analysed."""
+    results = results or []
+    events = dict(conn.execute("SELECT kind, COUNT(*) FROM events WHERE at >= ? GROUP BY kind", (since,)))
+    systems, total, described = {}, 0, 0
+    for ats, n, with_text in conn.execute(
+            "SELECT source, COUNT(*), SUM(EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid)) "
+            "FROM jobs j WHERE active = 1 GROUP BY source ORDER BY COUNT(*) DESC"):
+        systems[ats] = {"postings": n, "with_description_pct": _pct(with_text, n)}
+        total, described = total + n, described + (with_text or 0)
+    roles, ghosts = conn.execute("SELECT COUNT(*), SUM(ghost_score >= ?) FROM jobs WHERE active = 1 "
+                                 "AND is_canonical = 1", (ghost_at,)).fetchone()
+    cov = _coverage(conn)
+    failing = [{"board": f"{a}:{b}", "company": c or "", "since": ok, "error": (e or "")[:200]} for a, b, c, ok, e in conn.execute(
+        "SELECT ats, slug, company, COALESCE(last_ok, added_at), last_error FROM boards WHERE last_error IS NOT NULL "
+        "AND (enabled = 1 OR last_error LIKE 'Switched off automatically%') ORDER BY ats, slug")]
+    return {
+        "build_minutes": round(minutes, 1),
+        "boards": {"read": sum(1 for r in results if "new" in r), "unchanged": sum(1 for r in results if r.get("unchanged_board")),
+                   "failed": sum(1 for r in results if "error" in r), "waiting": sum(1 for r in results if r.get("deferred")),
+                   "switched_off": sum(1 for f in failing if f["error"].startswith("Switched off automatically"))},
+        "postings": {"open": total, "new": events.get("new", 0), "closed": events.get("closed", 0),
+                     "reopened": events.get("reopened", 0), "held": sum(r.get("held") or 0 for r in results)},
+        "coverage_pct": _pct(cov.get("ok", 0) + cov.get("pinned", 0), sum(cov.values())),
+        "with_description_pct": _pct(described, total),
+        "ghost_pct": _pct(ghosts, roles),
+        "systems": systems,
+        "failing": failing,
+    }
+
+
+def summary_markdown(m: dict) -> str:
+    """The build's summary for the Actions run page (and the log)."""
+    h = m.get("health") or {}
+    b, p = h.get("boards") or {}, h.get("postings") or {}
+    files = [f for f in [m["base"], *m["deltas"]] if f.get("built_at") == m["built_at"]]
+    out = ["## Job index build", "",
+           f"**{m['jobs']:,} open roles** ({m.get('postings') or 0:,} postings) from {m['boards']:,} boards.", "",
+           "| | |", "|---|---|",
+           f"| Build | {h.get('build_minutes', '?')} min |",
+           f"| Postings | {p.get('new', 0):,} new, {p.get('closed', 0):,} closed, {p.get('reopened', 0):,} reopened, "
+           f"{p.get('held', 0):,} closures held |",
+           f"| Boards | {b.get('read', 0)} read, {b.get('unchanged', 0)} unchanged, {b.get('failed', 0)} failed, "
+           f"{b.get('waiting', 0)} waiting for the next run, {b.get('switched_off', 0)} switched off |",
+           f"| Companies list covered | {h.get('coverage_pct', '?')}% ({m.get('coverage')}) |",
+           f"| Descriptions read | {h.get('with_description_pct', '?')}% of open postings |",
+           f"| Likely ghost jobs | {h.get('ghost_pct', '?')}% of open roles |",
+           "| Published | " + (", ".join(f"{f['file']} ({f['rows']:,} rows, {f['bytes'] / 1e6:.1f} MB)" for f in files)
+                               or "nothing changed") + f"; {len(m['deltas'])} deltas since the base |",
+           f"| jobs.csv.gz | {m.get('csv')} |",
+           f"| Deleted (closed long ago) | {m.get('deleted_this_run')} |",
+           f"| Open-model gap fill so far | {m.get('llm')} |", "",
+           "<details><summary>Filters filled, % of open roles</summary>", "", f"`{m.get('fill')}`", "", "</details>", ""]
+    if h.get("systems"):
+        out += ["| Careers system | Open postings | Descriptions read |", "|---|---:|---:|"]
+        out += [f"| {a} | {s['postings']:,} | {s['with_description_pct']}% |" for a, s in h["systems"].items()]
+        out.append("")
+    return "\n".join(out) + boards_markdown(m)
+
+
+BROKEN_AFTER_DAYS = 2    # a board failing this long is listed for the maintainer (one bad run is noise)
+
+
+def boards_markdown(m: dict) -> str:
+    """Boards that haven't answered for two days or more, or were switched off: the text of the one
+    GitHub issue the workflow keeps up to date ("" when there are none)."""
+    rows = [f for f in (m.get("health") or {}).get("failing") or []
+            if f["error"].startswith("Switched off automatically")
+            or _age_hours(f["since"]) - _age_hours(m.get("built_at")) >= BROKEN_AFTER_DAYS * 24]
+    if not rows:
+        return ""
+    cell = lambda s: str(s).replace("|", "/").replace("\n", " ")
+    return "\n".join([f"### {len(rows)} job boards need a look", "",
+                      f"They haven't answered for {BROKEN_AFTER_DAYS} days or more, or were switched off. Fix the "
+                      "board's id in `config/` (see MAINTAINING.md), or remove it.", "",
+                      "| Board | Company | Last worked | What it answers now |", "|---|---|---|---|",
+                      *[f"| `{cell(f['board'])}` | {cell(f['company'])} | {cell((f['since'] or 'never')[:10])} | "
+                        f"{cell(f['error'])} |" for f in rows], ""])
 
 
 def _coverage(conn) -> dict:

@@ -68,6 +68,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Location → country (rules + GeoNames city list; rebuild with `scripts/make_cities.py`) | `lighthouse/geo.py`, `lighthouse/data/cities.tsv.gz` |
 | Location → city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild the table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/places.tsv.gz` |
 | Ghost score | `lighthouse/ghost.py` |
+| Build health (manifest `health`, Actions summary, the site's Sources view, the broken-boards issue) | `snapshot.health`, `summary_markdown`, `boards_markdown` |
 | Eligibility (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
 | Builder gap fill: open model on the build machine / its server / job categories from similar titles | `lighthouse/llm_fill.py` / `lighthouse/local_llm.py` / `lighthouse/categorize.py` |
 | Getting the models (pinned) / measuring them on real data | `scripts/get_llm.sh` / `scripts/eval_fill.py` |
@@ -92,7 +93,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (153 pass) and `ruff check .` before every commit
+- **Tests:** run `python -m pytest -q` (159 pass) and `ruff check .` before every commit
   (`pip install -r requirements-dev.txt`). `tests.yml` runs both on every pull request and push to
   `main`.
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).

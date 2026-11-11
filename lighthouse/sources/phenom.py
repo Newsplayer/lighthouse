@@ -84,7 +84,7 @@ class PhenomSource(Source):
         company = self.company_name(host.split(".")[1] if host.count(".") >= 2 else host)
         jobs = [self.parse_summary(slug, host, country, lang, r, company) for r in raws if r.get("jobSeqNo") or r.get("jobId")]
         jobs = [j for j in jobs if self.wanted(j)]
-        todo = [j for j in jobs if not known.get(j.uid, ("", False))[1]][: self.max_detail_calls]
+        todo = self.detail_todo([j for j in jobs if not known.get(j.uid, ("", False))[1]])
         with ThreadPoolExecutor(max_workers=4) as pool:
             for job, d in zip(todo, pool.map(lambda j: self._detail(host, country, lang, j), todo)):
                 if d:

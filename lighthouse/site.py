@@ -531,7 +531,9 @@ def _sources(conn) -> dict:
         "SELECT ats, slug, company, job_count, last_ok, last_error FROM boards WHERE enabled = 1 ORDER BY company")]
     for b in boards:                       # a sentence for people, never a stack trace
         b["last_error"] = (b["last_error"] or "")[:160]
-    return {"companies": companies, "boards": boards}
+    health = dict(db.get_meta(conn, "build_health") or {})
+    health.pop("failing", None)            # the boards above carry their own last answer
+    return {"companies": companies, "boards": boards, "health": health}
 
 
 # The base file is written once a week but must be in every deploy (each replaces the whole site).

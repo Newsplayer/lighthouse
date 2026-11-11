@@ -151,6 +151,16 @@ class Source:
     def wanted(self, job: Job) -> bool:
         return self.keep(job.uid, job.title, job.locations or [job.location])
 
+    def detail_todo(self, jobs: list[Job]) -> list[Job]:
+        """Which of these postings (all still without a description) get their description call this
+        run: postings never seen before first, then titles with a known job category, newest first.
+        The rest wait for a later run."""
+        from ..classify import job_function
+
+        def key(j: Job):
+            return (j.uid in self.known, job_function(j.title) is None, -(j.posted_at.timestamp() if j.posted_at else 0))
+        return sorted(jobs, key=key)[: self.max_detail_calls]
+
     def unchanged(self, uid: str, *parts) -> tuple[bool, str]:
         """Hash the raw description; if it matches what's stored, skip sanitizing it again."""
         marker = hashlib.blake2b("\x1f".join(p or "" for p in parts).encode(), digest_size=12).hexdigest()
