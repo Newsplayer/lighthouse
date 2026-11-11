@@ -400,8 +400,14 @@ means. Keep every change incremental and measured (§2 baselines).
    - **Full listing** (needed to catch closures) only when the cheap check changed, or every 6 h.
    - **✓ Workday** (2026-11-10): only US/CA/MX are asked for, via the site's country filter
      (`appliedFacets`; ids from the first response). Accenture: 1,166 postings in 62 requests
-     instead of every country's; NVIDIA 1,404 in 73. A listing over Workday's 2,000-result cap is
-     read in parts by the site's other filters.
+     instead of every country's; NVIDIA 1,404 in 73.
+   - **✓ Workday's 2,000-result cap** (2026-11-10): a site serves at most 2,000 results per listing
+     and repeats pages past that, so big sites were cut short and showed a different 2,000 each build.
+     Listings over the cap are read in parts by the site's own filters (mostly by state). On the real
+     sites: Walmart 20,046 of 20,216 (1,042 requests, 9 min 44 s), Advance Auto 16,260 of 16,260
+     (846 requests, 6 min 32 s), T-Mobile 2,465 of 2,465, Booz Allen 2,176 of 2,176.
+     - Cost: about 10× the requests for those two sites, every other build, within the shared limit
+       of 3 a second; about 15% more roles on the site.
    - Done:
      - median time from a posting going live to it being on the site ≤ 2 h, on a probe sample
      - requests per day to any one careers system no higher than today's 6-hourly full listings
