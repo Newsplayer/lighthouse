@@ -8,7 +8,7 @@ from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
 from lighthouse.sources.greenhouse import GreenhouseSource
 
-from conftest import FakeClient, FakeResp
+from conftest import FakeClient
 
 
 def job(eid, title="Data Analyst", loc="Austin, TX", body=None, company="Acme"):
@@ -160,3 +160,79 @@ def test_geo_north_america_shapes():
     # A bare name a North American city also has is never placed abroad (it would hide a local job).
     assert geo.countries("Birmingham") == frozenset() and geo.countries("Stafford") == frozenset()
     assert geo.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not geo.in_scope(["Toulouse"], {"US", "CA", "MX"})
+
+
+def test_fast_clustering_gives_the_same_clusters_as_comparing_every_pair(tmp_path):
+    """Identical postings are joined at once and compared as one (a chain's thousands of store postings).
+    The roles that come out must be exactly those of the pair-by-pair comparison it replaced."""
+    import random
+    from collections import defaultdict
+    from lighthouse import dedupe
+    rng = random.Random(5)
+    texts = [" ".join(f"{topic} duty{k}" for k in range(120)) for topic in ("stock", "cashier", "nurse", "driver")]
+    titles = ["Sales Associate", "Sales Associate II", "Associate Sales", "Store Manager", "Assistant Store Manager",
+              "Registered Nurse", "Nurse", "Delivery Driver", "!!!", "Sales Associate - Store"]
+    jobs = []
+    for k in range(400):
+        words = rng.choice(texts).split()
+        for _ in range(rng.choice([0, 0, 0, 3, 12, 60])):                 # none, a few, or many words changed
+            words[rng.randrange(len(words))] = f"x{rng.randrange(50)}"
+        jobs.append(job(k, title=rng.choice(titles), loc=f"Store {k}", body="<p>" + " ".join(words) + "</p>"))
+    conn = db.connect(tmp_path / "c.db")
+    db.upsert_board(conn, "greenhouse", "acme", jobs)
+    fetch.postprocess(conn, cfg(tmp_path))
+    rows = conn.execute("SELECT uid, fingerprint, title, minhash, cluster_id FROM jobs").fetchall()
+
+    uf = dedupe._UF()                                                     # every pair, as before
+    for r in rows:
+        uf.find(r["uid"])
+    by_fp = defaultdict(list)
+    for r in rows:
+        by_fp[r["fingerprint"]].append(r["uid"])
+    for members in by_fp.values():
+        for u in members[1:]:
+            uf.union(members[0], u)
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if a["minhash"] and b["minhash"] and set(dedupe._bands(a["minhash"])) & set(dedupe._bands(b["minhash"])) \
+                    and dedupe.title_similarity(a["title"], b["title"]) >= dedupe.TITLE_THRESHOLD \
+                    and dedupe.similarity(a["minhash"], b["minhash"]) >= dedupe.SIM_THRESHOLD:
+                uf.union(a["uid"], b["uid"])
+    want, got = defaultdict(set), defaultdict(set)
+    for r in rows:
+        want[uf.find(r["uid"])].add(r["uid"])
+        got[r["cluster_id"]].add(r["uid"])
+    assert sorted(map(sorted, got.values())) == sorted(map(sorted, want.values()))
+    assert 5 < len(got) < 300                                             # real merging happened, not all-or-nothing
+
+
+def test_postings_stored_before_the_country_scope_are_deleted(tmp_path):
+    conn = db.connect(tmp_path / "s.db")
+    big = "<p>" + "words " * 4000 + "</p>"
+    db.upsert_board(conn, "greenhouse", "acme", [
+        job(1, loc="Austin, TX"), job(2, loc="London, United Kingdom", body=big), job(3, loc="Remote"),
+        job(4, loc="Somewhere unheard of"), job(5, loc="Pune, India", body=big), job(6, loc="Toronto, Canada")])
+    fetch.postprocess(conn, cfg(tmp_path))
+    assert db.purge_out_of_scope(conn, []) == (0, set())                     # no scope: everything stays
+    n, keys = db.purge_out_of_scope(conn, ["US", "CA", "MX"])
+    assert n == 2 and keys == {"acme"}
+    left = {r[0] for r in conn.execute("SELECT external_id FROM jobs")}
+    assert left == {"1", "3", "4", "6"}                                      # unknown places are kept
+    gone = {r[0] for r in conn.execute("SELECT uid FROM tombstones")}        # readers are told to delete them
+    assert gone == {"greenhouse:acme:2", "greenhouse:acme:5"}
+    assert conn.execute("SELECT COUNT(*) FROM job_content").fetchone()[0] == 4
+    assert db.purge_out_of_scope(conn, ["US", "CA", "MX"])[0] == 0
+
+
+def test_compact_gives_space_back_only_when_it_is_worth_it(tmp_path):
+    import os
+    path = tmp_path / "v.db"
+    conn = db.connect(path)
+    assert db.compact(conn) is False                                         # nothing free
+    conn.execute("CREATE TABLE junk (x)")
+    conn.executemany("INSERT INTO junk VALUES (?)", [("y" * 4000,) for _ in range(2000)])
+    conn.commit()
+    conn.execute("DELETE FROM junk")
+    conn.commit()
+    before = os.path.getsize(path)
+    assert db.compact(conn) is True and os.path.getsize(path) < before / 3

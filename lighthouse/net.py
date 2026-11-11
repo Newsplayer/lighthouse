@@ -202,11 +202,6 @@ class Client:
     def get(self, url: str, **kw) -> requests.Response:
         return self.request("GET", url, **kw)
 
-    def get_json(self, url: str, **kw):
-        r = self.get(url, **kw)
-        r.raise_for_status()
-        return r.json()
-
     def post(self, url: str, **kw) -> requests.Response:
         return self.request("POST", url, **kw)
 

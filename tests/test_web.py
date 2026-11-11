@@ -1,4 +1,3 @@
-import re
 
 from lighthouse import db, fetch, config
 from lighthouse.sources.greenhouse import GreenhouseSource

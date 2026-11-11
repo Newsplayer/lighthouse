@@ -116,6 +116,31 @@ Work top to bottom.
     - **Next for speed:** a return visit on a phone spends 0.9 s reading and parsing the cached list
       and 0.16 s building it. Keeping the built list (IndexedDB) or a binary list would cut that.
       Changes are cumulative for the week, so later visits download more as the week goes on.
+- **Builder speed and database, 2026-11-10** (the last production database, 551,197 stored postings;
+  probe `probe/run-site`, before → after):
+
+  | Measure | Before | After |
+  |---|---|---|
+  | Post-processing every company, nothing changed | 328 s | 35 s |
+  | The 40 largest companies alone | 252 s | 15 s |
+  | Builder database | 5.13 GB | 3.16 GB |
+  | Writing the website (first / later build of a week) | 59 s / 39 s | 36 s / 22 s |
+  | Roles on the site | 221,567 | 218,549 (duplicates from boards listed twice are gone) |
+
+  - **Clustering** compared every pair of postings that share a bucket: 403 million lookups for the
+    40 largest companies. Postings with the same title words and the same text signature are now
+    grouped first, and one of each group is compared. The clusters are identical (0 of 551,197 differ).
+  - **Out-of-scope rows:** 112,794 postings stored before the US/Canada/Mexico scope (76,110 still
+    marked open) are deleted, then the file is compacted. This happens once, in the first build
+    after merging: 26 s to delete, 32 s to compact, and a one-time 31.5 MB update for the local app.
+  - **Scaling notes:**
+    - Post-processing now grows with the number of *different* postings per company, not with the
+      square of a company's size.
+    - The database is compacted whenever 15% of it is free space, so it tracks the open postings.
+    - The Actions cache holds the database, compressed (1.4 GB at 5.13 GB on disk; less now). GitHub
+      keeps 10 GB per repo and drops the oldest copies first, so there is room to grow several times.
+    - Next: the website's return visit still parses the whole cached list (0.9 s on a phone), and a
+      full base for the local app takes 6.5 min to write (579 MB).
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
     the postings whose filter fields the rules couldn't settle (`llm_fill.py`). **Replaced 2026-11-09**
@@ -260,9 +285,8 @@ means. Keep every change incremental and measured (§2 baselines).
    - Add `python -m lighthouse eval` to report precision and recall per field.
    - Make the tests fail when "not eligible" precision is < 97%; hiding a real fit is the worst
      error.
-4. **Run the tests on every push and PR.** Add `.github/workflows/tests.yml` running
-   `python -m pytest -q` on Python 3.11 and 3.13, plus the website's JS tests once they exist
-   (`node --test`).
+4. **✓ Tests and lint run on every push and PR** (`.github/workflows/tests.yml`, 2026-11-10): the
+   whole suite, Node and Chromium included, plus `ruff check`.
 5. **✓ Merged v0.6 (PR #1)**; production builds run every 6 hours.
    - Then measure a week of the daily change rate, and fill in §1 and §3.
 
@@ -374,8 +398,16 @@ means. Keep every change incremental and measured (§2 baselines).
      - For Workday/Oracle, read page 1 sorted newest-first plus the total count. Verify the sort
        options with the network probe first.
    - **Full listing** (needed to catch closures) only when the cheap check changed, or every 6 h.
-   - **Workday:** ask only for US/CA/MX via its country facet (`appliedFacets`; take the facet ids
-     from the first response). Probe first.
+   - **✓ Workday** (2026-11-10): only US/CA/MX are asked for, via the site's country filter
+     (`appliedFacets`; ids from the first response). Accenture: 1,166 postings in 62 requests
+     instead of every country's; NVIDIA 1,404 in 73.
+   - **✓ Workday's 2,000-result cap** (2026-11-10): a site serves at most 2,000 results per listing
+     and repeats pages past that, so big sites were cut short and showed a different 2,000 each build.
+     Listings over the cap are read in parts by the site's own filters (mostly by state). On the real
+     sites: Walmart 20,046 of 20,216 (1,042 requests, 9 min 44 s), Advance Auto 16,260 of 16,260
+     (846 requests, 6 min 32 s), T-Mobile 2,465 of 2,465, Booz Allen 2,176 of 2,176.
+     - Cost: about 10× the requests for those two sites, every other build, within the shared limit
+       of 3 a second; about 15% more roles on the site.
    - Done:
      - median time from a posting going live to it being on the site ≤ 2 h, on a probe sample
      - requests per day to any one careers system no higher than today's 6-hourly full listings
@@ -407,6 +439,9 @@ means. Keep every change incremental and measured (§2 baselines).
 
    - Also: 147 companies show "no careers system recognised", 42 are blocked by robots.txt, and
      26 errored. Spot-check 20 of each and pin boards by hand where discovery missed them.
+   - **2026-11-10:** 54 of the 320 uncovered companies already had a hand-checked board in
+     `config/boards/` (36 of them on and being read all along: Stripe, SpaceX, Cloudflare...).
+     They now count as covered and the other 18 boards are switched on: 380 → 434 of 700.
    - Notable uncovered: Apple, Microsoft, Walmart, UnitedHealth Group, Goldman Sachs, Tesla,
      Netflix, Deloitte, McKinsey, Bloomberg.
 5. **Discovery sanity check.** Add `python -m lighthouse discover --report` to list companies whose

@@ -203,8 +203,13 @@ Recruitee, or a sitemap of job pages with JobPosting data. It checks the board a
 fetches it. The result is in the app's **Sources → Large employers** table and in
 `manifest.json` → `coverage`.
 
+- **Already in a board list:** a company that `config/boards/*.csv` has a board for (same name) is
+  covered by that board without any looking up, and the board is switched on. Careers pages often
+  hide their job system behind scripts or robots.txt; the hand-checked board is the better answer.
 - **Re-checks:** a company whose board works is re-checked every 14 days, sooner if its board
-  starts failing. One that couldn't be resolved is retried every 3 days. A full build re-checks all.
+  starts failing, and after 3 days if the board lists nothing for the countries covered. One that
+  couldn't be resolved is retried every 3 days. A full build re-checks all.
+- **Sitemaps:** when a site publishes one sitemap per country, the US English one is taken.
 - **Boards under other names:** a careers page often links to subsidiaries' or partners' boards. A board
   is taken as the company's own only if its name matches the company (`jpmc` for JPMorgan Chase), it
   was read off the company's own site, or the company's careers address redirects to it. A lone
@@ -299,6 +304,11 @@ once a week, or when the changes add up to half the base.
      `LIGHTHOUSE_FETCH_MINUTES` variable) no new board or description call is started; boards not
      reached keep their postings and lead the next run. Workday boards are fetched every other run
      (11 hours apart), and each Workday data center gets 3 requests a second.
+   - **Workday listings are read whole.** A Workday site serves at most 2,000 results per listing
+     (past that it repeats earlier pages). A bigger listing is read in parts, using the site's own
+     filters (state, job category, full or part time...), and a part that is still over 2,000 is split
+     again. Where the site has a country filter, only the countries the build covers are asked for.
+     Pages are read four at a time. A board listed twice in different letter case is read once.
    - **Pushing back is respected.** A bot-check page, 403, 429 after backoff or a run of CDN edge
      errors counts against the board's group: one Workday data center (wd1, wd5...), one shared API
      host (Greenhouse, Lever...), or the board's own site. After three, the group is left alone for the
@@ -367,7 +377,7 @@ once a week, or when the changes add up to half the base.
 | Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
 | GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
-| Actions cache | 10 GB per repo | builder DB is ~1–2 GB; old entries are evicted automatically |
+| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved twice a build; old entries are evicted automatically. The build compacts the file when 15% of it is free space |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
 
@@ -388,6 +398,8 @@ once a week, or when the changes add up to half the base.
 | *deploy-site* fails with "Timeout reached" | GitHub was slow copying the files; it waits up to 30 minutes now, and the next build deploys anyway |
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* step failed (its log says why); the index was published anyway |
+| The *Tests* check on a pull request is red | its log names the failing test or the lint finding; fix it before merging (the builder publishes from `main`) |
+| The website's Sources list says a company isn't covered | the reason is in its row. "Uses … which Lighthouse can't read yet" needs a new reader; "No readable job list found" may only need its board pinned in `config/companies.csv` (`ats` and `slug` columns) |
 | *deploy-site* fails with "Not Found" / Pages not enabled | Settings → Pages → Source: GitHub Actions (step 8b) |
 | A page change pushed to `main` isn't live; the *Website* run deployed nothing | its summary says why: no build has kept a website yet (the first build after this workflow was added does), or the push also changed `lighthouse/` (wait for the next build, or *Run workflow* on *Job index*) |
 

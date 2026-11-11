@@ -7,7 +7,7 @@ from lighthouse.sources.recruitee import RecruiteeSource
 from lighthouse.sources.smartrecruiters import SmartRecruitersSource
 from lighthouse.sources.workable import WorkableSource
 
-from conftest import FakeClient, FakeResp
+from conftest import FakeClient
 
 
 def test_registry():

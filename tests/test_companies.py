@@ -233,3 +233,52 @@ def test_an_age_is_not_years_of_experience():
     assert yoe("Applicants must be 21 years of age or older with 3 years driving experience") == 3
     assert yoe("Minimum of 18 years of experience in sales") == 18
     assert yoe("5+ years of relevant experience") == 5 and yoe("at least 3 years in a similar role") == 3
+
+
+def test_the_us_sitemap_is_preferred_over_other_countries():
+    from lighthouse.discover import sitemap_rank
+    maps = ["https://careers.corning.com/pl/pl/sitemap.xml", "https://careers.corning.com/gb/en/sitemap.xml",
+            "https://careers.corning.com/us/en/sitemap.xml", "https://careers.corning.com/sitemap.xml",
+            "https://www.jobs-ups.com/dach/de/sitemap.xml"]
+    assert sorted(maps, key=sitemap_rank) == [maps[2], maps[3], maps[1], maps[0], maps[4]]
+
+
+def test_one_workday_board_spelled_two_ways_is_read_once(tmp_path):
+    from lighthouse import db, snapshot
+    conn = db.connect(tmp_path / "b.db")
+    conn.execute("INSERT INTO companies(company, ats, slug, status, checked_at) VALUES ('Booz Allen', 'workday', 'bah.wd1/BAH_Jobs', 'ok', 'now')")
+    listed = [{"ats": "workday", "slug": "bah.wd1/bah_jobs", "company": "Booz Allen Hamilton", "enabled": False},
+              {"ats": "workday", "slug": "bah.wd1/BAH_Jobs", "company": "Booz Allen", "enabled": True},
+              {"ats": "greenhouse", "slug": "Acme", "company": "Acme", "enabled": True},
+              {"ats": "greenhouse", "slug": "acme", "company": "Acme", "enabled": True}]
+    merged = snapshot.merge_same_boards(conn, listed)
+    assert [b["slug"] for b in merged] == ["bah.wd1/bah_jobs", "bah.wd1/bah_jobs", "Acme", "acme"]   # Workday only
+    snapshot.apply_board_list(conn, merged)
+    rows = {r["slug"]: r["enabled"] for r in conn.execute("SELECT slug, enabled FROM boards WHERE ats = 'workday'")}
+    assert rows == {"bah.wd1/bah_jobs": 1}                       # one board, on because either entry says so
+    assert conn.execute("SELECT slug FROM companies").fetchone()[0] == "bah.wd1/bah_jobs"   # coverage still finds it
+
+
+def test_a_company_already_in_a_board_list_is_covered_without_looking_it_up(tmp_path, monkeypatch):
+    """Stripe, SpaceX and Cloudflare were reported "not found" while their hand-listed boards were read."""
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    (cfg_dir / "companies.csv").write_text(
+        "company,group,domain,careers_url,ats,slug,enabled\n"
+        "Stripe,tech,stripe.com,https://stripe.com/jobs,,,yes\n"
+        "Medtronic,fortune500,medtronic.com,https://jobs.medtronic.com,,,yes\n"
+        "Verizon Communications,fortune500,verizon.com,https://www.verizon.com/about/careers,,,yes\n"
+        "Unknown Co,tech,u.com,https://careers.u.com,,,yes\n", encoding="utf-8")
+    listed = [{"ats": "greenhouse", "slug": "stripe", "company": "Stripe", "enabled": True},
+              {"ats": "workday", "slug": "medtronic.wd1/redeploymentmedtroniccareers", "company": "Medtronic", "enabled": False},
+              {"ats": "workday", "slug": "medtronic.wd1/medtroniccareers", "company": "Medtronic", "enabled": False},
+              {"ats": "workday", "slug": "verizon.wd12/verizon-careers", "company": "Verizon Communications Inc.", "enabled": False}]
+    calls = []
+    monkeypatch.setattr(discover, "run", lambda todo, *a, **k: calls.append([c["company"] for c in todo]) or [])
+    conn = db.connect(tmp_path / "b.db")
+    boards = snapshot.discover_boards(conn, cfg_dir, client=None, listed=listed)
+    assert calls == [["Unknown Co"]]                                    # only the one no list has
+    assert sorted(b["slug"] for b in boards) == ["medtronic.wd1/medtroniccareers", "stripe", "verizon.wd12/verizon-careers"]
+    assert all(b["enabled"] for b in boards)                            # a listed company's main board goes on
+    st = dict(conn.execute("SELECT company, status FROM companies").fetchall())
+    assert st["Stripe"] == st["Medtronic"] == st["Verizon Communications"] == "pinned"

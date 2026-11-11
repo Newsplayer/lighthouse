@@ -55,10 +55,6 @@ def _hash(p: dict, keys) -> str:
                            digest_size=8).hexdigest()
 
 
-def elig_version(p: dict, slack: int) -> str:
-    return _hash({**p, "_slack": slack}, ELIG_KEYS + ("_slack",))
-
-
 def fit_hash(p: dict) -> str:
     return _hash(p, FIT_KEYS)
 

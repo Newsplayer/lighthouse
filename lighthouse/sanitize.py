@@ -65,23 +65,6 @@ def sanitize_html(raw: str) -> str:
 _BLOCK = {"p", "br", "li", "div", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "blockquote", "ul", "ol"}
 
 
-class _Text(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.out: list[str] = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in _BLOCK:
-            self.out.append("\n- " if tag == "li" else "\n")
-
-    def handle_endtag(self, tag):
-        if tag in _BLOCK:
-            self.out.append("\n")
-
-    def handle_data(self, data):
-        self.out.append(data)
-
-
 _TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*>")
 
 
@@ -102,23 +85,6 @@ def html_to_text(html: str) -> str:
     descriptions back to back."""
     raw = unescape(_TAG.sub(_tag, html or ""))
     lines = (" ".join(line.split()) for line in raw.splitlines())
-    text, blank = [], False
-    for line in lines:
-        if line:
-            text.append(line)
-            blank = False
-        elif not blank and text:
-            text.append("")
-            blank = True
-    return "\n".join(text).strip()
-
-
-def html_to_text_slow(html: str) -> str:
-    """Reference implementation (HTML parser); kept for tests."""
-    parser = _Text()
-    parser.feed(html or "")
-    parser.close()
-    lines = (" ".join(line.split()) for line in "".join(parser.out).splitlines())
     text, blank = [], False
     for line in lines:
         if line:

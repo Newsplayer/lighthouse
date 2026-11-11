@@ -8,3 +8,11 @@ dependencies = ["flask>=3.0", "requests>=2.31", "keyring>=25.0", "openpyxl>=3.1"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130
+exclude = ["probe"]
+
+[tool.ruff.lint]
+# Real mistakes only: undefined names, unused imports and variables, syntax errors.
+select = ["F", "E9"]

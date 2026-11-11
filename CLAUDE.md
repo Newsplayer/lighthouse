@@ -74,7 +74,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Claude fit / MCP server (the local app; the user's own key or Claude app) | `lighthouse/claude_api.py`, `lighthouse/mcp_server.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Local app UI (frozen) | `lighthouse/web.py`, `lighthouse/templates/` |
-| Workflows: builder, page-only deploy, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `network-probe.yml`, `tidy-branches.yml` |
+| Workflows: builder, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
 | Page-only deploy (a push to `site/` goes live on the last build's data, no build) | `.github/workflows/website.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 
@@ -92,8 +92,9 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (144 pass) before every commit. No CI runs them yet
-  (ROADMAP P0-4).
+- **Tests:** run `python -m pytest -q` (153 pass) and `ruff check .` before every commit
+  (`pip install -r requirements-dev.txt`). `tests.yml` runs both on every pull request and push to
+  `main`.
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).
   - Filters, eligibility and search words must give exactly the same results as the Python code.
     Change both sides together. Add a test for each

@@ -138,15 +138,29 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
             if not rows:
                 continue
             uf = _UF()
-            by_uid = {r["uid"]: r for r in rows}
             by_fp = defaultdict(list)
+            # Postings with the same title words and the same text signature always match each other, and
+            # match (or don't match) any other posting together. So they're joined at once and one of them
+            # stands for all: a chain's 18,000 store postings of a dozen roles are compared as a dozen,
+            # not pair by pair (that was 400 million checks a build).
+            groups: dict[tuple, str] = {}
+            info: dict[str, tuple] = {}
             buckets = defaultdict(list)
             for r in rows:
-                uf.find(r["uid"])
-                by_fp[r["fingerprint"]].append(r["uid"])
+                uid = r["uid"]
+                uf.find(uid)
+                by_fp[r["fingerprint"]].append(uid)
                 if r["minhash"]:
+                    words = frozenset(norm(r["title"]).split())
+                    if not words:
+                        continue                      # no title words: never similar to anything by title
+                    lead = groups.setdefault((words, r["minhash"]), uid)
+                    if lead != uid:
+                        uf.union(lead, uid)
+                        continue
+                    info[uid] = (words, r["minhash"])
                     for band in _bands(r["minhash"]):
-                        buckets[band].append(r["uid"])
+                        buckets[band].append(uid)
             for members in by_fp.values():
                 for u in members[1:]:
                     uf.union(members[0], u)
@@ -155,14 +169,16 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
                 if len(members) < 2:
                     continue
                 for i, a in enumerate(members):
+                    wa, ma = info[a]
                     for b in members[i + 1:]:
                         key = (a, b) if a < b else (b, a)
-                        if key in checked or uf.find(a) == uf.find(b):
+                        if key in checked:
                             continue
                         checked.add(key)
-                        ra, rb = by_uid[a], by_uid[b]
-                        if (title_similarity(ra["title"], rb["title"]) >= TITLE_THRESHOLD
-                                and similarity(ra["minhash"], rb["minhash"]) >= SIM_THRESHOLD):
+                        if uf.find(a) == uf.find(b):
+                            continue
+                        wb, mb = info[b]
+                        if len(wa & wb) / len(wa | wb) >= TITLE_THRESHOLD and similarity(ma, mb) >= SIM_THRESHOLD:
                             uf.union(a, b)
 
             clusters = defaultdict(list)

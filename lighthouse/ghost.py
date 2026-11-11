@@ -81,13 +81,6 @@ def labels(payload, now: datetime | None = None) -> list[str]:
     return [label(r, now) for r in items]
 
 
-def ghost_reasons(title: str, posted_at, max_age_days: int) -> list[str]:
-    """Back-compat helper for a bare title/date (used by tests and the MCP server)."""
-    row = {"effective_first_seen": posted_at.isoformat() if posted_at else None, "first_seen": None,
-           "repost_count": 0, "title": title, "content_html": "", "updated_at": None}
-    return signals(row, max_age_days, text="")
-
-
 def rescore(conn, company_keys, max_age_days: int) -> None:
     now = datetime.now(timezone.utc)
     for ck in company_keys:
