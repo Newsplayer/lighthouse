@@ -15,7 +15,7 @@ and filled in on later runs.
 
 Two things keep big sites complete and cheap (checked against real sites, 2026-11-10):
 - Many sites serve at most 2,000 results per listing, whatever they have (Walmart: about 20,000; past
-  2,000 they repeat earlier pages). The site's own filters ("facets": job category, state, full or
+  2,000 they repeat earlier pages). The site's own filters ("facets": state, job category, full or
   part time...) each give a smaller listing, so a capped listing is read as the sum of the listings
   of one filter's values, split again where one of those is still capped.
 - Most sites offer a country filter. When the builder covers only some countries, the listing is
@@ -25,6 +25,7 @@ Two things keep big sites complete and cheap (checked against real sites, 2026-1
 from __future__ import annotations
 
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -37,6 +38,7 @@ PAGE = 20  # the API rejects larger pages
 CAP = 2000          # a listing reporting this many (or more) is cut short by the site
 MAX_LISTED = 40000  # stop a runaway listing (the largest real site seen is about 20,000)
 MAX_SPLITS = 3      # filters applied on top of each other to get under the cap
+MAX_VALUES = 120    # a filter with more values than this costs too many requests to split by
 LIST_WORKERS = 4    # listing pages read at once
 _COUNTRY_NAMES = {name: code for code, names in geo.COUNTRIES.items() for name in names}
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
@@ -87,25 +89,38 @@ def country_facet(facets, wanted) -> dict | None:
     return {best[0]: best[1]} if best[1] else {}
 
 
-def split_facet(facets, applied: dict, expected: int | None = None) -> tuple[str, list] | None:
-    """The filter to split a capped listing by: (facet parameter, its values), or None.
+def split_facet(facets, applied: dict, expected: int | None = None) -> tuple[str, list, bool] | None:
+    """The filter to split a capped listing by: (facet parameter, its values, whether they cover the
+    listing), or None when there is nothing to split by.
 
-    It has to cover the listing (its values' counts add up to about what's expected: a posting with no
-    job category would be lost by splitting on job category), and shouldn't be cut short itself (sites
-    list at most ~55 values). Among those, one whose values are all under the cap needs no further
-    splitting; then the one with the fewest values costs the fewest requests."""
+    Checked on real sites (2026-11-10): some filters list every value (states, locations), others stop
+    at 55 values, and some apply to only part of the postings (Advance Auto's "hiring company": 3,806
+    of 16,260). So a filter is judged by its counts:
+    - they should add up to the listing (`expected`, or the total most filters agree on), since a
+      posting with no value for the filter is in none of its parts;
+    - as few postings as possible should sit in values that are over the cap themselves (those need
+      another split);
+    - then fewer values, which is fewer requests."""
     by_param: dict[str, list] = {}
     for param, v in _leaves(facets):
         if param not in applied and param != "distance" and isinstance(v.get("count"), int):
             by_param.setdefault(param, []).append(v)
-    cands = [(param, vals, sum(v["count"] for v in vals), max(v["count"] for v in vals))
-             for param, vals in by_param.items() if 2 <= len(vals) < 50]
-    if not cands:
+    if not expected:
+        sums = Counter(sum(v["count"] for v in vals) for vals in by_param.values())
+        expected = max(sums, key=lambda t: (sums[t], t)) if sums else 0
+    best = None
+    for param, vals in by_param.items():
+        if not 2 <= len(vals) <= MAX_VALUES:
+            continue
+        counts = [v["count"] for v in vals]
+        missing = max(0, expected - sum(counts))
+        key = (0 if missing <= 0.01 * expected else 1 if missing <= 0.1 * expected else 2,
+               sum(c for c in counts if c >= CAP), len(vals))
+        if best is None or key < best[0]:
+            best = (key, param, vals)
+    if best is None:
         return None
-    need = 0.97 * (expected if expected else max(c[2] for c in cands))
-    good = [c for c in cands if c[2] >= need] or [max(cands, key=lambda c: c[2])]
-    param, vals, _, _ = min(good, key=lambda c: (c[3] >= CAP, len(c[1])))
-    return param, [v for v in vals if v["count"] > 0]
+    return best[1], [v for v in best[2] if v["count"] > 0], best[0][0] == 0
 
 
 def parse_slug(slug: str) -> tuple[str, str, str]:
@@ -192,15 +207,17 @@ class WorkdaySource(Source):
     def _collect(self, api: str, facets: dict, out: dict, page: dict | None = None,
                  expected: int | None = None, depth: int = 0) -> None:
         """Every posting matching `facets`, into out. A listing at the cap is split by one more filter
-        (split_facet) and each part collected the same way."""
+        (split_facet) and each part collected the same way. If that filter doesn't cover the whole
+        listing, the listing's own first 2,000 are read as well, for the postings the filter misses."""
         page = page if page is not None else self._page(api, facets, 0)
         if int(page.get("total") or 0) >= CAP and depth < MAX_SPLITS and len(out) < MAX_LISTED:
             split = split_facet(page.get("facets"), facets, expected)
             if split:
-                param, values = split
+                param, values, covers = split
                 for v in values:
                     self._collect(api, {**facets, param: [v["id"]]}, out, None, v["count"], depth + 1)
-                return
+                if covers:
+                    return
         self._pages(api, facets, page, out)
 
     def fetch(self, slug, known=None):

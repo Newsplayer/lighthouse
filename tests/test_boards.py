@@ -220,18 +220,26 @@ def test_workday_reads_a_listing_bigger_than_the_2000_cap_by_splitting_it():
     c = workday_site(site, ["cat", "time"])
     jobs, posts = wd_fetch(c)
     assert len(jobs) == 5000
-    assert {tuple(p["appliedFacets"]) for p in posts[1:]} == {("time",), ("time", "cat")}
-    assert len(posts) == 1 + 2 + 2 * (75 + 25 + 25)
+    assert {tuple(p["appliedFacets"]) for p in posts[1:]} == {("cat",), ("cat", "time")}   # only c0 (3,000) twice
+    assert len(posts) == 1 + 50 + 50 + 1 + 2 * 75
 
-    # Which filter: one whose values add up to the listing, and are each under the cap if possible.
+    # Which filter: one whose values add up to the listing, with the fewest postings in values over the cap.
     f = lambda **kw: [{"facetParameter": k, "values": [{"id": f"{k}{i}", "count": n} for i, n in enumerate(v)]}  # noqa: E731
                       for k, v in kw.items()]
-    assert split_facet(f(cat=[900, 800], state=[1500, 1500, 1500]), {})[0] == "state"      # cat misses most postings
-    assert split_facet(f(time=[3000, 1500], state=[1500, 1500, 1500]), {})[0] == "state"   # no part over the cap
-    assert split_facet(f(time=[3000, 1500], state=[1500, 1500, 1500]), {"state": ["state0"]})[0] == "time"
-    assert split_facet(f(time=[1000, 500], state=[900, 800]), {}, expected=1500)[0] == "time"
-    assert split_facet(f(city=[40] * 55, only=[4500]), {}) is None       # a cut-short list, a single value: no split
+    pick = lambda *a, **kw: (lambda r: r and (r[0], r[2]))(split_facet(*a, **kw))          # noqa: E731
+    assert pick(f(cat=[900, 800], state=[1500, 1500, 1500]), {}) == ("state", True)       # cat misses most postings
+    assert pick(f(time=[3000, 1500], state=[1500, 1500, 1500]), {}) == ("state", True)    # no part over the cap
+    assert pick(f(time=[3000, 1500], state=[1500, 1500, 1500]), {"state": ["state0"]}) == ("time", True)
+    assert pick(f(time=[9000, 7000], group=[9000] + [140] * 50), {}) == ("group", True)   # 9,000 left to split, not 16,000
+    assert pick(f(time=[1000, 500], state=[500, 300]), {}, expected=1500) == ("time", True)
+    assert pick(f(cat=[900, 800], only=[4500]), {}) == ("cat", False)     # better than nothing, and known not to cover
+    assert pick(f(city=[40] * 130, only=[4500]), {}) is None              # too many values; a single value splits nothing
     assert [v["id"] for v in split_facet(f(time=[3000, 0, 1500]), {})[1]] == ["time0", "time2"]
+
+    # A filter that misses postings: its parts are read, and the plain listing's first 2,000 as well.
+    site = [{"cat": None if k % 3 == 0 else f"c{k % 3}", "time": "full"} for k in range(3000)]
+    jobs, posts = wd_fetch(workday_site(site, ["cat", "time"]))               # "time" says 3,000; cat covers 2,000
+    assert len(jobs) == 2000 + 667 and len(posts) == 100 + 2 * 50
 
     c = workday_site([{} for _ in range(45)], [])                        # a small site: three pages, nothing more
     jobs, posts = wd_fetch(c)
