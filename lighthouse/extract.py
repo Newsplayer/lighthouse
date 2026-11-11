@@ -17,6 +17,7 @@ ATS-provided structure (Ashby/Lever/Recruitee salary, workplace flags) always wi
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 
@@ -466,9 +467,12 @@ def _derive_rows(conn, rows) -> None:
     with conn:
         for r in rows:
             # data_at changes whenever the extraction is rewritten (new rules, a Claude gap fill)
-            key = (f"{classify.DERIVE_VERSION}:{r['content_hash']}:{r['method']}:{r['data_at']}:{r['workplace']}:"
-                   f"{r['salary_min']}:{r['salary_max']}:{r['salary_interval']}:{r['title']}:{r['cluster_locations']}:"
-                   f"{r['departments']}:{r['employment_type']}")
+            # Everything the derived columns depend on, as a short hash (the text itself was 94 MB of the
+            # builder database: a role's whole list of places, repeated on its row).
+            key = hashlib.blake2b(
+                (f"{classify.DERIVE_VERSION}:{r['content_hash']}:{r['method']}:{r['data_at']}:{r['workplace']}:"
+                 f"{r['salary_min']}:{r['salary_max']}:{r['salary_interval']}:{r['title']}:{r['cluster_locations']}:"
+                 f"{r['departments']}:{r['employment_type']}").encode(), digest_size=10).hexdigest()
             if key == r["derived_of"]:
                 continue
             d = json.loads(r["data"]) if r["data"] else {}

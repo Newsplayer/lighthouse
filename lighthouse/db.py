@@ -1135,8 +1135,15 @@ def purge_closed(conn, days: int) -> int:
                AND (j.closed_at < ? OR j.cluster_id IS NULL OR NOT EXISTS (
                     SELECT 1 FROM jobs k WHERE k.cluster_id = j.cluster_id AND k.active = 1))
                AND NOT EXISTS (SELECT 1 FROM marks m WHERE m.uid = j.uid)""", (cut, hard))]
+    return delete_postings(conn, uids)
+
+
+def delete_postings(conn, uids: list[str]) -> int:
+    """Delete postings for good, leaving a tombstone each so the next index delta tells readers to
+    delete them too, and drop what only they referred to. Returns rows deleted."""
     if not uids:
         return 0
+    now = datetime.now(timezone.utc)
     fts = has_fts(conn)
     sig = has_table(conn, "export_sig")
     stamp = _stamp()
@@ -1151,8 +1158,8 @@ def purge_closed(conn, days: int) -> int:
                 conn.execute(f"DELETE FROM {table} WHERE uid IN ({q})", part)
             conn.execute(f"DELETE FROM jobs WHERE uid IN ({q})", part)
             conn.executemany("INSERT OR REPLACE INTO tombstones(uid, deleted_at) VALUES (?, ?)", [(u, stamp) for u in part])
-        # Rule extractions nothing refers to any more; Claude readings are kept a while longer (a role
-        # reposted with the same text reuses them at no cost).
+        # Rule extractions nothing refers to any more; the gap fill's readings are kept a while longer (a
+        # role reposted with the same text reuses them at no cost).
         conn.execute("DELETE FROM extractions WHERE method = 'rules' AND NOT EXISTS "
                      "(SELECT 1 FROM jobs j WHERE j.content_hash = extractions.content_hash)")
         old = (now - timedelta(days=180)).isoformat(timespec="seconds")
@@ -1160,6 +1167,42 @@ def purge_closed(conn, days: int) -> int:
                      "(SELECT 1 FROM jobs j WHERE j.content_hash = llm_extractions.content_hash)", (old,))
         conn.execute("DELETE FROM tombstones WHERE deleted_at < ?", ((now - timedelta(days=30)).isoformat(),))
     return len(uids)
+
+
+def purge_out_of_scope(conn, countries) -> tuple[int, set[str]]:
+    """Builder with a country scope: delete postings known to be elsewhere. New ones are never stored
+    (the readers drop them before any detail call), but ones stored before the scope was set stayed for
+    good: listed by their board, so never closed, and never refreshed either. Postings whose country
+    isn't known are kept, as everywhere else. Returns (rows deleted, their company keys)."""
+    want = {c.strip().upper() for c in countries or () if c.strip()}
+    if not want:
+        return 0, set()
+    from . import geo
+    uids, keys = [], set()
+    for r in conn.execute("SELECT uid, company_key, location, locations FROM jobs WHERE NOT EXISTS "
+                          "(SELECT 1 FROM marks m WHERE m.uid = jobs.uid)"):
+        try:
+            locs = [l for l in json.loads(r["locations"] or "[]") if isinstance(l, str) and l]
+        except ValueError:
+            locs = []
+        locs = locs or ([r["location"]] if r["location"] else [])
+        if locs and not geo.in_scope(locs, want):
+            uids.append(r["uid"])
+            keys.add(r["company_key"])
+    return delete_postings(conn, uids), keys
+
+
+def compact(conn, min_free_share: float = 0.15) -> bool:
+    """Give deleted space back (VACUUM) once free pages are a real share of the file: the builder's
+    database travels to and from the Actions cache on every build."""
+    pages = conn.execute("PRAGMA page_count").fetchone()[0]
+    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    if not pages or free / pages < min_free_share:
+        return False
+    conn.commit()
+    conn.execute("VACUUM")
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return True
 
 
 # ---------------------------------------------------------------- marks

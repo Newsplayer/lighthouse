@@ -151,11 +151,17 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     failed = sum(1 for r in results or [] if "error" in r)
     log.info("fetched %d boards (%d failed)", len(results or []), failed)
     conn = db.connect(db_path)
-    if retired:   # boards switched off in the list: their postings were closed, re-cluster those companies
-        fetch.postprocess(conn, cfg, retired)
+    gone, keys = db.purge_out_of_scope(conn, p["countries"])
+    if gone:
+        log.info("deleted %d postings outside %s (stored before the builder covered only those)", gone,
+                 ", ".join(p["countries"]))
+    if retired or keys:   # postings closed (boards switched off in the list) or deleted: re-cluster those companies
+        fetch.postprocess(conn, cfg, set(retired) | keys)
     if llm:   # optional steps: the rule answers are published whatever happens here
         fill_gaps(conn, cfg, llm_minutes)
     _company_openings(conn)
+    if db.compact(conn):
+        log.info("compacted the database")
     conn.close()
     return export(db_path, out_dir, countries=p["countries"], published=published, full=full)
 
