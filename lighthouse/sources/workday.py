@@ -35,6 +35,7 @@ from .base import BoardNotFound, Source, json_body, workplace
 PAGE = 20  # the API rejects larger pages
 CAP = 2000          # a reported total of this (or more) can't be trusted as the end of the listing
 MAX_LISTED = 40000  # stop a runaway listing (the largest real site seen is about 20,000)
+LIST_WORKERS = 4    # listing pages read at once
 _COUNTRY_NAMES = {name: code for code, names in geo.COUNTRIES.items() for name in names}
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
 # The same boards are also served as wdN.myworkdaysite.com/recruiting/<tenant>/<site>
@@ -139,21 +140,32 @@ class WorkdaySource(Source):
 
     def _list(self, api: str, facets: dict, first: dict | None = None) -> list[dict]:
         """Every posting of a listing: pages until one comes back empty (or, for a believable total,
-        until it's reached). Postings that move between pages while we read are kept once."""
-        items, seen, offset, total = [], set(), 0, None
-        while offset < MAX_LISTED:
-            page = first if first is not None and offset == 0 else self._page(api, facets, offset)
-            if total is None:
-                total = int(page.get("total") or 0)  # only the first page carries the total
-            batch = page.get("jobPostings") or []
+        until it's reached). Pages are read four at a time (the per-host rate limit still applies): a
+        20,000-posting site is 1,000 requests. Postings that move between pages while we read are kept
+        once."""
+        page = first if first is not None else self._page(api, facets, 0)
+        total = int(page.get("total") or 0)          # only the first page carries the total
+        items, seen, offset = [], set(), 0
+
+        def take(batch) -> int:
             for raw in batch:
                 key = raw.get("externalPath")
                 if key not in seen:
                     seen.add(key)
                     items.append(raw)
-            offset += len(batch)
-            if not batch or (total < CAP and offset >= total):
-                break
+            return len(batch)
+
+        got = take(page.get("jobPostings") or [])
+        offset += got
+        with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
+            while got and offset < MAX_LISTED and not (total < CAP and offset >= total):
+                left = (total - offset + PAGE - 1) // PAGE if total < CAP else LIST_WORKERS
+                offsets = [offset + k * PAGE for k in range(max(1, min(LIST_WORKERS, left)))]
+                for batch in pool.map(lambda o: self._page(api, facets, o).get("jobPostings") or [], offsets):
+                    got = take(batch)
+                    offset += PAGE
+                    if not got:
+                        break
         return items
 
     def fetch(self, slug, known=None):
