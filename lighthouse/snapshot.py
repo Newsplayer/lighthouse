@@ -136,7 +136,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     client = net.open_network(net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second))
     boards = list(cfg.boards)
     if discover_companies:
-        boards += discover_boards(conn, config_path.parent, client, full=full)
+        boards += discover_boards(conn, config_path.parent, client, full=full, listed=cfg.boards)
     boards = merge_same_boards(conn, boards)
     retired = apply_board_list(conn, boards, retry_switched_off=full)
     conn.close()
@@ -184,11 +184,34 @@ def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
     return out
 
 
-def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_n: int = 24) -> list[dict]:
+_SIDE_BOARD = re.compile(r"campus|intern|early|student|graduate|redeploy|restricted|contractor|alumni|referral", re.I)
+
+
+def listed_board(company: str, by_company: dict) -> dict | None:
+    """The board a board list already has for this company (same name once "Inc", "Holdings"... are
+    dropped): one that's on if there is one, and its main site rather than a campus or internal one."""
+    from .models import company_key
+    found = by_company.get(company_key(company)) or []
+    found = sorted(found, key=lambda b: (not b.get("enabled", True), bool(_SIDE_BOARD.search(b["slug"]))))
+    return found[0] if found else None
+
+
+def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_n: int = 24,
+                    listed: list[dict] | None = None) -> list[dict]:
     """Resolve config/companies.csv to boards, re-checking only what's due. Results are kept in the
-    builder's `companies` table (and shipped as the coverage report). Returns board-list entries."""
+    builder's `companies` table (and shipped as the coverage report). Returns board-list entries.
+
+    A company that a board list (config/boards/*.csv: boards checked by hand) already has needs no
+    looking up: its careers page may hide the system behind scripts or robots.txt (Stripe, SpaceX,
+    Cloudflare were reported "not found" while their boards were being read all along)."""
     from . import discover, net
+    from .models import company_key
+    from .sources import SOURCES
     companies = discover.load_companies(config_dir)
+    by_company: dict[str, list] = {}
+    for b in listed or []:
+        if b.get("company") and b["ats"] in SOURCES:
+            by_company.setdefault(company_key(b["company"]), []).append(b)
     have = {r["company"]: dict(r) for r in conn.execute("SELECT * FROM companies")}
     failing = {(r[0], r[1]) for r in conn.execute("SELECT ats, slug FROM boards WHERE last_error IS NOT NULL")}
     empty = {(r[0], r[1]) for r in conn.execute("SELECT ats, slug FROM boards WHERE enabled = 1 AND job_count = 0 "
@@ -196,10 +219,11 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
     todo, keep = [], []
     for c in companies:
         old = have.get(c["company"])
-        if c["ats"] and c["slug"]:
+        known = None if c["ats"] and c["slug"] else listed_board(c["company"], by_company)
+        if (c["ats"] and c["slug"]) or known:
             keep.append(discover.Result(company=c["company"], group=c["group"], domain=c["domain"],
-                                        careers_url=c["careers_url"], ats=c["ats"], slug=c["slug"],
-                                        status="pinned", checked_at=_now()))
+                                        careers_url=c["careers_url"], ats=c["ats"] or known["ats"],
+                                        slug=c["slug"] or known["slug"], status="pinned", checked_at=_now()))
             continue
         age = _age_hours(old["checked_at"]) / 24 if old else float("inf")
         due = (full or old is None or old.get("careers_url") != c["careers_url"]
@@ -225,7 +249,6 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
         for (name,) in conn.execute("SELECT company FROM companies").fetchall():
             if name not in names:
                 conn.execute("DELETE FROM companies WHERE company = ?", (name,))
-    from .sources import SOURCES
     return [{"ats": r["ats"], "slug": r["slug"], "company": r["company"], "options": None, "list": "companies",
              "enabled": True}
             for r in conn.execute("SELECT company, ats, slug FROM companies WHERE status IN ('ok', 'pinned')")
