@@ -5,7 +5,7 @@ app, start it, and it reads the index this repo publishes.
 
 ```
 config/companies.csv ─► careers pages ─┐
-config/boards/*.csv ───► job boards ───┴► GitHub Action (every 6 h) ─► release "job-index" ─► every user's Lighthouse
+config/boards/*.csv ───► job boards ───┴► GitHub Action (every 3 h) ─► release "job-index" ─► every user's Lighthouse
                                            finds boards, fetches,        manifest.json          uses base.db.xz as is,
                                            cleans, analyses, indexes     base.db.xz  (weekly)   applies deltas, never writes
 your commits ──────────► (lists, code)                                   delta.db.xz (each run)
@@ -122,7 +122,7 @@ Workday sites fill in their descriptions over the next few days. When it's green
   base-….db.xz: 514519 rows, 537.6 MB`,
   then how full each filter column is (`Filled for this % of open roles`) and the `jobs.csv.gz` row count.
 
-After that it runs every 6 hours by itself, plus whenever a push to `main` changes `config/`,
+After that it runs every 3 hours by itself, plus whenever a push to `main` changes `config/`,
 `lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
 nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
 
@@ -316,8 +316,11 @@ once a week, or when the changes add up to half the base.
    - **Within the hour.** 48 boards run in parallel, stalest first (whatever wasn't reached last
      time), and among those the biggest first. After 40 minutes (`--fetch-minutes`, or the
      `LIGHTHOUSE_FETCH_MINUTES` variable) no new board or description call is started; boards not
-     reached keep their postings and lead the next run. Workday boards are fetched every other run
-     (11 hours apart), and each Workday data center gets 3 requests a second.
+     reached keep their postings and lead the next run.
+   - **How often.** Builds run every 3 hours. A board that answers in one request (Greenhouse, Lever,
+     Ashby, Workable, Recruitee) is read every build. A listing that takes many requests is read
+     four times a day, and Workday twice a day (11 hours apart); each Workday data center gets
+     3 requests a second.
    - **Workday listings are read whole.** A Workday site serves at most 2,000 results per listing
      (past that it repeats earlier pages). A bigger listing is read in parts, using the site's own
      filters (state, job category, full or part time...), and a part that is still over 2,000 is split

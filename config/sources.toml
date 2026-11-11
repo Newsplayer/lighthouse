@@ -40,7 +40,7 @@ monthly_cap_usd = 5.0
 batch_threshold = 20             # this many requests or more use the Batch API (half price)
 
 # The shared job index. With repo set, this copy downloads the index that repo's GitHub Action
-# publishes (every 6 hours) and never fetches job boards itself. Leave it empty only on the
+# publishes (every 3 hours) and never fetches job boards itself. Leave it empty only on the
 # machine that builds the index. Maintainers: see MAINTAINING.md.
 [index]
 repo = "Newsplayer/lighthouse"   # the public repo whose GitHub Action publishes the index

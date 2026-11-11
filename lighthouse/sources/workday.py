@@ -240,11 +240,9 @@ class WorkdaySource(Source):
         company = self.company_name(slug.split(".")[0])
         jobs = [self.parse_summary(slug, host, site, raw, company) for raw in items if raw.get("externalPath")]
         jobs = [j for j in jobs if self.wanted(j)]
-        todo = self.detail_todo([j for j in jobs if not known.get(j.uid, ("", False))[1]])
-        with ThreadPoolExecutor(max_workers=4) as pool:  # per-host throttle still applies
-            for job, detail in zip(todo, pool.map(lambda j: self._detail(api, j), todo)):
-                if detail:
-                    self.apply_detail(job, detail)
+        for job, detail in self.details([j for j in jobs if not known.get(j.uid, ("", False))[1]], lambda j: self._detail(api, j)):
+            if detail:
+                self.apply_detail(job, detail)
         return jobs
 
     def _detail(self, api: str, job: Job) -> dict | None:

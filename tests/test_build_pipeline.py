@@ -135,6 +135,12 @@ def test_boards_go_stalest_first_then_biggest_and_workday_every_other_run():
     assert not fetch.not_due({"ats": "workday", "slug": "x.wd5/S", "last_ok": ago(12)}, s)
     assert not fetch.not_due({"ats": "workday", "slug": "x.wd5/S", "last_ok": ago(6), "last_error": "Pushed back"}, s)
     assert not fetch.not_due({"ats": "greenhouse", "slug": "x", "last_ok": ago(1)}, s)
+    # builds every 3 hours: one-request boards every build, many-request listings as often as before
+    s.paged_refresh_hours = 5
+    assert not fetch.not_due({"ats": "greenhouse", "slug": "x", "last_ok": ago(1), "body_hash": "h"}, s)
+    assert fetch.not_due({"ats": "oracle", "slug": "h/S", "last_ok": ago(3)}, s)
+    assert not fetch.not_due({"ats": "oracle", "slug": "h/S", "last_ok": ago(6)}, s)
+    assert not fetch.not_due({"ats": "oracle", "slug": "h/S", "last_ok": None}, s)             # never read: now
 
 
 # ---------------------------------------------------------------- closures
@@ -326,5 +332,6 @@ def test_builder_settings_fit_the_hour(tmp_path, monkeypatch):
     snapshot.build(tmp_path / "dist", config_path=cfgp, db_path=tmp_path / "b.db", llm=False)
     assert seen["fetch_minutes"] == snapshot.FETCH_MINUTES and seen["fetch_workers"] >= 48
     assert seen["workday_refresh_hours"] == snapshot.WORKDAY_REFRESH_HOURS
+    assert seen["paged_refresh_hours"] == snapshot.PAGED_REFRESH_HOURS
     snapshot.build(tmp_path / "dist", config_path=cfgp, db_path=tmp_path / "b.db", llm=False, fetch_minutes=5)
     assert seen["fetch_minutes"] == 5

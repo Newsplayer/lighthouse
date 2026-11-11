@@ -11,7 +11,6 @@ one its search page calls.
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
@@ -84,12 +83,10 @@ class PhenomSource(Source):
         company = self.company_name(host.split(".")[1] if host.count(".") >= 2 else host)
         jobs = [self.parse_summary(slug, host, country, lang, r, company) for r in raws if r.get("jobSeqNo") or r.get("jobId")]
         jobs = [j for j in jobs if self.wanted(j)]
-        todo = self.detail_todo([j for j in jobs if not known.get(j.uid, ("", False))[1]])
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for job, d in zip(todo, pool.map(lambda j: self._detail(host, country, lang, j), todo)):
-                if d:
-                    job.content_html = sanitize_html(d.get("description") or "")
-                    job.partial = False
+        for job, d in self.details([j for j in jobs if not known.get(j.uid, ("", False))[1]], lambda j: self._detail(host, country, lang, j)):
+            if d:
+                job.content_html = sanitize_html(d.get("description") or "")
+                job.partial = False
         return jobs
 
     def _detail(self, host, country, lang, job):

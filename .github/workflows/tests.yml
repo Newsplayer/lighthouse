@@ -1,5 +1,5 @@
 # Runs the tests and the lint check on every pull request and every push to main, so a change that
-# breaks something is seen before it's merged (the builder publishes from main every 6 hours).
+# breaks something is seen before it's merged (the builder publishes from main every 3 hours).
 name: Tests
 
 on:

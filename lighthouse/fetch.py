@@ -7,6 +7,7 @@ fetch, only companies whose postings changed are re-clustered and re-extracted.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -18,6 +19,7 @@ from pathlib import Path
 from . import config as config_mod
 from . import db, dedupe, extract, ghost, profile, sponsors, workers
 from .config import DEFAULT_CONFIG
+from .models import age_hours, utcnow
 from .net import default_client
 from .sources import SOURCES, BoardNotFound
 from .sources.base import RunGate, Unchanged, looks_blocked
@@ -73,13 +75,6 @@ def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=N
             time.sleep(pause)
 
 
-def _age_hours(iso_time: str | None) -> float:
-    try:
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_time)).total_seconds() / 3600
-    except (TypeError, ValueError):
-        return float("inf")
-
-
 def order_boards(boards: list[dict], every_hours: float = 6) -> list[dict]:
     """Stalest first: boards not reached (or pushed back) last run lead, so under a time limit every
     board is refreshed in turn. Among equally stale boards the biggest go first, so long listings
@@ -87,16 +82,19 @@ def order_boards(boards: list[dict], every_hours: float = 6) -> list[dict]:
     step = max(every_hours, 1)
 
     def tier(b):   # how many runs ago it was last fetched OK (never: first of all)
-        age = _age_hours(b.get("last_ok"))
+        age = age_hours(b.get("last_ok"))
         return 99 if age == float("inf") else min(int(age // step), 98)
     return sorted(boards, key=lambda b: (-tier(b), -(b.get("job_count") or 0)))
 
 
 def not_due(board: dict, s) -> bool:
-    """Workday boards are refreshed every workday_refresh_hours: a listing is one request per 20
-    postings, and every company on a data center shares that data center's limit."""
-    return (board["ats"] == "workday" and s.workday_refresh_hours > 0 and not board.get("last_error")
-            and _age_hours(board.get("last_ok")) < s.workday_refresh_hours)
+    """A board that answers in one request (it has a response hash: Greenhouse, Lever, Ashby...) is
+    read every run; an unchanged one costs that request and nothing else. A listing that takes many
+    requests is read every paged_refresh_hours, and Workday every workday_refresh_hours (one request
+    per 20 postings, and every company on a data center shares that data center's limit)."""
+    hours = (s.workday_refresh_hours if board["ats"] == "workday"
+             else 0 if board.get("body_hash") else s.paged_refresh_hours)
+    return hours > 0 and not board.get("last_error") and age_hours(board.get("last_ok")) < hours
 
 
 def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str | None = None,
@@ -283,8 +281,6 @@ def needs_reprocess(conn) -> bool:
 def precompute(conn, company_keys=None) -> int:
     """Compute MinHash signatures and rule-based extractions for every description that needs
     them, streamed in batches through a process pool. Returns how many descriptions were processed."""
-    import json
-    from .models import utcnow
     scope, args = "", []
     if company_keys is not None:
         keys = list(company_keys)

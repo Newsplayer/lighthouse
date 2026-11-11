@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar
 
 from ..models import Job
@@ -160,6 +161,13 @@ class Source:
         def key(j: Job):
             return (j.uid in self.known, job_function(j.title) is None, -(j.posted_at.timestamp() if j.posted_at else 0))
         return sorted(jobs, key=key)[: self.max_detail_calls]
+
+    def details(self, need: list[Job], call):
+        """(posting, what its description call answered) for this run's share of `need`, four calls at
+        a time (the per-host rate limit still applies)."""
+        todo = self.detail_todo(need)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            yield from zip(todo, pool.map(call, todo))
 
     def unchanged(self, uid: str, *parts) -> tuple[bool, str]:
         """Hash the raw description; if it matches what's stored, skip sanitizing it again."""

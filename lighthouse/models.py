@@ -113,5 +113,13 @@ def parse_expiry(value) -> datetime | None:
     return dt
 
 
+def age_hours(iso_time: str | None) -> float:
+    """Hours since an ISO time (never, or unreadable: infinity)."""
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_time)).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")

@@ -52,6 +52,7 @@ class Settings:
                                      # limit). Boards not reached are fetched first next run; nothing is lost.
     workday_refresh_hours: float = 0  # a Workday board fetched OK more recently than this is skipped this run
                                      # (0 = every run). Every Workday site shares one rate limit per data center.
+    paged_refresh_hours: float = 0   # the same for every other listing that takes many requests (0 = every run)
     disable_after_failures: int = 2   # a board that reports "not found" this many runs in a row is switched off
     inactive_content_retention_days: int = 180
     # A posting no longer listed is closed at once; it's deleted (and readers drop it) this many days

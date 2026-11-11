@@ -39,7 +39,7 @@ from urllib.parse import urljoin
 
 from . import __version__, db, extract, workers
 from . import profile as profile_mod
-from .models import utcnow
+from .models import age_hours, utcnow
 
 log = logging.getLogger("lighthouse.index")
 
@@ -58,7 +58,8 @@ FETCH_DETAIL_MINUTES = 120         # builder: boards started later than this ski
 # first next run), then clustering, the rules, the Claude batch and the files take the rest.
 FETCH_MINUTES = 40
 FETCH_WORKERS = 48                 # boards in parallel: most wait on their host's rate limit, not on CPU
-WORKDAY_REFRESH_HOURS = 11         # each Workday board every other 6-hour run (see Settings.workday_refresh_hours)
+WORKDAY_REFRESH_HOURS = 11         # each Workday board twice a day (see Settings.workday_refresh_hours)
+PAGED_REFRESH_HOURS = 5            # other many-request listings four times a day, as before builds ran every 3 hours
 
 # A published index carries one description per role: its canonical listing's (lists and search only
 # ever show canonical rows; a duplicate listing's page shows its role's text), plus the listings of
@@ -92,13 +93,6 @@ class IndexProblem(Exception):
 def _now() -> str:
     # Microseconds: build order must be unambiguous (deltas hold rows changed *after* the base).
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
-
-
-def _age_hours(iso: str | None) -> float:
-    try:
-        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 3600
-    except (TypeError, ValueError):
-        return float("inf")
 
 
 def _cols(conn, table: str, schema: str = "main") -> list[str]:
@@ -149,6 +143,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
                  "fetch_minutes": FETCH_MINUTES if fetch_minutes is None else fetch_minutes,
                  "fetch_workers": max(s.fetch_workers, FETCH_WORKERS),
                  "workday_refresh_hours": s.workday_refresh_hours or WORKDAY_REFRESH_HOURS,
+                 "paged_refresh_hours": s.paged_refresh_hours or PAGED_REFRESH_HOURS,
                  **({"max_detail_calls_per_board": detail_calls} if detail_calls else {})}
     results = fetch.run(config_path, db_path, use_snapshot=False, overrides=overrides)
     failed = sum(1 for r in results or [] if "error" in r)
@@ -236,7 +231,7 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
                                         careers_url=c["careers_url"], ats=c["ats"] or known["ats"],
                                         slug=c["slug"] or known["slug"], status="pinned", checked_at=_now()))
             continue
-        age = _age_hours(old["checked_at"]) / 24 if old else float("inf")
+        age = age_hours(old["checked_at"]) / 24 if old else float("inf")
         due = (full or old is None or old.get("careers_url") != c["careers_url"]
                or (old["status"] == "ok" and (age > REDISCOVER_OK_DAYS or (old["ats"], old["slug"]) in failing
                                               or ((old["ats"], old["slug"]) in empty and age > REDISCOVER_BAD_DAYS)))
@@ -677,7 +672,7 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
               else "published index differs from this builder's" if not pub or (pub.get("base") or {}).get("built_at") != since
               or pub.get("format") != FORMAT or pub.get("index_schema") != db.INDEX_SCHEMA
               or pub.get("rules_version") != workers.RULES_VERSION
-              else "weekly rebuild" if _age_hours(since) > BASE_EVERY_DAYS * 24
+              else "weekly rebuild" if age_hours(since) > BASE_EVERY_DAYS * 24
               else "changes outgrew half the base" if pending > total / 2
               else "long chain of deltas" if len(chain) >= MAX_DELTAS else None)
     meta = {"built_at": now, "rules_version": workers.RULES_VERSION, "lighthouse": __version__,
@@ -836,7 +831,7 @@ def boards_markdown(m: dict) -> str:
     GitHub issue the workflow keeps up to date ("" when there are none)."""
     rows = [f for f in (m.get("health") or {}).get("failing") or []
             if f["error"].startswith("Switched off automatically")
-            or _age_hours(f["since"]) - _age_hours(m.get("built_at")) >= BROKEN_AFTER_DAYS * 24]
+            or age_hours(f["since"]) - age_hours(m.get("built_at")) >= BROKEN_AFTER_DAYS * 24]
     if not rows:
         return ""
     cell = lambda s: str(s).replace("|", "/").replace("\n", " ")
@@ -1177,7 +1172,7 @@ def status(conn, cfg) -> dict:
             "base_built_at": info.get("base_built_at"), "checked_at": info.get("checked_at"),
             "jobs": info.get("jobs"), "boards": info.get("boards"), "countries": info.get("countries") or [],
             "coverage": info.get("coverage") or {}, "error": info.get("error"),
-            "stale": bool(info.get("built_at")) and _age_hours(info.get("built_at")) > cfg.index.stale_after_hours}
+            "stale": bool(info.get("built_at")) and age_hours(info.get("built_at")) > cfg.index.stale_after_hours}
 
 
 def suggest_url(repo: str) -> str:

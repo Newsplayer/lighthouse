@@ -68,7 +68,6 @@ def _serve(host: str, port: int, open_browser: bool) -> None:
 
 
 def _index(args) -> None:
-    import json
     from . import snapshot
     cfg = config.load()
     if args.action == "seed":   # builder: start from the published base when the Action's cache is gone
@@ -134,7 +133,6 @@ def _index(args) -> None:
 
 
 def _discover(args) -> None:
-    import json
     from . import discover, net
     cfg_dir = config.DEFAULT_CONFIG.parent
     companies = discover.load_companies(cfg_dir)
