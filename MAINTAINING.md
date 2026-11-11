@@ -304,10 +304,11 @@ once a week, or when the changes add up to half the base.
      `LIGHTHOUSE_FETCH_MINUTES` variable) no new board or description call is started; boards not
      reached keep their postings and lead the next run. Workday boards are fetched every other run
      (11 hours apart), and each Workday data center gets 3 requests a second.
-   - **Workday listings are read whole.** Many sites report 2,000 results however many they have, so
-     pages are read (four at a time) until one comes back empty. Where the site has a country filter,
-     only the countries the build covers are asked for. A board listed twice in different letter case
-     is read once.
+   - **Workday listings are read whole.** A Workday site serves at most 2,000 results per listing
+     (past that it repeats earlier pages). A bigger listing is read in parts, using the site's own
+     filters (state, job category, full or part time...), and a part that is still over 2,000 is split
+     again. Where the site has a country filter, only the countries the build covers are asked for.
+     Pages are read four at a time. A board listed twice in different letter case is read once.
    - **Pushing back is respected.** A bot-check page, 403, 429 after backoff or a run of CDN edge
      errors counts against the board's group: one Workday data center (wd1, wd5...), one shared API
      host (Greenhouse, Lever...), or the board's own site. After three, the group is left alone for the
