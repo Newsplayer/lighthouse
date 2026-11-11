@@ -11,7 +11,14 @@ The list endpoint pages 20 at a time and returns only title, location text and a
 date ("Posted 3 Days Ago"), so each posting needs one detail call for its description,
 exact start date and full location list. As with SmartRecruiters, detail calls go only to
 new postings, capped per run (max_detail_calls_per_board); the rest are listed title-only
-and filled in on later runs. Some very large sites report at most ~2,000 results per listing.
+and filled in on later runs.
+
+Two things keep big sites complete and cheap (checked against real sites, 2026-11-10):
+- Many sites report a total of exactly 2,000 however many postings they have (Walmart: about 20,000),
+  yet keep serving pages past it. So the listing is read until a page comes back empty, not until the
+  reported total.
+- Most sites offer a country filter (a "facet"). When the builder covers only some countries, the
+  listing is asked for those countries only: Accenture's is 1,195 postings instead of every country's.
 """
 
 from __future__ import annotations
@@ -20,16 +27,61 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+from .. import geo
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source, json_body, workplace
 
 PAGE = 20  # the API rejects larger pages
+CAP = 2000          # a reported total of this (or more) can't be trusted as the end of the listing
+MAX_LISTED = 40000  # stop a runaway listing (the largest real site seen is about 20,000)
+_COUNTRY_NAMES = {name: code for code, names in geo.COUNTRIES.items() for name in names}
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
 # The same boards are also served as wdN.myworkdaysite.com/recruiting/<tenant>/<site>
 _SITE_URL = re.compile(r"(?P<dc>wd\d+)\.myworkdaysite\.com/(?:[a-z]{2}-[A-Z]{2}/)?recruiting/(?P<tenant>[\w-]+)/(?P<site>[\w-]+)", re.I)
 _SLUG = re.compile(r"^(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)/(?P<site>[\w-]+)$", re.I)
 _RESERVED_SITES = {"wday", "job", "jobs", "login", "en-us"}
+
+
+def _leaves(facets, param=None):
+    """(facet parameter, value) for every selectable value; some facets nest groups of values."""
+    for f in facets or []:
+        if not isinstance(f, dict):
+            continue
+        p = f.get("facetParameter") or param
+        if f.get("values"):
+            yield from _leaves(f["values"], p)
+        elif f.get("id") and p:
+            yield p, f
+
+
+def country_facet(facets, wanted) -> dict | None:
+    """The filter that narrows a listing to the wanted countries: {facet parameter: [value ids]}.
+    None: this site has no country filter we can trust, so read everything. {}: it has one, and none
+    of the wanted countries are in it (no postings there).
+
+    A country filter is a facet whose values are nearly all country names ("United States of America",
+    "Canada"...), whatever the site calls it (locationCountry, Location_Country, locationHierarchy1,
+    Country_and_Jurisdiction have all been seen). A long list may be cut short by the site, so a
+    wanted country missing from one of 50+ values means "can't tell", not "none"."""
+    by_param: dict[str, list] = {}
+    for param, v in _leaves(facets):
+        by_param.setdefault(param, []).append(v)
+    best = None
+    for param, values in by_param.items():
+        codes = [_COUNTRY_NAMES.get(geo._norm(v.get("descriptor") or "")) for v in values]
+        named = sum(1 for c in codes if c)
+        if named < 0.6 * len(values) and not (named and "country" in param.lower()):
+            continue
+        ids = [v["id"] for v, c in zip(values, codes) if c in wanted]
+        found = {c for c in codes if c in wanted}
+        if len(values) >= 50 and found != set(wanted):
+            return None
+        if best is None or len(ids) > len(best[1]):
+            best = (param, ids)
+    if best is None:
+        return None
+    return {best[0]: best[1]} if best[1] else {}
 
 
 def parse_slug(slug: str) -> tuple[str, str, str]:
@@ -77,26 +129,45 @@ class WorkdaySource(Source):
         host = f"https://{tenant}.{dc}.myworkdayjobs.com"
         return host, f"{host}/wday/cxs/{tenant}/{site}", site
 
-    def fetch(self, slug, known=None):
-        known = known or {}
-        host, api, site = self._base(slug)
-        items, offset, total = [], 0, None
-        while True:
-            r = self.client.post(f"{api}/jobs", json={"appliedFacets": {}, "limit": PAGE, "offset": offset,
-                                                      "searchText": ""},
-                                 headers={"Accept": "application/json"})
-            if r.status_code in (404, 422):
-                raise BoardNotFound("Workday: site not found (check tenant, wdN and site name)")
-            page = json_body(r, "Workday")
+    def _page(self, api: str, facets: dict, offset: int) -> dict:
+        r = self.client.post(f"{api}/jobs", json={"appliedFacets": facets, "limit": PAGE, "offset": offset,
+                                                  "searchText": ""},
+                             headers={"Accept": "application/json"})
+        if r.status_code in (404, 422):
+            raise BoardNotFound("Workday: site not found (check tenant, wdN and site name)")
+        return json_body(r, "Workday")
+
+    def _list(self, api: str, facets: dict, first: dict | None = None) -> list[dict]:
+        """Every posting of a listing: pages until one comes back empty (or, for a believable total,
+        until it's reached). Postings that move between pages while we read are kept once."""
+        items, seen, offset, total = [], set(), 0, None
+        while offset < MAX_LISTED:
+            page = first if first is not None and offset == 0 else self._page(api, facets, offset)
             if total is None:
                 total = int(page.get("total") or 0)  # only the first page carries the total
             batch = page.get("jobPostings") or []
-            items += batch
+            for raw in batch:
+                key = raw.get("externalPath")
+                if key not in seen:
+                    seen.add(key)
+                    items.append(raw)
             offset += len(batch)
-            if not batch or offset >= total:
+            if not batch or (total < CAP and offset >= total):
                 break
-        if not items:
+        return items
+
+    def fetch(self, slug, known=None):
+        known = known or {}
+        host, api, site = self._base(slug)
+        first = self._page(api, {}, 0)
+        if not first.get("jobPostings"):
             raise BoardNotFound("Workday: no public postings on this site")
+        narrow = country_facet(first.get("facets"), self.countries) if self.countries else None
+        if narrow == {}:           # the site has a country filter, and none of our countries are in it
+            return []
+        items = self._list(api, narrow, None) if narrow else self._list(api, {}, first)
+        if narrow and not items:   # the filter matched nothing though it listed our countries: don't trust it
+            items = self._list(api, {}, first)
         company = self.company_name(slug.split(".")[0])
         jobs = [self.parse_summary(slug, host, site, raw, company) for raw in items if raw.get("externalPath")]
         jobs = [j for j in jobs if self.wanted(j)]

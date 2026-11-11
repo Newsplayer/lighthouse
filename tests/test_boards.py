@@ -160,3 +160,58 @@ def test_hourly_title_filter_is_narrow():
             "Executive Chef", "Records Custodian Analyst", "Production Engineer", "Assembly Line Process Engineer"]
     assert [t for t in skip if not h.search(t)] == []
     assert [t for t in keep if h.search(t)] == []
+
+
+# ---------------------------------------------------------------- Workday: big sites and the country filter
+US, CA, IN = "bc33aa31", "a30a87ed", "c4f78be1"
+FACETS = [{"facetParameter": "jobFamilyGroup", "descriptor": "Job Category",
+           "values": [{"descriptor": "Engineering", "id": "jf1", "count": 9}, {"descriptor": "Canada Sales", "id": "jf2", "count": 3}]},
+          {"facetParameter": "locationMainGroup", "values": [
+              {"facetParameter": "locationCountry", "descriptor": "Country", "values": [
+                  {"descriptor": "United States of America", "id": US, "count": 45},
+                  {"descriptor": "India", "id": IN, "count": 60}, {"descriptor": "Canada", "id": CA, "count": 5}]},
+              {"facetParameter": "locations", "descriptor": "Locations",
+               "values": [{"descriptor": "Austin", "id": "l1", "count": 5}, {"descriptor": "Toronto", "id": "l2", "count": 5}]}]}]
+
+
+def big_site(n_all, n_narrow, reported=2000, facets=FACETS):
+    """A site with n_all postings (n_narrow in the US and Canada) that reports at most `reported`."""
+    def post(body):
+        narrowed = bool(body["appliedFacets"])
+        n, off = (n_narrow if narrowed else n_all), body["offset"]
+        batch = [{"title": f"Analyst {k}", "externalPath": f"/job/{'US' if narrowed else 'X'}/Analyst_{k}",
+                  "locationsText": "Austin, TX" if narrowed else "Pune, India"} for k in range(off, min(off + 20, n))]
+        return FakeResp({"total": min(n, reported), "jobPostings": batch, **({"facets": facets} if off == 0 else {})})
+    return FakeClient({"/job/": DETAIL, "/jobs": post})
+
+
+def test_workday_reads_past_the_2000_cap():
+    c = big_site(2450, 0, facets=[])
+    jobs = WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")
+    assert len(jobs) == 2450                                   # not the 2,000 the site reports
+    posts = [x for x in c.calls if isinstance(x, tuple)]
+    assert len(posts) == 124 and posts[-1][2]["offset"] == 2450   # 123 pages, then the empty one that ends it
+    c = big_site(45, 0, reported=45, facets=[])                # a believable total ends the listing by itself
+    assert len(WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")) == 45
+    assert len([x for x in c.calls if isinstance(x, tuple)]) == 3
+
+
+def test_workday_asks_only_for_the_countries_the_builder_covers():
+    from lighthouse.sources.workday import country_facet
+    assert country_facet(FACETS, {"US", "CA", "MX"}) == {"locationCountry": [US, CA]}
+    assert country_facet(FACETS, {"MX"}) == {}                 # a country filter, and Mexico isn't in it
+    assert country_facet(FACETS[:1], {"US"}) is None           # "Canada Sales" is a job category, not a country
+    many = [{"facetParameter": "Location_Country", "values": [{"descriptor": "United States of America", "id": US}] +
+             [{"descriptor": f"Country {k}", "id": f"c{k}"} for k in range(54)]}]
+    assert country_facet(many, {"US", "MX"}) is None           # a long list may be cut short: Mexico unknown
+    assert country_facet(many, {"US"}) == {"Location_Country": [US]}
+
+    c = big_site(5000, 50)
+    src = WorkdaySource(client=c, company="Acme", max_detail_calls=0)
+    src.countries = frozenset({"US", "CA", "MX"})
+    jobs = src.fetch("acme.wd5/Careers")
+    assert len(jobs) == 50 and all(j.location == "Austin, TX" for j in jobs)
+    posts = [x[2] for x in c.calls if isinstance(x, tuple)]
+    assert len(posts) == 1 + 3 and all(p["appliedFacets"] == {"locationCountry": [US, CA]} for p in posts[1:])
+    src = WorkdaySource(client=big_site(5000, 50), company="Acme", max_detail_calls=0)   # no country scope: everything
+    assert len(src.fetch("acme.wd5/Careers")) == 5000
