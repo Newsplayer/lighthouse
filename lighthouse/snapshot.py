@@ -137,6 +137,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     boards = list(cfg.boards)
     if discover_companies:
         boards += discover_boards(conn, config_path.parent, client, full=full)
+    boards = merge_same_boards(conn, boards)
     retired = apply_board_list(conn, boards, retry_switched_off=full)
     conn.close()
     # Nothing new is started after fetch_minutes, so even a first build of the whole list (hundreds of
@@ -190,6 +191,8 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
     companies = discover.load_companies(config_dir)
     have = {r["company"]: dict(r) for r in conn.execute("SELECT * FROM companies")}
     failing = {(r[0], r[1]) for r in conn.execute("SELECT ats, slug FROM boards WHERE last_error IS NOT NULL")}
+    empty = {(r[0], r[1]) for r in conn.execute("SELECT ats, slug FROM boards WHERE enabled = 1 AND job_count = 0 "
+                                                "AND last_ok IS NOT NULL")}   # read fine, but lists nothing for us
     todo, keep = [], []
     for c in companies:
         old = have.get(c["company"])
@@ -200,7 +203,8 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
             continue
         age = _age_hours(old["checked_at"]) / 24 if old else float("inf")
         due = (full or old is None or old.get("careers_url") != c["careers_url"]
-               or (old["status"] == "ok" and (age > REDISCOVER_OK_DAYS or (old["ats"], old["slug"]) in failing))
+               or (old["status"] == "ok" and (age > REDISCOVER_OK_DAYS or (old["ats"], old["slug"]) in failing
+                                              or ((old["ats"], old["slug"]) in empty and age > REDISCOVER_BAD_DAYS)))
                or (old["status"] != "ok" and age > REDISCOVER_BAD_DAYS))
         if due:
             todo.append(c)
@@ -226,6 +230,27 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
              "enabled": True}
             for r in conn.execute("SELECT company, ats, slug FROM companies WHERE status IN ('ok', 'pinned')")
             if r["ats"] in SOURCES]
+
+
+CASELESS_SLUGS = {"workday"}   # the site name in a Workday address is the same site in any letter case
+
+
+def merge_same_boards(conn, boards: list[dict]) -> list[dict]:
+    """One board listed twice under spellings that differ only in letter case (a board list says
+    "bah.wd1/bah_jobs", the company's careers page "bah.wd1/BAH_Jobs") is one board: every posting was
+    being read, stored and de-duplicated twice. The first spelling listed wins; later entries (and the
+    companies table, so coverage still finds its board) take it."""
+    first: dict[tuple[str, str], str] = {}
+    out = []
+    for b in boards:
+        if b["ats"] in CASELESS_SLUGS:
+            slug = first.setdefault((b["ats"], b["slug"].lower()), b["slug"])
+            if slug != b["slug"]:
+                with conn:
+                    conn.execute("UPDATE companies SET slug = ? WHERE ats = ? AND slug = ?", (slug, b["ats"], b["slug"]))
+                b = {**b, "slug": slug}
+        out.append(b)
+    return out
 
 
 def _company_openings(conn) -> None:

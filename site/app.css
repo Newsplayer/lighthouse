@@ -250,7 +250,9 @@ span.title:hover { text-decoration: none; }
 .excerpt { white-space: pre-line; border-left: 3px solid var(--line); padding-left: 12px; margin: 14px 0; }
 .sources { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
 .sources th, .sources td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-#sources input[type=search] { width: 100%; max-width: 320px; margin-top: 6px; }
+#sources input[type=search] { flex: 1 1 200px; max-width: 320px; }
+.sources tr.dim td { color: var(--muted); }
+.sources td.num, .sources th:last-child { text-align: right; white-space: nowrap; }
 
 @media (max-width: 640px) {
   main { padding: 12px 12px 50px; }

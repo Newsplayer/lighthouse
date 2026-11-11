@@ -733,23 +733,33 @@ async function openSources() {
   d.replaceChildren(el("p", { class: "meta", text: "Loading…" }));
   d.showModal();
   const src = await getJSON(`data/${state.latest.sources}`).catch(() => ({ companies: [], boards: [] }));
-  const covered = src.companies.filter((x) => x.status === "ok" || x.status === "pinned").length;
+  const isCovered = (x) => x.status === "ok" || x.status === "pinned";
+  const covered = src.companies.filter(isCovered).length;
   const filter = el("input", { type: "search", placeholder: "Find a company", "aria-label": "Find a company" });
-  const body = el("tbody");
+  const which = el("select", { "aria-label": "Show" },
+    el("option", { value: "", text: `All ${src.companies.length} companies` }),
+    el("option", { value: "yes", text: `Covered (${covered})` }),
+    el("option", { value: "no", text: `Not covered yet (${src.companies.length - covered})` }));
+  const body = el("tbody"), shown = el("p", { class: "meta", role: "status" });
   const draw = () => {
-    const q = filter.value.toLowerCase();
-    body.replaceChildren(...src.companies.filter((x) => !q || x.company.toLowerCase().includes(q)).slice(0, 400).map((x) =>
-      el("tr", {}, el("td", { text: x.company }), el("td", { text: x.ats || "" }),
-        el("td", { text: x.status === "ok" || x.status === "pinned" ? "covered" : x.status }), el("td", { text: x.openings ?? "" }))));
+    const q = filter.value.trim().toLowerCase(), w = which.value;
+    const rows = src.companies.filter((x) => (!q || x.company.toLowerCase().includes(q))
+      && (!w || (w === "yes") === isCovered(x)));
+    shown.textContent = rows.length === src.companies.length ? "" : `${rows.length} shown`;
+    body.replaceChildren(...rows.map((x) => el("tr", { class: isCovered(x) ? "" : "dim" },
+      el("td", { text: x.company }),
+      el("td", { text: isCovered(x) ? `Covered${x.system ? ` · ${x.system}` : ""}` : x.why || "Not covered yet" }),
+      el("td", { class: "num", text: isCovered(x) ? fmt(x.openings ?? 0) : "" }))));
   };
   filter.addEventListener("input", draw);
+  which.addEventListener("change", draw);
   draw();
   d.replaceChildren(
     el("form", { method: "dialog", class: "close" }, el("button", { type: "submit", "aria-label": "Close", text: "×" })),
     el("h2", { text: "Where the jobs come from" }),
     el("p", { text: `Postings are read straight from employers' own careers sites: ${covered} of ${src.companies.length} companies in the large-employer list are covered, plus ${src.boards.length.toLocaleString("en-US")} job boards in all. Roles are checked every few hours; duplicates are merged and likely ghost jobs are flagged.` }),
-    filter,
-    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "System", "Status", "Open roles"].map((h) => el("th", { text: h })))), body));
+    el("div", { class: "row" }, filter, which), shown,
+    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "Status", "Open roles"].map((h) => el("th", { text: h })))), body));
 }
 
 function alertBox(text) {

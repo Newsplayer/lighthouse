@@ -80,6 +80,25 @@ _JOBISH_HREF = re.compile(r"(/jobs?\b|/careers?\b|/search|/openings|/positions|/
 _JOB_PAGE_HREF = re.compile(r"/(?:job|jobs|position|positions|requisition|req|opening|vacancy|careers?/job)s?/[^/?#]{3,}", re.I)
 
 
+_LOCALE = re.compile(r"/([a-z]{2})[/_-]([a-z]{2})(?=[/._-]|$)", re.I)
+
+
+def sitemap_rank(url: str) -> int:
+    """Careers sites often publish one sitemap per country and language (/pl/pl/, /tw/zh/, /dach/de/),
+    in no useful order. Taking the first gave Corning's Polish site and DuPont's Taiwanese one, whose
+    jobs are all outside the countries we cover. Prefer the US English one, then sitemaps with no
+    country in the path, then other English ones, then the rest."""
+    path = urlsplit(url).path.lower()
+    pairs = {(a.lower(), b.lower()) for a, b in _LOCALE.findall(path)}
+    if pairs & {("us", "en"), ("en", "us")}:
+        return 0
+    if not pairs and not re.search(r"/(dach|emea|apac|latam)(/|$)", path):
+        return 1
+    if any("en" in p for p in pairs) or pairs & {("ca", "fr"), ("fr", "ca"), ("mx", "es"), ("es", "mx")}:
+        return 2
+    return 3
+
+
 @dataclass
 class Result:
     company: str
@@ -362,6 +381,11 @@ class Discoverer:
     def _jsonld(self, host: str, res: Result) -> tuple[str, str] | None:
         """Last resort: a sitemap of job pages that carry schema.org JobPosting data."""
         maps = list(dict.fromkeys(self.robots.sitemaps.get(f"https://{host}", []) + [f"https://{host}/sitemap.xml"]))
+        if maps and min(map(sitemap_rank, maps)) > 0:   # only other countries listed: the US one is usually there too
+            us = [u for u in dict.fromkeys(_LOCALE.sub("/us/en", m, count=1) for m in maps if sitemap_rank(m) >= 2)
+                  if u not in maps]
+            maps = us[:1] + maps
+        maps.sort(key=sitemap_rank)       # a stable sort: the site's own order within each rank
         for sm in maps[:3]:
             if not sm.startswith("https://") or not self.robots.allowed(sm):
                 continue

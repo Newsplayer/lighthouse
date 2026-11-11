@@ -492,10 +492,41 @@ def _apply_links(conn, clusters: set[str]) -> dict[str, list]:
     return out
 
 
+_SYSTEM_NAMES = {"successfactors": "SAP SuccessFactors", "eightfold": "Eightfold", "icims": "iCIMS", "paradox": "Paradox",
+                 "avature": "Avature", "taleo": "Oracle Taleo", "adp": "ADP", "brassring": "BrassRing",
+                 "talentbrew": "TalentBrew", "workday": "Workday", "smartrecruiters": "SmartRecruiters",
+                 "cornerstone": "Cornerstone", "greenhouse": "Greenhouse", "jobvite": "Jobvite", "oracle": "Oracle",
+                 "jibe": "iCIMS", "jsonld": "its own site", "ashby": "Ashby", "lever": "Lever", "amazon": "its own site",
+                 "phenom": "Phenom", "workable": "Workable", "recruitee": "Recruitee"}
+
+
+def _why(status: str, detail: str | None) -> str:
+    """Why a listed company isn't covered, in a few plain words (never a URL or an error dump)."""
+    d = (detail or "").lower()
+    if status == "unsupported":
+        name = _SYSTEM_NAMES.get(d.replace("uses ", "").strip(), "")
+        return f"Uses {name}, which Lighthouse can't read yet" if name else "Its careers system can't be read yet"
+    if status == "blocked":
+        return "Its site asks automated readers to stay away"
+    if status == "not_found":
+        return "Has several job sites; the right one isn't chosen yet" if "under other names" in d \
+            else "No readable job list found on its careers page"
+    if status == "error":
+        return "Its job site has moved or closed" if "switched off" in d else "Its careers page didn't open"
+    return ""
+
+
 def _sources(conn) -> dict:
-    companies = [dict(r) for r in conn.execute(
-        "SELECT company, grp, ats, status, openings, checked_at FROM companies ORDER BY company")] \
-        if db.has_table(conn, "companies") else []
+    companies = []
+    if db.has_table(conn, "companies"):
+        for r in conn.execute("SELECT company, grp, ats, status, detail, openings, checked_at FROM companies "
+                              "ORDER BY company COLLATE NOCASE"):
+            c = dict(r)
+            covered = c["status"] in ("ok", "pinned")
+            c["why"] = "" if covered else _why(c["status"], c.pop("detail"))
+            c.pop("detail", None)
+            c["system"] = _SYSTEM_NAMES.get(c["ats"] or "", c["ats"] or "") if covered else ""
+            companies.append(c)
     boards = [dict(r) for r in conn.execute(
         "SELECT ats, slug, company, job_count, last_ok, last_error FROM boards WHERE enabled = 1 ORDER BY company")]
     for b in boards:                       # a sentence for people, never a stack trace

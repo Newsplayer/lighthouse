@@ -690,3 +690,41 @@ def test_first_visit_shows_the_newest_roles_while_the_list_downloads(site_server
         assert page.input_value("#f-q") == "software"
         assert not errors, errors
         browser.close()
+
+
+def test_sources_lists_every_company_with_a_plain_reason(site_server):
+    """The list used to stop after 400 companies (around "M") and showed status codes."""
+    sync = pytest.importorskip("playwright.sync_api")
+    url, b, out, _ = site_server
+    conn = db.connect(b.path)
+    kinds = [("ok", None, "workday"), ("unsupported", "uses successfactors", None), ("blocked", "careers page didn't open: https://x → robots", None),
+             ("not_found", "no careers system recognised on the careers page", None), ("error", "careers page didn't open: https://x → 403", None)]
+    for k in range(450):
+        status, detail, ats = kinds[k % 5]
+        name = f"{chr(65 + k * 26 // 450)}-company {k:03d}"
+        conn.execute("INSERT INTO companies(company, ats, slug, status, detail, openings, checked_at) VALUES (?,?,?,?,?,?,?)",
+                     (name, ats, "x.wd1/y" if ats else None, status, detail, 7 if ats else None, "2026-11-10"))
+    conn.commit()
+    conn.close()
+    gen(b, out, now=datetime.now(timezone.utc) + timedelta(hours=1))
+    src = read(out, read(out, "latest.json")["sources"])
+    assert len(src["companies"]) == 450 and "detail" not in src["companies"][1]
+    assert "https://" not in json.dumps(src["companies"])              # reasons, never addresses or errors
+    with sync.sync_playwright() as p:
+        browser, page = _browser_page(p, sync)
+        page.goto(url)
+        page.wait_for_selector("#results li.job")
+        page.click("#open-sources")
+        page.wait_for_selector("#sources tbody tr")
+        rows = page.locator("#sources tbody tr")
+        assert rows.count() == 450 and rows.last.inner_text().startswith("Z-company 449")
+        text = page.inner_text("#sources")
+        assert "90 of 450 companies" in text and "Covered · Workday" in text
+        assert "Uses SAP SuccessFactors, which Lighthouse can't read yet" in text
+        for code in ("unsupported", "not_found", "blocked"):
+            assert code not in text
+        page.select_option("#sources select", "no")
+        assert rows.count() == 360 and "360 shown" in page.inner_text("#sources")
+        page.fill("#sources input[type=search]", "z-company")
+        assert 0 < rows.count() < 20
+        browser.close()

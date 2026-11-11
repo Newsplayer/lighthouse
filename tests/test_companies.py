@@ -233,3 +233,27 @@ def test_an_age_is_not_years_of_experience():
     assert yoe("Applicants must be 21 years of age or older with 3 years driving experience") == 3
     assert yoe("Minimum of 18 years of experience in sales") == 18
     assert yoe("5+ years of relevant experience") == 5 and yoe("at least 3 years in a similar role") == 3
+
+
+def test_the_us_sitemap_is_preferred_over_other_countries():
+    from lighthouse.discover import sitemap_rank
+    maps = ["https://careers.corning.com/pl/pl/sitemap.xml", "https://careers.corning.com/gb/en/sitemap.xml",
+            "https://careers.corning.com/us/en/sitemap.xml", "https://careers.corning.com/sitemap.xml",
+            "https://www.jobs-ups.com/dach/de/sitemap.xml"]
+    assert sorted(maps, key=sitemap_rank) == [maps[2], maps[3], maps[1], maps[0], maps[4]]
+
+
+def test_one_workday_board_spelled_two_ways_is_read_once(tmp_path):
+    from lighthouse import db, snapshot
+    conn = db.connect(tmp_path / "b.db")
+    conn.execute("INSERT INTO companies(company, ats, slug, status, checked_at) VALUES ('Booz Allen', 'workday', 'bah.wd1/BAH_Jobs', 'ok', 'now')")
+    listed = [{"ats": "workday", "slug": "bah.wd1/bah_jobs", "company": "Booz Allen Hamilton", "enabled": False},
+              {"ats": "workday", "slug": "bah.wd1/BAH_Jobs", "company": "Booz Allen", "enabled": True},
+              {"ats": "greenhouse", "slug": "Acme", "company": "Acme", "enabled": True},
+              {"ats": "greenhouse", "slug": "acme", "company": "Acme", "enabled": True}]
+    merged = snapshot.merge_same_boards(conn, listed)
+    assert [b["slug"] for b in merged] == ["bah.wd1/bah_jobs", "bah.wd1/bah_jobs", "Acme", "acme"]   # Workday only
+    snapshot.apply_board_list(conn, merged)
+    rows = {r["slug"]: r["enabled"] for r in conn.execute("SELECT slug, enabled FROM boards WHERE ats = 'workday'")}
+    assert rows == {"bah.wd1/bah_jobs": 1}                       # one board, on because either entry says so
+    assert conn.execute("SELECT slug FROM companies").fetchone()[0] == "bah.wd1/bah_jobs"   # coverage still finds it
