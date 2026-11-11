@@ -289,12 +289,15 @@ Auto-apply, resume rewriting, LinkedIn scraping, contact harvesting, chat coach.
 ## Tests
 
 ```bash
-pip install pytest && pytest
+pip install -r requirements.txt -r requirements-builder.txt -r requirements-dev.txt
+python -m playwright install chromium   # once, for the page tests
+python -m pytest -q && ruff check .
 ```
 
+GitHub runs the same on every pull request and push to `main` (`.github/workflows/tests.yml`).
+
 The website's tests also run its JavaScript: in Node (filters, eligibility and search words must
-match the Python versions exactly) and in Chromium via Playwright (`pip install playwright &&
-playwright install chromium`). Each is skipped when not installed.
+match the Python versions exactly) and in Chromium via Playwright. Each is skipped when not installed.
 
 ## Credits
 

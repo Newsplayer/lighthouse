@@ -192,6 +192,13 @@ def test_workday_reads_past_the_2000_cap():
     posts = [x for x in c.calls if isinstance(x, tuple)]
     assert 124 <= len(posts) <= 127                            # 123 pages, read four at a time until one is empty
     assert sorted(p[2]["offset"] for p in posts)[:4] == [0, 20, 40, 60]
+    def repeats(body):                                         # past its end, this site serves its last page again
+        off = min(body["offset"], 2440)
+        return FakeResp({"total": 2000, "jobPostings": [{"title": f"Analyst {k}", "externalPath": f"/job/X/Analyst_{k}",
+                                                         "locationsText": "Austin, TX"} for k in range(off, min(off + 20, 2450))]})
+    c = FakeClient({"/jobs": repeats})
+    assert len(WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")) == 2450
+    assert len([x for x in c.calls if isinstance(x, tuple)]) <= 128                      # it stops, all the same
     c = big_site(45, 0, reported=45, facets=[])                # a believable total ends the listing by itself
     assert len(WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")) == 45
     assert len([x for x in c.calls if isinstance(x, tuple)]) == 3

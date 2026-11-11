@@ -260,9 +260,8 @@ means. Keep every change incremental and measured (§2 baselines).
    - Add `python -m lighthouse eval` to report precision and recall per field.
    - Make the tests fail when "not eligible" precision is < 97%; hiding a real fit is the worst
      error.
-4. **Run the tests on every push and PR.** Add `.github/workflows/tests.yml` running
-   `python -m pytest -q` on Python 3.11 and 3.13, plus the website's JS tests once they exist
-   (`node --test`).
+4. **✓ Tests and lint run on every push and PR** (`.github/workflows/tests.yml`, 2026-11-10): the
+   whole suite, Node and Chromium included, plus `ruff check`.
 5. **✓ Merged v0.6 (PR #1)**; production builds run every 6 hours.
    - Then measure a week of the daily change rate, and fill in §1 and §3.
 
@@ -407,6 +406,9 @@ means. Keep every change incremental and measured (§2 baselines).
 
    - Also: 147 companies show "no careers system recognised", 42 are blocked by robots.txt, and
      26 errored. Spot-check 20 of each and pin boards by hand where discovery missed them.
+   - **2026-11-10:** 54 of the 320 uncovered companies already had a hand-checked board in
+     `config/boards/` (36 of them on and being read all along: Stripe, SpaceX, Cloudflare...).
+     They now count as covered and the other 18 boards are switched on: 380 → 434 of 700.
    - Notable uncovered: Apple, Microsoft, Walmart, UnitedHealth Group, Goldman Sachs, Tesla,
      Netflix, Deloitte, McKinsey, Bloomberg.
 5. **Discovery sanity check.** Add `python -m lighthouse discover --report` to list companies whose

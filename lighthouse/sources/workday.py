@@ -139,7 +139,7 @@ class WorkdaySource(Source):
         return json_body(r, "Workday")
 
     def _list(self, api: str, facets: dict, first: dict | None = None) -> list[dict]:
-        """Every posting of a listing: pages until one comes back empty (or, for a believable total,
+        """Every posting of a listing: pages until one brings nothing new (or, for a believable total,
         until it's reached). Pages are read four at a time (the per-host rate limit still applies): a
         20,000-posting site is 1,000 requests. Postings that move between pages while we read are kept
         once."""
@@ -148,12 +148,15 @@ class WorkdaySource(Source):
         items, seen, offset = [], set(), 0
 
         def take(batch) -> int:
+            """Postings on this page we hadn't seen. None (an empty page, or one that only repeats
+            earlier postings, as some sites serve past their end) ends the listing."""
+            before = len(items)
             for raw in batch:
                 key = raw.get("externalPath")
                 if key not in seen:
                     seen.add(key)
                     items.append(raw)
-            return len(batch)
+            return len(items) - before
 
         got = take(page.get("jobPostings") or [])
         offset += got
