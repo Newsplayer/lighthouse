@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from lighthouse import config, db, dedupe, extract, fetch, profile
-from lighthouse.ghost import ghost_reasons
+from lighthouse import ghost
 from lighthouse.models import Job, company_key
 from lighthouse.sanitize import html_to_text, sanitize_html
 from lighthouse.sources.greenhouse import GreenhouseSource
@@ -38,6 +38,11 @@ def test_minhash_similarity():
 
 def test_ghost_needs_two_signals():
     old = datetime.now(timezone.utc) - timedelta(days=400)
+
+    def ghost_reasons(title, posted_at, max_age_days):
+        row = {"effective_first_seen": posted_at.isoformat(), "first_seen": None, "repost_count": 0, "title": title,
+               "content_html": "", "updated_at": None}
+        return ghost.signals(row, max_age_days, text="")
     assert ghost_reasons("Senior Data Analyst", datetime.now(timezone.utc), 60) == []
     assert len(ghost_reasons("Senior Data Analyst", old, 60)) == 1
     assert len(ghost_reasons("General Application - Talent Pool", old, 60)) == 2

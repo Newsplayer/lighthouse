@@ -1,0 +1,5 @@
+# For running the tests and the lint check (python -m pytest -q; ruff check .). The browser tests also
+# need Chromium once: python -m playwright install chromium
+pytest==9.1.1
+playwright==1.63.0
+ruff==0.17.4

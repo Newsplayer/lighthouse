@@ -25,7 +25,6 @@ import json
 import logging
 import re
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from html import unescape
@@ -34,7 +33,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
-from .models import company_key, utcnow
+from .models import utcnow
 
 log = logging.getLogger("lighthouse.discover")
 
@@ -189,11 +188,6 @@ def board_keys(ats: str, slug: str) -> list[str]:
         if len(k) >= 2:
             out.append(k)
     return out
-
-
-def board_key(ats: str, slug: str) -> str:
-    keys = board_keys(ats, slug)
-    return keys[0] if keys else ""
 
 
 def belongs(company: str, domain: str, ats: str, slug: str) -> bool:

@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from conftest import FakeClient, FakeResp
-from test_companies import R, Site
+from test_companies import Site
 from test_enterprise import _ld
 from test_index import Builder, GitHubFake, base_file, job, reader
 

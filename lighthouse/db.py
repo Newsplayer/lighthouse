@@ -328,17 +328,12 @@ def _migrate_4_to_5(conn: sqlite3.Connection) -> None:
 _JOB_COLUMNS_V6 = [("benefits", "TEXT"), ("travel", "TEXT"), ("languages", "TEXT")]
 
 LIFECYCLE = """
--- Claude's reading of postings the rules couldn't settle (builder only; merged into extractions.data
+-- The gap fill's reading of postings the rules couldn't settle (builder only; merged into extractions.data
 -- for the fields the rules left empty). Kept by description hash, so a repost never costs twice.
 CREATE TABLE IF NOT EXISTS llm_extractions (
     content_hash TEXT PRIMARY KEY,
     data         TEXT NOT NULL,     -- JSON, same shape as extractions.data ({} = asked, nothing usable)
     model        TEXT,
-    at           TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS llm_pending (   -- sent in a batch that hasn't finished yet
-    content_hash TEXT PRIMARY KEY,
-    batch_id     TEXT NOT NULL,
     at           TEXT NOT NULL
 );
 -- Postings deleted for good (closed long enough). Deltas carry them so readers delete them too.

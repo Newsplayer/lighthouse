@@ -1,0 +1,41 @@
+# Runs the tests and the lint check on every pull request and every push to main, so a change that
+# breaks something is seen before it's merged (the builder publishes from main every 6 hours).
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-builder.txt -r requirements-dev.txt
+
+      - name: Lint (undefined names, unused imports)
+        run: ruff check .
+
+      # The website's tests drive the page in Chromium, and run its logic in Node (already on the runner).
+      - name: Get Chromium for the page tests
+        run: python -m playwright install --with-deps chromium
+
+      - name: Tests
+        run: python -m pytest -q

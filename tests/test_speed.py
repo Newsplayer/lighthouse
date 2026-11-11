@@ -8,7 +8,7 @@ from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
 from lighthouse.sources.greenhouse import GreenhouseSource
 
-from conftest import FakeClient, FakeResp
+from conftest import FakeClient
 
 
 def job(eid, title="Data Analyst", loc="Austin, TX", body=None, company="Acme"):

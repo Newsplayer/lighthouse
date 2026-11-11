@@ -32,7 +32,7 @@ import shutil
 import sqlite3
 import tempfile
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin
 

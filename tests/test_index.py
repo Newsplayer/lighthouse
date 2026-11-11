@@ -130,7 +130,7 @@ def test_base_then_a_chain_of_deltas(tmp_path):
 def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [job(1), job(2, "Accountant"), job(3, "Data Engineer")])
-    m1 = b.export()
+    b.export()
     base = base_file(b)
     conn, cfg = reader(tmp_path)
     assert snapshot.import_file(conn, cfg, base, full=True)["postings"] == 3
@@ -145,7 +145,7 @@ def test_reader_merges_base_and_delta_keeping_personal_data(tmp_path):
     extract.derive_claude(conn)   # what the app does after a Claude extraction
     assert conn.execute("SELECT name FROM pragma_database_list WHERE name='idx'").fetchone()   # two files
     b.ingest("acme", [job(1), job(2, "Accountant"), job(4, "Controller")])
-    m2 = b.export()
+    b.export()
     stats = snapshot.import_file(conn, cfg, next(b.dist.glob('delta-*.db.xz')), full=False)
     assert stats["postings"] == 2 and stats["new"] == 1
     assert conn.execute("SELECT active FROM jobs WHERE title='Data Engineer'").fetchone()[0] == 0

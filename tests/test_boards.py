@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from lighthouse import config, db, fetch
 from lighthouse.sources import detect, detect_in_html
