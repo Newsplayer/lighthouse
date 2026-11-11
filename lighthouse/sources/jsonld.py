@@ -3,7 +3,8 @@
 That structured data is what Google for Jobs reads, so most large employers' own careers sites
 (TalentBrew/Radancy sites, DirectEmployers ".jobs" sites, many custom ones) carry it. This reader
 takes the job links from the sitemap and reads each page's JobPosting block: title, description,
-dates, locations, pay. Nothing else on the page is used.
+dates, locations, pay. Nothing else on the page is used. A page whose validThrough date has passed is
+a closed posting, even while the sitemap still lists it.
 
     slug = "<sitemap URL>"       e.g. "https://www.careers.ford.com/en/sitemap.xml"
 
@@ -22,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
-from ..models import Job, parse_dt
+from ..models import Job, parse_dt, parse_expiry
 from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source, interval, num
 
@@ -181,6 +182,7 @@ class JsonLdSource(Source):
                 self.dropped.add(uid)     # already read and unchanged: keep it as it is
                 continue
             todo.append((uid, ext, url, marker))
+        todo.sort(key=lambda t: t[0] in known)   # pages never read before first (the sort keeps the order within each)
         fetchable = todo[: self.max_detail_calls]
         for uid, *_ in todo[self.max_detail_calls:]:
             if uid in known:
@@ -236,4 +238,4 @@ class JsonLdSource(Source):
                    salary_currency=sal.get("currency") or None, salary_interval=interval(val.get("unitText")),
                    departments=[d for d in ([jp.get("industry")] if isinstance(jp.get("industry"), str) else
                                             jp.get("industry") or []) if isinstance(d, str)],
-                   detail_marker=marker)
+                   detail_marker=marker, expires_at=parse_expiry(jp.get("validThrough")))

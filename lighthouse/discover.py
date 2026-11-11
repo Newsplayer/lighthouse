@@ -194,6 +194,21 @@ def belongs(company: str, domain: str, ats: str, slug: str) -> bool:
     return any(name_matches(company, domain, k) for k in board_keys(ats, slug))
 
 
+def mismatched(boards: list[dict], companies: list[dict]) -> list[dict]:
+    """Boards in the lists (config/boards/*.csv, and boards pinned in companies.csv) whose id doesn't look
+    like their company's name or website: renamed companies and parent brands, but also the odd board
+    that belongs to someone else. For a person to check."""
+    domain = {c["company"]: c.get("domain") or "" for c in companies}
+    rows = [b for b in boards if b.get("company")] + [c for c in companies if c.get("ats") and c.get("slug")]
+    seen, out = set(), []
+    for b in rows:
+        key = (b["ats"], b["slug"])
+        if key not in seen and not belongs(b["company"], domain.get(b["company"], ""), *key):
+            out.append({"ats": b["ats"], "slug": b["slug"], "company": b["company"]})
+        seen.add(key)
+    return sorted(out, key=lambda b: b["company"].lower())
+
+
 def name_matches(company: str, domain: str, key: str) -> bool:
     """Does a board id look like it belongs to this company? ('jpmc' / JPMorgan Chase: yes;
     'geico' / Berkshire Hathaway: no). Used to keep a careers page's links to subsidiaries',

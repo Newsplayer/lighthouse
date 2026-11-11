@@ -32,8 +32,6 @@ DEFAULT = {
     "countries": [],             # only keep/process jobs located here, e.g. ["US"]; empty = everywhere
 }
 
-ELIG_KEYS = ("years_experience", "degree", "needs_sponsorship", "us_citizen", "clearance",
-             "locations", "workplaces", "min_salary")
 FIT_KEYS = ("about", "resume", "years_experience", "degree")
 
 

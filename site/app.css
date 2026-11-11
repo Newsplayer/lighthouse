@@ -248,6 +248,8 @@ span.title:hover { text-decoration: none; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; }
 .excerpt { white-space: pre-line; border-left: 3px solid var(--line); padding-left: 12px; margin: 14px 0; }
+.health { margin: 8px 0; }
+.health > summary { cursor: pointer; }
 .sources { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
 .sources th, .sources td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
 #sources input[type=search] { flex: 1 1 200px; max-width: 320px; }

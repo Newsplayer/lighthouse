@@ -704,6 +704,10 @@ def test_sources_lists_every_company_with_a_plain_reason(site_server):
         name = f"{chr(65 + k * 26 // 450)}-company {k:03d}"
         conn.execute("INSERT INTO companies(company, ats, slug, status, detail, openings, checked_at) VALUES (?,?,?,?,?,?,?)",
                      (name, ats, "x.wd1/y" if ats else None, status, detail, 7 if ats else None, "2026-11-10"))
+    db.set_meta(conn, "build_health", {
+        "postings": {"open": 5000, "new": 1234, "closed": 56}, "boards": {"read": 700, "unchanged": 100, "failed": 3, "waiting": 0},
+        "with_description_pct": 81.5, "ghost_pct": 4.2, "systems": {"workday": {"postings": 4000, "with_description_pct": 77.0}},
+        "failing": [{"board": "greenhouse:x", "error": "https://secret"}]})
     conn.commit()
     conn.close()
     gen(b, out, now=datetime.now(timezone.utc) + timedelta(hours=1))
@@ -720,6 +724,11 @@ def test_sources_lists_every_company_with_a_plain_reason(site_server):
         assert rows.count() == 450 and rows.last.inner_text().startswith("Z-company 449")
         text = page.inner_text("#sources")
         assert "90 of 450 companies" in text and "Covered · Workday" in text
+        assert "Last update: 1,234 new postings, 56 closed. Descriptions read for 81.5% of postings." in text
+        page.click("#sources details.health summary")
+        assert "800 job boards answered, 3 didn't." in page.inner_text("#sources details.health")
+        assert page.inner_text("#sources details.health li") == "workday: 4,000 open postings, descriptions read for 77%"
+        assert "secret" not in json.dumps(src["health"])                   # board errors stay out of it
         assert "Uses SAP SuccessFactors, which Lighthouse can't read yet" in text
         for code in ("unsupported", "not_found", "blocked"):
             assert code not in text

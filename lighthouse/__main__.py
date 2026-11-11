@@ -15,9 +15,11 @@
     python -m lighthouse index seed base.db.xz  # builder: start from the published index (cache expired)
     python -m lighthouse index build --out dist [--countries US,CA] [--published M] [--full]
     python -m lighthouse index csv [--out jobs.csv.gz] [--db FILE]  # every open role, one column per filter
+    python -m lighthouse index summary [dist/manifest.json] [--boards]  # how the build went (Markdown)
                                             # what the GitHub Action runs (maintainers only)
     python -m lighthouse discover [--only NAME] [--out FILE]
                                             # find job boards from config/companies.csv careers pages
+    python -m lighthouse discover --report  # listed boards whose id doesn't look like their company (no network)
 """
 
 from __future__ import annotations
@@ -94,6 +96,10 @@ def _index(args) -> None:
                            llm_minutes=num(args.llm_minutes), fetch_minutes=num(args.fetch_minutes))
         print(json.dumps(m, indent=2))
         return
+    if args.action == "summary":   # builder: the build's summary (Markdown), or just the boards that need a look
+        m = json.loads(Path(args.file or "dist/manifest.json").read_text(encoding="utf-8"))
+        print(snapshot.boards_markdown(m) if args.boards else snapshot.summary_markdown(m))
+        return
     if args.action == "csv":
         src = args.db or args.file
         if not src:
@@ -132,6 +138,13 @@ def _discover(args) -> None:
     from . import discover, net
     cfg_dir = config.DEFAULT_CONFIG.parent
     companies = discover.load_companies(cfg_dir)
+    if args.report:
+        odd = discover.mismatched(config.load().boards, companies)
+        for b in odd:
+            print(f"  {b['ats'] + ':' + b['slug']:60} {b['company']}")
+        print(f"{len(odd)} listed boards have an id that doesn't look like their company. Check each one: "
+              "a board that belongs to someone else lists the wrong jobs under this name.")
+        return
     client = discover.discovery_client()
     out = open(args.out, "w", encoding="utf-8") if args.out else None
 
@@ -172,7 +185,8 @@ def main() -> None:
     p.add_argument("action", choices=["set", "clear"])
     sub.add_parser("mcp", help="MCP server over stdio for your own Claude app")
     p = sub.add_parser("index", help="the shared job index")
-    p.add_argument("action", choices=["status", "import", "build", "seed", "csv", "fill"])
+    p.add_argument("action", choices=["status", "import", "build", "seed", "csv", "fill", "summary"])
+    p.add_argument("--boards", action="store_true", help="summary: only the boards that need a look")
     p.add_argument("--minutes", default=None, help="fill: minutes the open model reads (default from config)")
     p.add_argument("file", nargs="?", help="import: a local index file (.db.xz) instead of downloading")
     p.add_argument("--out", default="dist", help="build: output folder")
@@ -197,6 +211,8 @@ def main() -> None:
     p.add_argument("--only", default=None, help="only companies whose name contains this")
     p.add_argument("--out", default=None, help="write one JSON line per company here")
     p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--report", action="store_true",
+                   help="list boards whose id doesn't look like their company, for a person to check (no network)")
     args = parser.parse_args()
 
     if args.cmd == "mcp":  # stdout is the protocol channel: log to stderr only
