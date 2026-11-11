@@ -174,34 +174,68 @@ FACETS = [{"facetParameter": "jobFamilyGroup", "descriptor": "Job Category",
                "values": [{"descriptor": "Austin", "id": "l1", "count": 5}, {"descriptor": "Toronto", "id": "l2", "count": 5}]}]}]
 
 
-def big_site(n_all, n_narrow, reported=2000, facets=FACETS):
-    """A site with n_all postings (n_narrow in the US and Canada) that reports at most `reported`."""
+def workday_site(postings, filters, cap=2000):
+    """A Workday site like the real ones: a listing serves at most `cap` results (past that, its first page
+    again), reports min(matching, cap) as the total, and counts the matching postings per filter value.
+    postings: dicts of filter -> value id (None: not set)."""
+    from collections import Counter
+    names = {US: "United States of America", CA: "Canada", IN: "India"}
     def post(body):
-        narrowed = bool(body["appliedFacets"])
-        n, off = (n_narrow if narrowed else n_all), body["offset"]
-        batch = [{"title": f"Analyst {k}", "externalPath": f"/job/{'US' if narrowed else 'X'}/Analyst_{k}",
-                  "locationsText": "Austin, TX" if narrowed else "Pune, India"} for k in range(off, min(off + 20, n))]
-        return FakeResp({"total": min(n, reported), "jobPostings": batch, **({"facets": facets} if off == 0 else {})})
+        applied, off = body["appliedFacets"], body["offset"]
+        match = [(k, p) for k, p in enumerate(postings) if all(p.get(f) in ids for f, ids in applied.items())]
+        off = 0 if off >= cap else off
+        batch = [{"title": f"Analyst {k}", "externalPath": f"/job/X/Analyst_{k}",
+                  "locationsText": "Austin, TX" if p.get("locationCountry") in (US, None) else "Elsewhere"}
+                 for k, p in match[off:off + 20]]
+        facets = [{"facetParameter": f, "values": [{"descriptor": names.get(i, i), "id": i, "count": n}
+                                                   for i, n in Counter(p[f] for _, p in match if p.get(f)).items()]}
+                  for f in filters]
+        return FakeResp({"total": min(len(match), cap), "jobPostings": batch, "facets": facets})
     return FakeClient({"/job/": DETAIL, "/jobs": post})
 
 
-def test_workday_reads_past_the_2000_cap():
-    c = big_site(2450, 0, facets=[])
-    jobs = WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")
-    assert len(jobs) == 2450                                   # not the 2,000 the site reports
-    posts = [x for x in c.calls if isinstance(x, tuple)]
-    assert 124 <= len(posts) <= 127                            # 123 pages, read four at a time until one is empty
-    assert sorted(p[2]["offset"] for p in posts)[:4] == [0, 20, 40, 60]
-    def repeats(body):                                         # past its end, this site serves its last page again
-        off = min(body["offset"], 2440)
-        return FakeResp({"total": 2000, "jobPostings": [{"title": f"Analyst {k}", "externalPath": f"/job/X/Analyst_{k}",
-                                                         "locationsText": "Austin, TX"} for k in range(off, min(off + 20, 2450))]})
-    c = FakeClient({"/jobs": repeats})
-    assert len(WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")) == 2450
-    assert len([x for x in c.calls if isinstance(x, tuple)]) <= 128                      # it stops, all the same
-    c = big_site(45, 0, reported=45, facets=[])                # a believable total ends the listing by itself
-    assert len(WorkdaySource(client=c, company="Acme", max_detail_calls=0).fetch("acme.wd5/Careers")) == 45
-    assert len([x for x in c.calls if isinstance(x, tuple)]) == 3
+def wd_fetch(client, countries=None):
+    src = WorkdaySource(client=client, company="Acme", max_detail_calls=0)
+    if countries:
+        src.countries = frozenset(countries)
+    jobs = src.fetch("acme.wd5/Careers")
+    return jobs, [x[2] for x in client.calls if isinstance(x, tuple)]
+
+
+def test_workday_reads_a_listing_bigger_than_the_2000_cap_by_splitting_it():
+    from lighthouse.sources.workday import split_facet
+    # 5,000 postings. 400 have no job category; every posting has a state (four of them, 1,250 each).
+    site = [{"cat": None if k % 25 < 2 else f"c{k % 3}", "state": f"s{k % 4}", "time": "full" if k % 5 < 3 else "part"}
+            for k in range(5000)]
+    c = workday_site(site, ["cat", "state", "time"])
+    jobs, posts = wd_fetch(c)
+    assert len(jobs) == 5000 and len({j.external_id for j in jobs}) == 5000       # all of it, each once
+    assert {tuple(p["appliedFacets"]) for p in posts[1:]} == {("state",)}         # the filter that covers it, under the cap
+    assert len(posts) == 1 + 4 * 63                                               # no page past a listing's end
+    # Paging alone would have stopped at 2,000:
+    assert len(wd_fetch(workday_site(site, []))[0]) == 2000
+
+    # A part that is still too big is split again by another filter.
+    site = [{"cat": "c0" if k % 5 < 3 else f"c{k % 5}", "time": "full" if k % 2 else "part"} for k in range(5000)]
+    c = workday_site(site, ["cat", "time"])
+    jobs, posts = wd_fetch(c)
+    assert len(jobs) == 5000
+    assert {tuple(p["appliedFacets"]) for p in posts[1:]} == {("time",), ("time", "cat")}
+    assert len(posts) == 1 + 2 + 2 * (75 + 25 + 25)
+
+    # Which filter: one whose values add up to the listing, and are each under the cap if possible.
+    f = lambda **kw: [{"facetParameter": k, "values": [{"id": f"{k}{i}", "count": n} for i, n in enumerate(v)]}  # noqa: E731
+                      for k, v in kw.items()]
+    assert split_facet(f(cat=[900, 800], state=[1500, 1500, 1500]), {})[0] == "state"      # cat misses most postings
+    assert split_facet(f(time=[3000, 1500], state=[1500, 1500, 1500]), {})[0] == "state"   # no part over the cap
+    assert split_facet(f(time=[3000, 1500], state=[1500, 1500, 1500]), {"state": ["state0"]})[0] == "time"
+    assert split_facet(f(time=[1000, 500], state=[900, 800]), {}, expected=1500)[0] == "time"
+    assert split_facet(f(city=[40] * 55, only=[4500]), {}) is None       # a cut-short list, a single value: no split
+    assert [v["id"] for v in split_facet(f(time=[3000, 0, 1500]), {})[1]] == ["time0", "time2"]
+
+    c = workday_site([{} for _ in range(45)], [])                        # a small site: three pages, nothing more
+    jobs, posts = wd_fetch(c)
+    assert len(jobs) == 45 and len(posts) == 3
 
 
 def test_workday_asks_only_for_the_countries_the_builder_covers():
@@ -214,12 +248,14 @@ def test_workday_asks_only_for_the_countries_the_builder_covers():
     assert country_facet(many, {"US", "MX"}) is None           # a long list may be cut short: Mexico unknown
     assert country_facet(many, {"US"}) == {"Location_Country": [US]}
 
-    c = big_site(5000, 50)
-    src = WorkdaySource(client=c, company="Acme", max_detail_calls=0)
-    src.countries = frozenset({"US", "CA", "MX"})
-    jobs = src.fetch("acme.wd5/Careers")
-    assert len(jobs) == 50 and all(j.location == "Austin, TX" for j in jobs)
-    posts = [x[2] for x in c.calls if isinstance(x, tuple)]
-    assert len(posts) == 1 + 3 and all(p["appliedFacets"] == {"locationCountry": [US, CA]} for p in posts[1:])
-    src = WorkdaySource(client=big_site(5000, 50), company="Acme", max_detail_calls=0)   # no country scope: everything
-    assert len(src.fetch("acme.wd5/Careers")) == 5000
+    # 9,000 postings, 3,000 of them in the US and Canada: only those are asked for, split by state.
+    site = [{"locationCountry": (US, IN, CA, IN, IN, IN, IN, IN, US)[k % 9], "state": f"s{k % 4}"} for k in range(9000)]
+    c = workday_site(site, ["locationCountry", "state"])
+    jobs, posts = wd_fetch(c, {"US", "CA", "MX"})
+    assert len(jobs) == 3000 and all(int(j.external_id.split("_")[1]) % 9 in (0, 2, 8) for j in jobs)
+    assert all(set(p["appliedFacets"]["locationCountry"]) == {US, CA} for p in posts[1:])
+    assert len(posts) == 1 + 1 + 4 * 38                        # first page, the narrowed one, four states of 750
+    c = workday_site(site[:900], ["locationCountry", "state"])            # 300 in scope: one short listing
+    jobs, posts = wd_fetch(c, {"US", "CA", "MX"})
+    assert len(jobs) == 300 and len(posts) == 1 + 15
+    assert len(wd_fetch(workday_site(site, ["locationCountry", "state"]))[0]) == 9000    # no country scope: everything

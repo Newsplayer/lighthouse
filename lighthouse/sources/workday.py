@@ -14,11 +14,12 @@ new postings, capped per run (max_detail_calls_per_board); the rest are listed t
 and filled in on later runs.
 
 Two things keep big sites complete and cheap (checked against real sites, 2026-11-10):
-- Many sites report a total of exactly 2,000 however many postings they have (Walmart: about 20,000),
-  yet keep serving pages past it. So the listing is read until a page comes back empty, not until the
-  reported total.
-- Most sites offer a country filter (a "facet"). When the builder covers only some countries, the
-  listing is asked for those countries only: Accenture's is 1,195 postings instead of every country's.
+- Many sites serve at most 2,000 results per listing, whatever they have (Walmart: about 20,000; past
+  2,000 they repeat earlier pages). The site's own filters ("facets": job category, state, full or
+  part time...) each give a smaller listing, so a capped listing is read as the sum of the listings
+  of one filter's values, split again where one of those is still capped.
+- Most sites offer a country filter. When the builder covers only some countries, the listing is
+  asked for those countries only: Accenture's is 1,195 postings instead of every country's.
 """
 
 from __future__ import annotations
@@ -33,8 +34,9 @@ from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source, json_body, workplace
 
 PAGE = 20  # the API rejects larger pages
-CAP = 2000          # a reported total of this (or more) can't be trusted as the end of the listing
+CAP = 2000          # a listing reporting this many (or more) is cut short by the site
 MAX_LISTED = 40000  # stop a runaway listing (the largest real site seen is about 20,000)
+MAX_SPLITS = 3      # filters applied on top of each other to get under the cap
 LIST_WORKERS = 4    # listing pages read at once
 _COUNTRY_NAMES = {name: code for code, names in geo.COUNTRIES.items() for name in names}
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
@@ -83,6 +85,27 @@ def country_facet(facets, wanted) -> dict | None:
     if best is None:
         return None
     return {best[0]: best[1]} if best[1] else {}
+
+
+def split_facet(facets, applied: dict, expected: int | None = None) -> tuple[str, list] | None:
+    """The filter to split a capped listing by: (facet parameter, its values), or None.
+
+    It has to cover the listing (its values' counts add up to about what's expected: a posting with no
+    job category would be lost by splitting on job category), and shouldn't be cut short itself (sites
+    list at most ~55 values). Among those, one whose values are all under the cap needs no further
+    splitting; then the one with the fewest values costs the fewest requests."""
+    by_param: dict[str, list] = {}
+    for param, v in _leaves(facets):
+        if param not in applied and param != "distance" and isinstance(v.get("count"), int):
+            by_param.setdefault(param, []).append(v)
+    cands = [(param, vals, sum(v["count"] for v in vals), max(v["count"] for v in vals))
+             for param, vals in by_param.items() if 2 <= len(vals) < 50]
+    if not cands:
+        return None
+    need = 0.97 * (expected if expected else max(c[2] for c in cands))
+    good = [c for c in cands if c[2] >= need] or [max(cands, key=lambda c: c[2])]
+    param, vals, _, _ = min(good, key=lambda c: (c[3] >= CAP, len(c[1])))
+    return param, [v for v in vals if v["count"] > 0]
 
 
 def parse_slug(slug: str) -> tuple[str, str, str]:
@@ -138,38 +161,47 @@ class WorkdaySource(Source):
             raise BoardNotFound("Workday: site not found (check tenant, wdN and site name)")
         return json_body(r, "Workday")
 
-    def _list(self, api: str, facets: dict, first: dict | None = None) -> list[dict]:
-        """Every posting of a listing: pages until one brings nothing new (or, for a believable total,
-        until it's reached). Pages are read four at a time (the per-host rate limit still applies): a
-        20,000-posting site is 1,000 requests. Postings that move between pages while we read are kept
-        once."""
-        page = first if first is not None else self._page(api, facets, 0)
+    def _pages(self, api: str, facets: dict, page: dict, out: dict) -> None:
+        """Read one listing (its first page is in hand) into out, four pages at a time (the per-host rate
+        limit still applies), until its total (or the cap: past it, sites repeat earlier pages) is reached
+        or a page comes back empty. A posting seen before (in another part of a split listing, or moved
+        between pages while we read) is kept once."""
         total = int(page.get("total") or 0)          # only the first page carries the total
-        items, seen, offset = [], set(), 0
 
         def take(batch) -> int:
-            """Postings on this page we hadn't seen. None (an empty page, or one that only repeats
-            earlier postings, as some sites serve past their end) ends the listing."""
-            before = len(items)
+            before = len(out)
             for raw in batch:
-                key = raw.get("externalPath")
-                if key not in seen:
-                    seen.add(key)
-                    items.append(raw)
-            return len(items) - before
+                if raw.get("externalPath"):
+                    out.setdefault(raw["externalPath"], raw)
+            return len(out) - before
 
-        got = take(page.get("jobPostings") or [])
-        offset += got
+        got = len(page.get("jobPostings") or [])
+        take(page.get("jobPostings") or [])
+        offset = PAGE
         with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
-            while got and offset < MAX_LISTED and not (total < CAP and offset >= total):
-                left = (total - offset + PAGE - 1) // PAGE if total < CAP else LIST_WORKERS
-                offsets = [offset + k * PAGE for k in range(max(1, min(LIST_WORKERS, left)))]
+            while got and len(out) < MAX_LISTED and offset < min(total, CAP):
+                left = (min(total, CAP) - offset + PAGE - 1) // PAGE
+                offsets = [offset + k * PAGE for k in range(min(LIST_WORKERS, left))]
                 for batch in pool.map(lambda o: self._page(api, facets, o).get("jobPostings") or [], offsets):
-                    got = take(batch)
+                    got = len(batch)
+                    take(batch)
                     offset += PAGE
                     if not got:
                         break
-        return items
+
+    def _collect(self, api: str, facets: dict, out: dict, page: dict | None = None,
+                 expected: int | None = None, depth: int = 0) -> None:
+        """Every posting matching `facets`, into out. A listing at the cap is split by one more filter
+        (split_facet) and each part collected the same way."""
+        page = page if page is not None else self._page(api, facets, 0)
+        if int(page.get("total") or 0) >= CAP and depth < MAX_SPLITS and len(out) < MAX_LISTED:
+            split = split_facet(page.get("facets"), facets, expected)
+            if split:
+                param, values = split
+                for v in values:
+                    self._collect(api, {**facets, param: [v["id"]]}, out, None, v["count"], depth + 1)
+                return
+        self._pages(api, facets, page, out)
 
     def fetch(self, slug, known=None):
         known = known or {}
@@ -180,9 +212,14 @@ class WorkdaySource(Source):
         narrow = country_facet(first.get("facets"), self.countries) if self.countries else None
         if narrow == {}:           # the site has a country filter, and none of our countries are in it
             return []
-        items = self._list(api, narrow, None) if narrow else self._list(api, {}, first)
-        if narrow and not items:   # the filter matched nothing though it listed our countries: don't trust it
-            items = self._list(api, {}, first)
+        found: dict[str, dict] = {}
+        if narrow:
+            ids = {i for v in narrow.values() for i in v}
+            expected = sum(v.get("count") or 0 for _, v in _leaves(first.get("facets")) if v["id"] in ids) or None
+            self._collect(api, narrow, found, None, expected)
+        if not found:              # no country filter (or it matched nothing though it listed our countries)
+            self._collect(api, {}, found, first)
+        items = list(found.values())
         company = self.company_name(slug.split(".")[0])
         jobs = [self.parse_summary(slug, host, site, raw, company) for raw in items if raw.get("externalPath")]
         jobs = [j for j in jobs if self.wanted(j)]
