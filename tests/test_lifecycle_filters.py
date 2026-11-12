@@ -3,6 +3,7 @@ from descriptions, and the builder filling only the gaps the rules couldn't sett
 categories from similar titles)."""
 import json
 import sqlite3
+import zlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -277,7 +278,7 @@ def _bag_of_words(texts):
     out = np.zeros((len(texts), 4096), dtype=np.float32)
     for i, t in enumerate(texts):
         for w in t.lower().split():
-            out[i, hash(w) % 4096] += 1
+            out[i, zlib.crc32(w.encode()) % 4096] += 1   # not hash(): it differs per run, and words collided
     return out
 
 

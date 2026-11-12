@@ -190,12 +190,17 @@ def _rows(conn, countries) -> list[dict]:
     return rows
 
 
-def _places(r) -> list[str]:
+def _strings(value) -> list[str]:
+    """The strings in a stored JSON list ([] when it's empty or unreadable)."""
     try:
-        locs = json.loads(r["cluster_locations"] or "[]")
+        items = json.loads(value or "[]")
     except ValueError:
-        locs = []
-    return [p for p in locs if isinstance(p, str) and p.strip()] or ([r["location"]] if r["location"] else [])
+        return []
+    return [x for x in items if isinstance(x, str) and x.strip()] if isinstance(items, list) else []
+
+
+def _places(r) -> list[str]:
+    return _strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
 
 
 def _card(r, dicts: dict[str, dict]) -> list:
@@ -393,7 +398,7 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
             files.setdefault(i // DETAIL_PER_FILE, {})[str(i)] = {
                 "k": key_of(u), "x": excerpts.get(r["content_hash"], ""),
                 "u": links.get(r["cluster_id"] or u) or ([[r["source"], own]] if own else []),
-                "L": _places(r), "dep": _departments(r), "gr": _ghost_reasons(r)}
+                "L": _places(r), "dep": _departments(r), "gr": _strings(r["ghost_reasons"])}
         detail_bytes = sum(_write_json(ddir / f"{n}.json", f) for n, f in files.items())
 
         sources_file = f"sources-{stamp}.json"
@@ -438,19 +443,7 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
 
 
 def _departments(r) -> list[str]:
-    try:
-        deps = json.loads(r["departments"] or "[]")
-    except ValueError:
-        return []
-    return [d for d in deps if isinstance(d, str)][:5]
-
-
-def _ghost_reasons(r) -> list[str]:
-    try:
-        reasons = json.loads(r["ghost_reasons"] or "[]")
-    except ValueError:
-        return []
-    return [x for x in reasons if isinstance(x, str)]
+    return _strings(r["departments"])[:5]
 
 
 def _excerpts(conn, hashes: list[str]) -> dict[str, str]:

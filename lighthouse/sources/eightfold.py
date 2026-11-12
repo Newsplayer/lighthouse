@@ -8,7 +8,6 @@ Some tenants (the newer "PCSX" sites) refuse this API; those are reported as not
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
@@ -76,12 +75,10 @@ class EightfoldSource(Source):
                     detail_marker=str(p.get("t_update") or p["id"]), partial=True)
             if self.wanted(j):
                 jobs.append(j)
-        todo = self.detail_todo([j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)])
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for job, d in zip(todo, pool.map(lambda j: self._detail(host, domain, j), todo)):
-                if d and d.get("job_description"):
-                    job.content_html = sanitize_html(d["job_description"])
-                    job.partial = False
+        for job, d in self.details([j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)], lambda j: self._detail(host, domain, j)):
+            if d and d.get("job_description"):
+                job.content_html = sanitize_html(d["job_description"])
+                job.partial = False
         return jobs
 
     def _detail(self, host, domain, job):

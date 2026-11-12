@@ -9,9 +9,10 @@ filters, page-only deploys and open-page catch-up). The website is live and rebu
 No other branches are kept.
 
 **Update (2026-11-11):** P0-2 (closing dates), the P2-2 ordering and per-system fill rate, P2-3 (build
-health) and P2-5 (board name check) are done. Next in order: the eval set (P0-3), a week of change
-rates (P0-5), hourly runs with a cheap check first (P2-1), and more careers systems (P2-4). Each of
-those needs real sites or hand labels, so they start with a network probe.
+health) and P2-5 (board name check) are done, and builds run every 3 hours (P2-1, first step). Next in
+order: the eval set (P0-3), hourly runs (P2-1: the gap fill's answers must be saved apart from the
+database first), and more careers systems (P2-4). Those need real sites or hand labels, so they start
+with a network probe.
 
 **Direction (owner, 2026-11-07):** the top priority is a functional, effective job aggregator.
 - **Hosting:** Lighthouse becomes a **website hosted on GitHub Pages**, so users install and
@@ -38,7 +39,7 @@ Work top to bottom.
 | Listed companies covered (`config/companies.csv`) | ≥ 90% | 376 / 700 (54%) |
 | Fortune 500 group covered | ≥ 90% | 263 / 466 (56%) |
 | Open postings with analysed descriptions | ≥ 95% | 30% overall: Workday 11%, Oracle 4%, SmartRecruiters 16% |
-| A new posting reaches users | ≤ 2 h | ≤ 6 h + up to 1 h (builds every 6 h, app checks hourly) |
+| A new posting reaches users | ≤ 2 h | ≤ 3 h + the build (about 1 h) for one-request boards; ≤ 6 h for other listings, ≤ 12 h for Workday |
 | A posting that closes leaves the default list | ≤ 6 h; instantly when the user opens it | ≤ 7 h (but see P0-1) |
 | Wrongly hidden as "not eligible" (the worst error) | ≤ 3% on the eval set | not measured |
 | Install / download needed | nothing (website) | website built (P1-1 ✓); goes live with the first build after merge |
@@ -287,8 +288,10 @@ means. Keep every change incremental and measured (§2 baselines).
    - **Not used for Workday and Oracle:** they give an end date only in the description call, which
      is made once per posting, and their live listings already drop a posting when it ends. A stored
      end date the employer later extends would wrongly close an open role.
-   - Not measured on real sites yet: how many sitemap pages carry a date, and how many of those keep
-     a stale one while the role is still open. Check with a probe after the first builds.
+   - **Measured on real sites (2026-11-11, probe `probe/valid-through`):** 616 open pages read on 43
+     careers sites. One site (EPAM, 15 of 15 pages) gives a closing date; the other 42 give none. No
+     page gave a date that had already passed, so no open role is closed by mistake. The gain is
+     small for now: it matters only for sites that give dates.
 3. **Eval set and accuracy tests.**
    - Hand-label ~300 postings sampled across systems: YOE required, visa sponsorship,
      citizenship, clearance, degree, workplace, pay, function, seniority. Store them as fixtures
@@ -299,7 +302,10 @@ means. Keep every change incremental and measured (§2 baselines).
 4. **✓ Tests and lint run on every push and PR** (`.github/workflows/tests.yml`, 2026-11-10): the
    whole suite, Node and Chromium included, plus `ruff check`.
 5. **✓ Merged v0.6 (PR #1)**; production builds run every 6 hours.
-   - Then measure a week of the daily change rate, and fill in §1 and §3.
+   - **Daily change, 2026-11-09 to 11** (the last build's database; the days before were the first
+     fill): 14,000–17,000 new postings and 6,000–11,000 closed a day, on about 390,000 open postings
+     (226,563 roles). That is about 4% new and 2–3% closed a day, close to the 3% assumed in §3.
+     A full week of steady numbers is still to come; each build's summary now records them.
 
 ### P1: the website (GitHub Pages; nothing to install)
 
@@ -401,6 +407,16 @@ means. Keep every change incremental and measured (§2 baselines).
 ### P2: freshness, coverage and health
 
 1. **Near-constant updates.**
+   - **✓ First step (2026-11-11): builds every 3 hours** instead of 6. A board that answers in one
+     request (Greenhouse, Lever, Ashby, Workable, Recruitee) is read every build, so its new postings
+     reach the site in about 3–4 hours. Listings that take many requests keep their pace (four times a
+     day; Workday twice), so those sites get no more requests than before (`fetch.not_due`).
+     - Cost: twice the single requests to the five one-request systems; the site's change file is
+       replaced up to 8 times a day instead of 4, so a tab left open all day downloads it twice as
+       often (each download is the same size).
+     - **Why not hourly yet:** the gap fill runs for an hour after each build and saves the database
+       when it ends. A build that starts before then begins from the database without those answers,
+       and they are lost. Hourly builds need the fill's answers saved apart from the database first.
    - **Builder:** run hourly (`cron: "17 * * * *"`); `concurrency` already keeps runs from
      overlapping. Each run redeploys the site.
    - **Cheap check first, every run:**

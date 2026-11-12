@@ -79,9 +79,9 @@ python -m lighthouse start
 | Step | Where it runs | Who can change it |
 |---|---|---|
 | Find each listed company's job board from its careers page | GitHub Action (re-checked every 3–14 days) | the maintainer only |
-| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 6 hours (about an hour each) | the maintainer only |
+| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 3 hours (about an hour each) | the maintainer only |
 | Ask Claude about the few postings the free rules couldn't read (optional) | GitHub Action, the maintainer's key, capped monthly | the maintainer only |
-| Close postings that are no longer listed; delete them 45 days later | GitHub Action, every 6 hours | the maintainer only |
+| Close postings that are no longer listed; delete them 45 days later | GitHub Action, every 3 hours | the maintainer only |
 | Publish a ready-to-use database on the repo's `job-index` release | GitHub | the Action only |
 | Use that database as downloaded; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
 

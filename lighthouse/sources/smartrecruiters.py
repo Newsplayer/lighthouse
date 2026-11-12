@@ -8,7 +8,6 @@ most `max_detail_calls` per run; the rest are listed title-only and filled in ne
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 
 from ..models import Job, parse_dt
 from ..sanitize import sanitize_html
@@ -43,11 +42,9 @@ class SmartRecruitersSource(Source):
                                 "(ids are case-sensitive, e.g. BoschGroup)")
         jobs = [self.parse_summary(slug, raw) for raw in items]
         jobs = [j for j in jobs if self.wanted(j)]
-        todo = self.detail_todo([j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)])
-        with ThreadPoolExecutor(max_workers=4) as pool:  # per-host throttle still applies
-            for job, detail in zip(todo, pool.map(self._detail, todo)):
-                if detail:
-                    self.apply_detail(job, detail)
+        for job, detail in self.details([j for j in jobs if known.get(j.uid, ("", False)) != (j.detail_marker, True)], self._detail):
+            if detail:
+                self.apply_detail(job, detail)
         return jobs
 
     def _detail(self, job: Job) -> dict | None:

@@ -8,7 +8,10 @@ name: Job index
 
 on:
   schedule:
-    - cron: "17 */6 * * *"          # every 6 hours (UTC)
+    # Every 3 hours (UTC). Boards that answer in one request are read every run; listings that take many
+    # requests keep their old pace (four times a day; Workday twice): fetch.not_due. The gap fill below
+    # takes up to two hours after a build starts, so a shorter interval would start before it has saved.
+    - cron: "17 */3 * * *"
   workflow_dispatch:                # "Run workflow" button on the Actions tab
     inputs:
       full:
@@ -18,7 +21,7 @@ on:
   push:
     branches: [main]
     # Board or company lists edited, or the code that reads and writes job data changed: rebuild now,
-    # so the change is live in about an hour instead of at the next 6-hourly run.
+    # so the change is live in about an hour instead of at the next scheduled run.
     paths: ["config/**", "lighthouse/**", "requirements.txt"]
 
 permissions:
@@ -36,7 +39,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      site: ${{ steps.site.outcome }}
+      site: ${{ steps.upload.outcome }}
     timeout-minutes: 100             # a build takes about an hour; this only catches a stuck one
     env:
       GH_TOKEN: ${{ github.token }}
@@ -137,7 +140,11 @@ jobs:
           python -m lighthouse site --out site_out --countries "${{ vars.LIGHTHOUSE_COUNTRIES || 'US,CA,MX' }}"
           git rev-parse HEAD > site_built_from.txt
 
+      # GitHub's artifact service can fail (2026-11-11: an error page for ten minutes). That must not fail
+      # the job: the index is already published, and the builder database below has to be saved to match it.
       - name: Upload the website
+        id: upload
+        continue-on-error: true
         if: steps.site.outcome == 'success'
         uses: actions/upload-pages-artifact@v3
         with:
@@ -145,6 +152,7 @@ jobs:
 
       # Kept for website.yml: a push that changes only the page puts it live on this job data, no build.
       - name: Keep the website in the cache
+        continue-on-error: true
         if: steps.site.outcome == 'success'
         uses: actions/cache/save@v4
         with:
