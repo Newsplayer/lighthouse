@@ -19,28 +19,13 @@ from werkzeug.utils import secure_filename
 
 from . import boards as boards_mod
 from . import classify, claude_api, config, db, extract, fetch, geo, net, sponsors
-from .sanitize import ensure_safe
+from .sanitize import clean_url, ensure_safe
 from . import profile as profile_mod
 from .sources import SOURCES
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 PER_PAGE = 50
 POSTED_WITHIN = {1: "Past 24 hours", 3: "Past 3 days", 7: "Past week", 14: "Past 2 weeks", 30: "Past month"}
-
-
-_TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
-
-
-def clean_url(url: str | None) -> str:
-    """Only http(s) links, with common tracking parameters removed (the posting is the same)."""
-    from urllib.parse import parse_qsl, urlencode as enc, urlsplit, urlunsplit
-    u = (url or "").strip()
-    if not u.lower().startswith(("https://", "http://")):
-        return ""
-    parts = urlsplit(u)
-    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-         if not k.lower().startswith(_TRACKING[0]) and k.lower() not in _TRACKING[1:]]
-    return urlunsplit(parts._replace(query=enc(q)))
 
 
 def create_app(db_path: Path | str | None = None, config_path: Path | str = config.DEFAULT_CONFIG,

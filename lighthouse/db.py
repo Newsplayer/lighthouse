@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .models import Job, company_key, iso, parse_dt, utcnow
+from .models import Job, company_key, iso, parse_dt, strings, utcnow
 from .sanitize import html_to_text
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "lighthouse.db"
@@ -1211,11 +1211,7 @@ def purge_out_of_scope(conn, countries) -> tuple[int, set[str]]:
     uids, keys = [], set()
     for r in conn.execute("SELECT uid, company_key, location, locations FROM jobs WHERE NOT EXISTS "
                           "(SELECT 1 FROM marks m WHERE m.uid = jobs.uid)"):
-        try:
-            locs = [l for l in json.loads(r["locations"] or "[]") if isinstance(l, str) and l]
-        except ValueError:
-            locs = []
-        locs = locs or ([r["location"]] if r["location"] else [])
+        locs = strings(r["locations"]) or ([r["location"]] if r["location"] else [])
         if locs and not geo.in_scope(locs, want):
             uids.append(r["uid"])
             keys.add(r["company_key"])

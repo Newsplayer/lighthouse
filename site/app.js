@@ -761,12 +761,12 @@ async function openSources() {
     el("p", { class: "meta", text: `${fmt((hb.read || 0) + (hb.unchanged || 0))} job boards answered, ${fmt(hb.failed || 0)} didn't${hb.waiting ? `, ${fmt(hb.waiting)} wait for the next update` : ""}. ${h.ghost_pct}% of roles are flagged as likely ghost jobs.` }),
     el("ul", { class: "meta" }, Object.entries(h.systems || {}).map(([name, s]) =>
       el("li", { text: `${name}: ${fmt(s.postings)} open postings, descriptions read for ${s.with_description_pct}%` }))));
-  d.replaceChildren(...[
+  d.replaceChildren(...clean(
     el("form", { method: "dialog", class: "close" }, el("button", { type: "submit", "aria-label": "Close", text: "×" })),
     el("h2", { text: "Where the jobs come from" }),
     el("p", { text: `Postings are read straight from employers' own careers sites: ${covered} of ${src.companies.length} companies in the large-employer list are covered, plus ${src.boards.length.toLocaleString("en-US")} job boards in all. Roles are checked every few hours; duplicates are merged and likely ghost jobs are flagged.` }),
     health, el("div", { class: "row" }, filter, which), shown,
-    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "Status", "Open roles"].map((t) => el("th", { text: t })))), body)].filter(Boolean));
+    el("table", { class: "sources" }, el("thead", {}, el("tr", {}, ["Company", "Status", "Open roles"].map((t) => el("th", { text: t })))), body)));
 }
 
 function alertBox(text) {

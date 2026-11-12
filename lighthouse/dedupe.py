@@ -26,7 +26,7 @@ from array import array
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from .models import norm
+from .models import norm, strings
 from .sanitize import html_to_text
 
 NUM_PERM = 64
@@ -193,7 +193,7 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
                 canonical = active[0]["uid"] if active else None
                 locs = []
                 for r in active:
-                    for l in json.loads(r["locations"] or "[]") or ([r["location"]] if r["location"] else []):
+                    for l in strings(r["locations"]) or ([r["location"]] if r["location"] else []):
                         if l and l not in locs:
                             locs.append(l)
                 locs_json = json.dumps(locs)

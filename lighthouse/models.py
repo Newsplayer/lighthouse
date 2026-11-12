@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -111,6 +112,15 @@ def parse_expiry(value) -> datetime | None:
     if dt and isinstance(value, str) and len(value.strip()) <= 10:
         dt += timedelta(days=1)
     return dt
+
+
+def strings(value: str | None) -> list[str]:
+    """The non-empty strings in a stored JSON list ([] when it's empty, missing or unreadable)."""
+    try:
+        items = json.loads(value or "[]")
+    except ValueError:
+        return []
+    return [x for x in items if isinstance(x, str) and x.strip()] if isinstance(items, list) else []
 
 
 def age_hours(iso_time: str | None) -> float:

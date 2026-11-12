@@ -41,13 +41,14 @@ publishes. It gets bug fixes only; new features go to the website.
 ## Quick start
 
 Needs Python 3.11+ ([python.org](https://www.python.org/downloads/)). Download this repo
-(**Code → Download ZIP**, then unzip) and start it:
+(**Code → Download ZIP**, then unzip) and, in a terminal in that folder:
 
-| System | How to start |
-|---|---|
-| Windows | Double-click `start-windows.bat` |
-| macOS | Double-click `start-mac.command` (first time: right-click → Open) |
-| Linux | `./start.sh` |
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python -m lighthouse start
+```
 
 The first start sets everything up and downloads the job index (a few hundred MB: a few minutes). After that,
 startup takes a couple of seconds and only the changes are downloaded (usually a few MB).
@@ -65,14 +66,6 @@ moved into `user.db` automatically on first start. The old `data/lighthouse.db` 
 the new index has downloaded. If the job index ever needs a newer version, the
 **Sources** page says so.
 
-### Manual setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m lighthouse start
-```
 
 ## Where the jobs come from
 

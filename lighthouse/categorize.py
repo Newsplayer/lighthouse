@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 from . import classify, extract
+from .models import strings
 
 log = logging.getLogger("lighthouse.categorize")
 
@@ -32,11 +33,7 @@ MODEL = os.environ.get("LIGHTHOUSE_EMBED_MODEL") or "minishlab/potion-base-8M"
 
 
 def text_of(title: str, departments: str | None) -> str:
-    try:
-        deps = [d for d in json.loads(departments or "[]") if isinstance(d, str)]
-    except ValueError:
-        deps = []
-    return " ".join(f"{title or ''} {' '.join(deps[:2])}".split())
+    return " ".join(f"{title or ''} {' '.join(strings(departments)[:2])}".split())
 
 
 def load_embedder(model: str = MODEL):

@@ -21,7 +21,7 @@ import hashlib
 import json
 import re
 
-from .models import utcnow
+from .models import strings, utcnow
 from .sanitize import html_to_text
 
 FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
@@ -493,7 +493,7 @@ def _derive_rows(conn, rows) -> None:
             if yoe is None:
                 yoe = yoe_from_title(r["title"])
                 ysrc = "title" if yoe is not None else None
-            locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
+            locs = strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
             stated = yoe if ysrc == "stated" else None
             pick = lambda v, allowed: v if v in allowed else None   # a Claude value must be one we know
             travel = pick(val("travel"), classify.TRAVEL)

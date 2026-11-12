@@ -276,7 +276,7 @@ that belongs to someone else lists the wrong jobs under this name, so fix or rem
 
 ### Ship an app update
 
-Commit and push code as usual; bump `version` in `pyproject.toml` and `lighthouse/__init__.py`.
+Commit and push code as usual; bump `__version__` in `lighthouse/__init__.py`.
 
 - **No database change:** users' apps keep reading the index whatever version they run.
 - **You added a migration in `db.py` (schema change):** the next index is built with the new schema,

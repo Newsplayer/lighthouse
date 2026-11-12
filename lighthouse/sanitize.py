@@ -6,6 +6,7 @@ from functools import lru_cache
 import re
 from html import escape, unescape
 from html.parser import HTMLParser
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 ALLOWED_TAGS = {
     "p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "u",
@@ -109,3 +110,17 @@ def ensure_safe(html: str) -> str:
     html = html or ""
     rest = _SAFE_TAG.sub("", html)
     return html if "<" not in rest and ">" not in rest else sanitize_html(html)
+
+
+_TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
+
+
+def clean_url(url: str | None) -> str:
+    """Only http(s) links, with common tracking parameters removed (the posting is the same)."""
+    u = (url or "").strip()
+    if not u.lower().startswith(("https://", "http://")):
+        return ""
+    parts = urlsplit(u)
+    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+         if not k.lower().startswith(_TRACKING[0]) and k.lower() not in _TRACKING[1:]]
+    return urlunsplit(parts._replace(query=urlencode(q)))

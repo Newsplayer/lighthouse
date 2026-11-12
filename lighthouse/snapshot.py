@@ -39,7 +39,7 @@ from urllib.parse import urljoin
 
 from . import __version__, db, extract, workers
 from . import profile as profile_mod
-from .models import age_hours, utcnow
+from .models import age_hours, strings, utcnow
 
 log = logging.getLogger("lighthouse.index")
 
@@ -72,11 +72,7 @@ def _ships(j: str = "j", schema: str = "src") -> str:
 
 def _places(cluster_locations, location) -> str:
     """Search text for a role's places: every listing's, so a search for one city finds the role."""
-    try:
-        places = json.loads(cluster_locations) if cluster_locations else []
-    except ValueError:
-        places = []
-    return " | ".join(p for p in places if isinstance(p, str)) or (location or "")
+    return " | ".join(strings(cluster_locations)) or (location or "")
 
 
 # Changes on every run for every open posting, or not shown to readers: not a reason to re-send a row.
@@ -632,15 +628,6 @@ def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict
     return _finish(c, plain, out_path)
 
 
-def _deleted_since(db_path, since: str | None) -> int:
-    conn = db.connect(db_path)
-    try:
-        return conn.execute("SELECT COUNT(*) FROM tombstones WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM jobs)",
-                            (since or "",)).fetchone()[0]
-    finally:
-        conn.close()
-
-
 def export(db_path: Path | str, out_dir: Path | str, countries=(), published=None, full: bool = False,
            write_table: bool = True) -> dict:
     """Write dist/manifest.json plus either a new base-<time>.db.xz, or a delta-<time>.db.xz holding
@@ -666,8 +653,11 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
     from . import llm_fill
     llm = llm_fill.summary(conn)
     build_health = db.get_meta(conn, "build_health")
-    conn.close()
     chain = [d for d in (pub or {}).get("deltas") or [] if d.get("base_built_at") == since]
+    prev = chain[-1]["built_at"] if chain else since       # the last build readers can have
+    deleted = conn.execute("SELECT COUNT(*) FROM tombstones WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM jobs)",
+                           (prev or "",)).fetchone()[0]
+    conn.close()
     reason = ("asked for" if full else "first build" if not since
               else "published index differs from this builder's" if not pub or (pub.get("base") or {}).get("built_at") != since
               or pub.get("format") != FORMAT or pub.get("index_schema") != db.INDEX_SCHEMA
@@ -680,15 +670,9 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
     if reason:
         log.info("writing a new base: %s", reason)
         base = {**_write_base(Path(db_path), out / f"base-{stamp}.db.xz", {**meta, "base_built_at": now}), "built_at": now}
-        chain = []
-        conn = db.connect(db_path)
-        db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
-        conn.close()
-        deleted = 0
+        chain, deleted = [], 0
     else:
         base = pub["base"]
-        prev = chain[-1]["built_at"] if chain else since       # the last build readers can have
-        deleted = _deleted_since(db_path, prev)
         if changed or deleted:
             chain = chain + [{**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", prev,
                                              {**meta, "base_built_at": since, "since": prev}),
@@ -699,14 +683,23 @@ def export(db_path: Path | str, out_dir: Path | str, countries=(), published=Non
             csv_info = write_csv(db_path, out / CSV_NAME)
         except Exception as exc:   # a convenience for people: never stops the index from publishing
             log.warning("%s not written: %s", CSV_NAME, exc)
-    roles, postings = _open_counts(db_path)
+    conn = db.connect(db_path)
+    if reason:
+        db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
+    # A role listed in 40 places is one role, 40 postings. "jobs" counts roles: the number every list adds up to.
+    roles, postings = conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone()
     manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
                 "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
-                "countries": list(countries), "jobs": roles, "postings": postings, "boards": _board_total(db_path),
-                "changed_this_run": changed, "deleted_this_run": deleted, "switched_off": _switched_off(db_path),
-                "coverage": coverage, "llm": llm, "fill": _fill_rates(db_path), "health": build_health,
+                "countries": list(countries), "jobs": roles, "postings": postings,
+                "boards": conn.execute("SELECT COUNT(*) FROM boards WHERE enabled = 1 AND last_ok IS NOT NULL").fetchone()[0],
+                "changed_this_run": changed, "deleted_this_run": deleted,
+                # boards that stopped existing, for the maintainer to fix or drop
+                "switched_off": [f"{a}:{b}" for a, b in conn.execute(
+                    "SELECT ats, slug FROM boards WHERE last_error LIKE 'Switched off automatically%' ORDER BY ats, slug")],
+                "coverage": coverage, "llm": llm, "fill": _fill_rates(conn), "health": build_health,
                 "csv": csv_info,
                 "base": base, "deltas": chain}
+    conn.close()
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
@@ -744,18 +737,13 @@ FILL_COLUMNS = ("yoe_min", "degree", "visa", "workplace_eff", "pay_max_annual", 
                 "emp_type", "clearance", "citizenship", "travel", "benefits", "languages", "skills")
 
 
-def _fill_rates(db_path) -> dict:
-    conn = _read_only(db_path)
-    try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-        use = [c for c in FILL_COLUMNS if c in cols]
-        row = conn.execute("SELECT COUNT(*), SUM(EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid)), "
-                           + ", ".join(f"SUM({c} IS NOT NULL AND {c} <> '')" for c in use)
-                           + " FROM jobs j WHERE j.active = 1 AND j.is_canonical = 1").fetchone()
-    finally:
-        conn.close()
+def _fill_rates(conn) -> dict:
+    row = conn.execute("SELECT COUNT(*), SUM(EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid)), "
+                       + ", ".join(f"SUM({c} IS NOT NULL AND {c} <> '')" for c in FILL_COLUMNS)
+                       + " FROM jobs j WHERE j.active = 1 AND j.is_canonical = 1").fetchone()
     total = row[0] or 0
-    return {"roles": total, "with_description_pct": _pct(row[1], total), **{c: _pct(v, total) for c, v in zip(use, row[2:])}}
+    return {"roles": total, "with_description_pct": _pct(row[1], total),
+            **{c: _pct(v, total) for c, v in zip(FILL_COLUMNS, row[2:])}}
 
 
 def _pct(part, whole) -> float:
@@ -846,34 +834,6 @@ def boards_markdown(m: dict) -> str:
 def _coverage(conn) -> dict:
     rows = conn.execute("SELECT status, COUNT(*) FROM companies GROUP BY status").fetchall()
     return {r[0]: r[1] for r in rows}
-
-
-def _open_counts(db_path) -> tuple[int, int]:
-    """(open roles, open postings): a role listed in 40 places is one role, 40 postings. Every app
-    shows the manifest's "jobs" as open roles, the number its lists add up to."""
-    conn = db.connect(db_path)
-    try:
-        return tuple(conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone())
-    finally:
-        conn.close()
-
-
-def _switched_off(db_path) -> list[str]:
-    """Boards that stopped existing (shown in the build log so the maintainer can fix or drop them)."""
-    conn = db.connect(db_path)
-    try:
-        return [f"{a}:{b}" for a, b in conn.execute(
-            "SELECT ats, slug FROM boards WHERE last_error LIKE 'Switched off automatically%' ORDER BY ats, slug")]
-    finally:
-        conn.close()
-
-
-def _board_total(db_path) -> int:
-    conn = db.connect(db_path)
-    try:
-        return conn.execute("SELECT COUNT(*) FROM boards WHERE enabled = 1 AND last_ok IS NOT NULL").fetchone()[0]
-    finally:
-        conn.close()
 
 
 # ================================================================ reader (everyone else)
