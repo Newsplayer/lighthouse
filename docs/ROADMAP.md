@@ -139,6 +139,19 @@ Work top to bottom.
   - **Out-of-scope rows:** 112,794 postings stored before the US/Canada/Mexico scope (76,110 still
     marked open) are deleted, then the file is compacted. This happens once, in the first build
     after merging: 26 s to delete, 32 s to compact, and a one-time 31.5 MB update for the local app.
+  - **Where a build's own steps spend their time, 2026-11-12** (profiled on the last production
+    database: 392,792 open postings, 237,680 roles; probes `probe/profile-build`, `probe/profile-site`):
+
+    | Step | Time | Mostly |
+    |---|---|---|
+    | Writing the website, every build | 27 s → 20 s | was: cleaning 630,000 links (now skipped when a link has no query) and reading each role's places three times (now once) |
+    | Full index file for the local app, weekly | about 6.5 min, 489 MB | compressing (xz), search text for every description, re-compressing descriptions |
+    | Index bookkeeping, every build | about 23 s | hashing every posting to find what changed (14 s), the CSV (7 s) |
+    | Re-processing every company (after an upgrade only) | 47 s | clustering (32 s), ghost scores (8 s) |
+    | Build health, closing dates | under 1 s | |
+
+    - The website's files are byte-for-byte the same before and after (detail files 154,415,711 bytes).
+    - The two index rows exist for the local app. See P1-3: retiring it would remove them.
   - **Scaling notes:**
     - Post-processing now grows with the number of *different* postings per company, not with the
       square of a company's size.
@@ -362,6 +375,12 @@ means. Keep every change incremental and measured (§2 baselines).
    - The full text stays in the builder for analysis and search.
    - The job panel says "Read the full posting on <employer>".
 3. **The local app is frozen:** bug fixes only. Its README section points to the website.
+   - **2026-11-12:** its start scripts are gone (`python -m lighthouse start` still works).
+   - **Waiting on the owner: retire it?** Its own files and tests are about 2,800 lines (the app's
+     pages, Claude fit, the MCP server, sponsorship imports), plus three packages (Flask, keyring,
+     openpyxl) the builder installs but doesn't use. Its index costs every build about 23 s and a
+     6.5-minute, 489 MB file each week. What must stay if it goes: the CSV, and a way to restart the
+     builder when the Actions cache is lost (today that is the weekly index file).
    - Decide at the first major change whether to retire it.
    - The `job-index` release keeps being published while it exists.
 4. **✓ Filters redesigned (2026-11-07; on `main` since 2026-11-09).**
