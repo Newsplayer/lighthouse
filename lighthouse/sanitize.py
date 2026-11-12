@@ -120,6 +120,8 @@ def clean_url(url: str | None) -> str:
     u = (url or "").strip()
     if not u.lower().startswith(("https://", "http://")):
         return ""
+    if "?" not in u:       # most links: nothing to remove (the website cleans 600,000 links a build)
+        return u
     parts = urlsplit(u)
     q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
          if not k.lower().startswith(_TRACKING[0]) and k.lower() not in _TRACKING[1:]]

@@ -190,8 +190,10 @@ def _rows(conn, countries) -> list[dict]:
     return rows
 
 
-def _places(r) -> list[str]:
-    return strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
+def _places(r: dict) -> list[str]:
+    if "places" not in r:      # read three times per role (list, search words, details): parsed once
+        r["places"] = strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
+    return r["places"]
 
 
 def _card(r, dicts: dict[str, dict]) -> list:
@@ -433,8 +435,10 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
             "detail_files": len(files), "top_bytes": top_bytes, "site_bytes": total}
 
 
-def _departments(r) -> list[str]:
-    return strings(r["departments"])[:5]
+def _departments(r: dict) -> list[str]:
+    if "deps" not in r:
+        r["deps"] = strings(r["departments"])[:5]
+    return r["deps"]
 
 
 def _excerpts(conn, hashes: list[str]) -> dict[str, str]:

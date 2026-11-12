@@ -250,7 +250,7 @@ console.log(JSON.stringify(out));
 def _where_expected(r, where: set, remote_too: bool, metro_country: dict) -> bool:
     """The page's place filter, in Python: any of the role's places is in a chosen place, or (remote
     roles, when asked) the role is open in a chosen place's country."""
-    locs = site._places(r)[:site.MAX_PLACES]
+    locs = site._places(dict(r))[:site.MAX_PLACES]
     if places.keys_of(locs) & where:
         return True
     want = {metro_country[k[1:]] if k.startswith("@") else k[:2] for k in where}
