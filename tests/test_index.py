@@ -130,22 +130,34 @@ def test_fetch_reads_every_listed_board(tmp_path, monkeypatch):
 
 def test_builder_can_restart_from_the_published_database(tmp_path):
     b = Builder(tmp_path)
-    b.ingest("acme", [job(1), job(2, "Accountant")])
-    b.ingest("acme", [job(1)])                                   # 2 closes: history worth keeping
-    b.export()
+    same = "<p>Run the regional warehouse network and its carriers. " + " ".join(f"duty{k}" for k in range(80)) + "</p>"
+    twins = [Job("greenhouse", "acme", str(i), "Logistics Lead", "Acme", city, f"https://x/{i}", sanitize_html(same))
+             for i, city in ((5, "Reno, NV"), (6, "Tulsa, OK"))]          # one role, listed in two cities
+    b.ingest("acme", [job(1), job(2, "Accountant"), *twins])
+    b.ingest("acme", [job(1), *twins])                           # 2 closes: history worth keeping
+    assert b.export()["jobs"] == 2
     fresh = tmp_path / "fresh.db"
-    assert snapshot.seed_builder(b.dist / snapshot.DB_NAME, fresh) == 2
+    assert snapshot.seed_builder(b.dist / snapshot.DB_NAME, fresh) == 4
     conn = db.connect(fresh)
+    # with no text to compare, the two listings stay one role until both descriptions are read again
+    fetch.postprocess(conn, b.cfg)
+    roles = "SELECT COUNT(*) FROM jobs WHERE active = 1 AND is_canonical = 1"
+    assert conn.execute(roles).fetchone()[0] == 2
     assert [r[0] for r in conn.execute("SELECT kind FROM events WHERE uid LIKE '%:2' ORDER BY id")] == ["new", "closed"]
     first_seen = conn.execute("SELECT first_seen FROM jobs WHERE external_id = '1'").fetchone()[0]
     # no descriptions travel in the public file; the published excerpt stands in until the board is read again
     assert db.content(conn, "greenhouse:acme:1") == ""
     assert conn.execute("SELECT text FROM site_excerpts").fetchone()[0].startswith("Build dashboards")
-    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 2
-    counts = db.upsert_board(conn, "greenhouse", "acme", [job(1), job(3, "Controller")])
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 4
+    counts = db.upsert_board(conn, "greenhouse", "acme", [job(1), job(3, "Controller"), twins[0]])   # one twin's text is back
     assert counts["new"] == 1 and db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")
     assert conn.execute("SELECT first_seen FROM jobs WHERE external_id = '1'").fetchone()[0] == first_seen
     fetch.postprocess(conn, b.cfg)
+    assert conn.execute(roles).fetchone()[0] == 3                # still one Logistics Lead (plus 1 and 3)
+    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(3, "Controller"), *twins])              # both are back
+    fetch.postprocess(conn, b.cfg)
+    assert conn.execute(roles).fetchone()[0] == 3                # now by their text, and still one role
+    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash_of = 'seeded'").fetchone()[0] == 1   # only the closed one
     conn.close()
     m = snapshot.export(fresh, tmp_path / "again")
-    assert m["db"]["rows"] == 3 and m["jobs"] == 2
+    assert m["db"]["rows"] == 5 and m["jobs"] == 3

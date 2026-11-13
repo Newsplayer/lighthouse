@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, db, extract, workers
+from . import __version__, db, dedupe, extract, workers
 from .models import age_hours, utcnow
 
 log = logging.getLogger("lighthouse.index")
@@ -326,6 +326,7 @@ def seed_builder(db_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
             # One-response boards are read in full once (not skipped as unchanged), so their postings
             # get their descriptions back.
             conn.execute("UPDATE boards SET body_hash = NULL")
+            conn.execute("UPDATE jobs SET minhash_of = ?", (dedupe.SEEDED,))   # roles stay as published meanwhile
         n = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         conn.execute("DETACH DATABASE s")
         conn.close()

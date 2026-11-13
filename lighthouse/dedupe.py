@@ -93,6 +93,9 @@ def title_similarity(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+SEEDED = "seeded"     # jobs.minhash_of of a posting that came from the public database and has no text yet
+
+
 class _UF:
     def __init__(self):
         self.p: dict[str, str] = {}
@@ -132,7 +135,7 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
         with conn:
             refresh_signatures(conn, ck)
             rows = conn.execute(
-                "SELECT uid, fingerprint, title, location, locations, minhash, posted_at, first_seen, active, "
+                "SELECT uid, fingerprint, title, location, locations, minhash, minhash_of, posted_at, first_seen, active, "
                 "closed_at, reopened_count, cluster_id, is_canonical, cluster_count, cluster_locations, "
                 "effective_first_seen, repost_count FROM jobs WHERE company_key=?", (ck,)).fetchall()
             if not rows:
@@ -164,6 +167,16 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
             for members in by_fp.values():
                 for u in members[1:]:
                     uf.union(members[0], u)
+            # A builder seeded from the public database has no descriptions yet, so nothing to compare:
+            # a role stays as it was published until the text of every one of its listings is read again.
+            published = defaultdict(list)
+            for r in rows:
+                if r["cluster_id"]:
+                    published[r["cluster_id"]].append(r)
+            for members in published.values():
+                if any(m["minhash_of"] == SEEDED for m in members):
+                    for m in members[1:]:
+                        uf.union(members[0]["uid"], m["uid"])
             checked = set()
             for members in buckets.values():
                 if len(members) < 2:
