@@ -156,7 +156,10 @@ def test_query_eligibility_matches_the_reason_checker():
              "clearance": rng.choice(["none", "secret", "ts"]), "years_experience": rng.choice([None, 1, 4]),
              "degree": rng.choice(["none", "bachelors", "phd"]), "min_salary": rng.choice([None, 100000]),
              "workplaces": rng.choice([["remote", "hybrid", "onsite"], ["remote"], ["hybrid", "onsite"]]),
-             "locations": rng.choice([[], ["Austin"], ["remote"], ["new york", "remote"]]), "about": "x"}
+             "locations": rng.choice([[], ["Austin"], ["remote"], ["new york", "remote"]])}
+        if not profile.is_set(p):       # nothing answered: nothing is ruled out, and there is no clause
+            assert profile.eligibility_sql(conn, p, 2) is None
+            continue
         clause, args = profile.eligibility_sql(conn, p, 2)
         ok = {r[0] for r in conn.execute(f"SELECT id FROM jobs j WHERE {clause}", args)}
         for i, row in enumerate(conn.execute("SELECT * FROM jobs ORDER BY id"), start=1):
@@ -199,29 +202,6 @@ def test_ghost_reasons_store_dates_not_counts():
     assert stored == ["open since 2026-08-01", "not updated since 2026-01-01"]
     assert stored == ghost.signals(row, 60, now + timedelta(days=1), text="")   # unchanged the next day
     assert ghost.labels(json.dumps(stored), now) == ["open 96 days", "not updated in 308 days"]
-
-
-def test_existing_reader_database_is_converted(tmp_path):
-    data = tmp_path / "data"
-    data.mkdir()
-    old = db.connect(data / "lighthouse.db")      # a 0.5 reader: jobs and personal data in one file
-    old.execute("INSERT INTO marks(uid, status, at) VALUES ('greenhouse:acme:1', 'applied', 'x')")
-    old.execute("INSERT INTO claude_extractions(content_hash, data, model, at) VALUES ('h', '{}', 'm', 'x')")
-    db.set_meta(old, "profile", {"about": "data jobs"})
-    db.set_meta(old, "generation", 9)
-    old.close()
-    cfg = config.load(tmp_path / "none.toml")
-    cfg.index.repo = "o/r"
-    path = db.app_db(cfg, data)
-    assert path.name == "user.db"
-    conn = db.connect(path)
-    assert conn.execute("SELECT status FROM marks").fetchone()[0] == "applied"
-    assert profile.load(conn)["about"] == "data jobs" and db.get_meta(conn, "generation") is None
-    assert conn.execute("SELECT COUNT(*) FROM claude_extractions").fetchone()[0] == 1
-    assert (data / "lighthouse.db").exists()    # kept until a real index is installed...
-    snapshot.cleanup(conn)
-    assert (data / "lighthouse.db").exists()
-    conn.close()
 
 
 def test_an_age_is_not_years_of_experience():

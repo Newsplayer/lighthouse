@@ -442,10 +442,8 @@ def _annual(v, per):
 
 _DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
        j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
-       j.employment_type, COALESCE(ce.data, e.data) AS data, CASE WHEN ce.data IS NOT NULL THEN 'claude' ELSE e.method END AS method,
-       COALESCE(ce.at, e.at) AS data_at
-FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
-LEFT JOIN claude_extractions ce ON ce.content_hash = j.content_hash"""
+       j.employment_type, e.data, e.method, e.at AS data_at
+FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash"""
 
 
 def derive(conn, company_keys) -> None:
@@ -453,13 +451,6 @@ def derive(conn, company_keys) -> None:
     filter columns on jobs. Pure lookups and string checks: no description parsing here."""
     for ck in company_keys:
         _derive_rows(conn, conn.execute(_DERIVE_SELECT + " WHERE j.company_key=? AND j.active=1", (ck,)).fetchall())
-
-
-def derive_claude(conn) -> int:
-    """Reader: re-apply your own Claude extractions on top of the job index (only those rows differ)."""
-    rows = conn.execute(_DERIVE_SELECT + " WHERE j.active=1 AND ce.data IS NOT NULL").fetchall()
-    _derive_rows(conn, rows)
-    return len(rows)
 
 
 def _derive_rows(conn, rows) -> None:
@@ -516,10 +507,8 @@ def _derive_rows(conn, rows) -> None:
 
 
 def get(conn, content_hash: str) -> tuple[dict, str | None]:
-    """Your Claude extraction if you have one, else the free rule-based one."""
-    r = conn.execute("SELECT data, 'claude' AS method FROM claude_extractions WHERE content_hash=?",
-                     (content_hash,)).fetchone()
-    r = r or conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
+    """What the rules (and the gap fill) read from a description: ({field: {value, evidence}}, method)."""
+    r = conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
     if not r:
         return {}, None
     data = json.loads(r["data"]) or {}

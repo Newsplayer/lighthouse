@@ -1,27 +1,26 @@
-"""The shared job index: built by one GitHub Action, read by every user's Lighthouse.
+"""The builder: what the Job index GitHub Action runs, and the public files it publishes.
 
-One public repo runs a scheduled Action that finds each listed company's job board (discover.py),
-fetches every board, de-duplicates and analyses the postings, and publishes the result on its
-`job-index` release:
+Each build finds every listed company's job board (discover.py), fetches every board, de-duplicates
+and analyses the postings (fetch.py), and writes three files for the `job-index` release:
 
-    manifest.json        what's current, with each file's name and SHA-256
-    base-<time>.db.xz    a ready-to-use job index (every posting + its search index); rebuilt weekly
-    delta-<time>.db.xz   what changed in one build; the manifest lists the chain since the base
+    jobs.db.xz       the public database: a plain SQLite file anyone can open (DB Browser for SQLite,
+                     Datasette, sqlite3, pandas). Every posting with its filter fields and history, an
+                     excerpt of each open role, the boards and the companies list. The `postings` view
+                     is one row per open role with a column per filter.
+    jobs.csv.gz      that view as a spreadsheet (without the excerpts)
+    manifest.json    what was built, and how the build went
 
-Readers ([index] repo set) use the base as it comes: it is unpacked into data/index/ and opened
-directly, with nothing re-parsed, re-cleaned or re-indexed. Each delta is applied with a few SQL
-statements. Everything personal (profile, marks, Claude verdicts, sponsorship imports) lives in
-data/user.db, which attaches the index; a new index never touches it.
+The website (site.py) is written from the same builder database. Full descriptions stay in the
+builder: the public files carry excerpts, and each posting links to the employer's own page.
 
-    builder:  python -m lighthouse index build --out dist [--published prev/manifest.json]
-    reader:   automatic on every refresh; or python -m lighthouse index import | status
-
-The published files are built by whitelist: only job, board, rule-extraction, history and coverage
-rows are copied, so nothing personal can be in them even if the build machine had a profile.
+The public database is written by whitelist (job, board, rule-extraction, history and coverage rows
+only). It is also what a new builder starts from when the Action's cache is lost (seed_builder).
 """
 
 from __future__ import annotations
 
+import csv
+import gzip
 import hashlib
 import json
 import logging
@@ -32,58 +31,27 @@ import shutil
 import sqlite3
 import tempfile
 import time
-import zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin
 
 from . import __version__, db, extract, workers
-from . import profile as profile_mod
-from .models import age_hours, strings, utcnow
+from .models import age_hours, utcnow
 
 log = logging.getLogger("lighthouse.index")
 
-FORMAT = 3                          # 3: ready-to-use index (user data apart, search index included)
-TAG = "job-index"
 MANIFEST = "manifest.json"
-BUILDER_DB = db.DEFAULT_DB.parent / "builder.db"   # the Action's working database (kept in its cache)
-BASE_EVERY_DAYS = 7
-MAX_DELTAS = 40                    # a longer chain since the base: write a new base instead
-MAX_BYTES = 1_900_000_000          # GitHub's per-file release limit is 2 GiB
-CSV_NAME = "jobs.csv.gz"           # every open role, one column per filter (db.POSTINGS_SELECT); for people, not the app
+DB_NAME = "jobs.db.xz"             # the public database
+CSV_NAME = "jobs.csv.gz"           # every open role, one column per filter
+BUILDER_DB = db.DEFAULT_DB         # the Action's working database (kept in its cache)
 REDISCOVER_OK_DAYS = 14            # re-check a company whose board works this often
 REDISCOVER_BAD_DAYS = 3            # ... and one whose board couldn't be found this often
-FETCH_DETAIL_MINUTES = 120         # builder: boards started later than this skip description calls this run
+FETCH_DETAIL_MINUTES = 120         # boards started later than this skip description calls this run
 # The whole build fits in an hour: nothing new is fetched after FETCH_MINUTES (boards not reached go
-# first next run), then clustering, the rules, the Claude batch and the files take the rest.
+# first next run), then clustering, the rules and the files take the rest.
 FETCH_MINUTES = 40
 FETCH_WORKERS = 48                 # boards in parallel: most wait on their host's rate limit, not on CPU
 WORKDAY_REFRESH_HOURS = 11         # each Workday board twice a day (see Settings.workday_refresh_hours)
 PAGED_REFRESH_HOURS = 5            # other many-request listings four times a day, as before builds ran every 3 hours
-
-# A published index carries one description per role: its canonical listing's (lists and search only
-# ever show canonical rows; a duplicate listing's page shows its role's text), plus the listings of
-# roles that closed completely (still shown to readers who saved them). Duplicates were ~30% of
-# descriptions. The builder keeps every description (clustering and the rules need them).
-def _ships(j: str = "j", schema: str = "src") -> str:
-    return (f"({j}.is_canonical = 1 OR {j}.cluster_id IS NULL OR ({j}.active = 0 AND NOT EXISTS ("
-            f"SELECT 1 FROM {schema}.jobs k WHERE k.cluster_id = {j}.cluster_id AND k.active = 1)))")
-
-
-def _places(cluster_locations, location) -> str:
-    """Search text for a role's places: every listing's, so a search for one city finds the role."""
-    return " | ".join(strings(cluster_locations)) or (location or "")
-
-
-# Changes on every run for every open posting, or not shown to readers: not a reason to re-send a row.
-VOLATILE_JOB_COLUMNS = {"last_seen", "updated_at", "row_sig", "detail_marker"}
-# Shipped empty: per-reader (mark), assigned on arrival (fts_rowid), or builder bookkeeping a reader
-# never reads (derived_of: ~190 bytes a row; row_sig). A builder seeded from a base recomputes them.
-BLANK_JOB_COLUMNS = {"mark", "fts_rowid", "derived_of", "row_sig"}
-
-
-class IndexProblem(Exception):
-    pass
 
 
 def _now() -> str:
@@ -103,27 +71,21 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-# ================================================================ builder (the GitHub Action)
+# ================================================================ the build
 
 def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | str = BUILDER_DB,
-          detail_calls: int | None = None, published: Path | str | None = None, full: bool = False,
-          discover_companies: bool = True, llm: bool = True, llm_minutes: float | None = None,
-          fetch_minutes: float | None = None) -> dict:
+          detail_calls: int | None = None, full: bool = False, discover_companies: bool = True,
+          llm: bool = True, llm_minutes: float | None = None, fetch_minutes: float | None = None) -> dict:
     """Find boards for the listed companies, fetch every enabled board into the builder database, let a
     free open model on this machine fill the fields the rules couldn't settle (when one is set up: see
     llm_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
-    index files."""
+    public files. full: look every company up again and retry boards that were switched off."""
     from . import config as config_mod
     from . import fetch, net
     config_path = Path(config_path or config_mod.DEFAULT_CONFIG)
     started, t0 = utcnow(), time.monotonic()   # whole seconds, as events are stamped
+    countries = [c.strip().upper() for c in countries if c.strip()]
     conn = db.connect(db_path)
-    if db.has_fts(conn):   # the published index gets its own search index; the builder needs none
-        conn.execute("DROP TABLE jobs_fts")
-        conn.commit()
-    p = profile_mod.load(conn)
-    p["countries"] = [c.strip().upper() for c in countries if c.strip()]
-    profile_mod.save(conn, p)   # countries only: no eligibility is computed on the builder
     cfg = config_mod.load(config_path)
     s = cfg.settings
     client = net.open_network(net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second))
@@ -135,20 +97,19 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     conn.close()
     # Nothing new is started after fetch_minutes, so even a first build of the whole list (hundreds of
     # thousands of postings) finishes and publishes; later runs pick up where it stopped.
-    overrides = {"detail_minutes": FETCH_DETAIL_MINUTES,
+    overrides = {"detail_minutes": FETCH_DETAIL_MINUTES, "countries": tuple(countries),
                  "fetch_minutes": FETCH_MINUTES if fetch_minutes is None else fetch_minutes,
                  "fetch_workers": max(s.fetch_workers, FETCH_WORKERS),
                  "workday_refresh_hours": s.workday_refresh_hours or WORKDAY_REFRESH_HOURS,
                  "paged_refresh_hours": s.paged_refresh_hours or PAGED_REFRESH_HOURS,
                  **({"max_detail_calls_per_board": detail_calls} if detail_calls else {})}
-    results = fetch.run(config_path, db_path, use_snapshot=False, overrides=overrides)
-    failed = sum(1 for r in results or [] if "error" in r)
-    log.info("fetched %d boards (%d failed)", len(results or []), failed)
+    results = fetch.run(config_path, db_path, overrides=overrides)
+    log.info("fetched %d boards (%d failed)", len(results), sum(1 for r in results if "error" in r))
     conn = db.connect(db_path)
-    gone, keys = db.purge_out_of_scope(conn, p["countries"])
+    gone, keys = db.purge_out_of_scope(conn, countries)
     if gone:
         log.info("deleted %d postings outside %s (stored before the builder covered only those)", gone,
-                 ", ".join(p["countries"]))
+                 ", ".join(countries))
     if retired or keys:   # postings closed (boards switched off in the list) or deleted: re-cluster those companies
         fetch.postprocess(conn, cfg, set(retired) | keys)
     if llm:   # optional steps: the rule answers are published whatever happens here
@@ -159,7 +120,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     if db.compact(conn):
         log.info("compacted the database")
     conn.close()
-    return export(db_path, out_dir, countries=p["countries"], published=published, full=full)
+    return export(db_path, out_dir, countries=countries)
 
 
 def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
@@ -321,33 +282,33 @@ def apply_board_list(conn, cfg_or_boards, retry_switched_off: bool = False) -> s
     return keys
 
 
-def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
-    """Start a builder database from a published base (when the Action's cache has expired), so the
-    next build only fetches what changed instead of everything. Returns postings seeded."""
-    index_file = Path(index_file)
+
+def seed_builder(db_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
+    """Start a builder database from the published jobs.db.xz (when the Action's cache is lost), so it
+    keeps every posting's history. The public file carries no descriptions: each posting takes its text
+    back the first time its board lists it. Returns postings seeded."""
+    from . import site
+    db_file = Path(db_file)
     tmp = None
-    if index_file.suffix == ".xz":
+    if db_file.suffix == ".xz":
         fd, tmp = tempfile.mkstemp(suffix=".db", dir=Path(db_path).parent)
-        with os.fdopen(fd, "wb") as fout, lzma.open(index_file, "rb") as fin:
+        with os.fdopen(fd, "wb") as fout, lzma.open(db_file, "rb") as fin:
             shutil.copyfileobj(fin, fout, 1 << 20)
-        index_file = Path(tmp)
+        db_file = Path(tmp)
     try:
-        _check_index_file(index_file, "seed")
         conn = db.connect(db_path)
-        conn.execute("ATTACH DATABASE ? AS s", (str(index_file),))
-        db.load_zdicts(conn, "s")
-        cols = [c for c in _cols(conn, "jobs", "s") if c in set(_cols(conn, "jobs")) and c not in ("mark", "fts_rowid")]
-        bcols = [c for c in _cols(conn, "boards", "s") if c in set(_cols(conn, "boards"))]
-        ccols = [c for c in _cols(conn, "companies", "s") if c in set(_cols(conn, "companies"))]
+        conn.executescript(site._STATE_TABLES)
+        conn.execute("ATTACH DATABASE ? AS s", (str(db_file),))
         with conn:
-            conn.execute(f"INSERT OR REPLACE INTO jobs ({', '.join(cols)}) SELECT {', '.join(cols)} FROM s.jobs")
-            conn.execute("INSERT OR REPLACE INTO job_content (uid, html) SELECT uid, zpack(unz(html)) FROM s.job_content")
+            for table in ("jobs", "boards", "companies"):
+                cols = ", ".join(c for c in _cols(conn, table, "s") if c in set(_cols(conn, table)))
+                conn.execute(f"INSERT OR REPLACE INTO {table} ({cols}) SELECT {cols} FROM s.{table}")
             # model 'seeded': the next build re-runs the rules (which also records what they left unsettled)
             conn.execute("INSERT OR REPLACE INTO extractions (content_hash, method, data, model, at) "
                          "SELECT content_hash, method, data, 'seeded', at FROM s.extractions")
-            # The gap fill's answers are in the published extractions ("by": "model", or "claude" in older
-            # ones): keep them as already read, so a lost cache never reads the same descriptions twice.
-            # Category guesses ("by": "titles") aren't kept: they're redone each build in seconds.
+            # The gap fill's answers are in the published extractions ("by": "model"): keep them as already
+            # read, so a lost cache never reads the same descriptions twice. Category guesses
+            # ("by": "titles") aren't kept: they're redone each build in seconds.
             now = _now()
             for chash, data in conn.execute("SELECT content_hash, data FROM s.extractions WHERE data LIKE "
                                             "'%\"by\":%' OR data LIKE '%_read\"%'").fetchall():
@@ -359,12 +320,11 @@ def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> in
                 if filled or any(m in d for m in extract.READ_MARKERS):   # read before, even if it found nothing
                     conn.execute("INSERT OR IGNORE INTO llm_extractions (content_hash, data, model, at) "
                                  "VALUES (?, ?, 'seeded', ?)", (chash, json.dumps(filled, ensure_ascii=False), now))
-            conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY id")
-            conn.execute(f"INSERT OR REPLACE INTO boards ({', '.join(bcols)}) SELECT {', '.join(bcols)} FROM s.boards")
-            conn.execute(f"INSERT OR REPLACE INTO companies ({', '.join(ccols)}) SELECT {', '.join(ccols)} FROM s.companies")
-            conn.execute("UPDATE jobs SET minhash = NULL, minhash_of = NULL")   # recomputed by the next build
-            # The index carries one description per role: boards answered in one response are read in
-            # full once (not skipped as unchanged), so their duplicate listings get their text back.
+            conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY rowid")
+            # the website shows the published excerpts until the descriptions are read again
+            conn.execute("INSERT OR REPLACE INTO site_excerpts (content_hash, text) SELECT content_hash, text FROM s.excerpts")
+            # One-response boards are read in full once (not skipped as unchanged), so their postings
+            # get their descriptions back.
             conn.execute("UPDATE boards SET body_hash = NULL")
         n = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         conn.execute("DETACH DATABASE s")
@@ -375,78 +335,71 @@ def seed_builder(index_file: Path | str, db_path: Path | str = BUILDER_DB) -> in
             Path(tmp).unlink(missing_ok=True)
 
 
-def _job_columns(conn, schema: str = "main") -> list[tuple[str, str]]:
-    """(name, type) of the job columns a published index carries."""
-    return [(r[1], r[2]) for r in conn.execute(f"PRAGMA {schema}.table_info(jobs)")
-            if r[1] not in db.INDEX_EXCLUDED_COLUMNS]
+# ================================================================ the public files
+
+# Builder bookkeeping the public database leaves out (a builder seeded from it works them out again).
+PRIVATE_JOB_COLUMNS = db.RETIRED_JOB_COLUMNS | {"minhash", "minhash_of", "missed", "row_sig", "derived_of", "detail_marker"}
+
+# One row per open role (duplicate listings collapsed into the role), one column per filter, in plain
+# words: what you browse in any SQLite tool, and what jobs.csv.gz holds. Lists are comma-separated; pay
+# is per year (hourly x 2080) with pay_stated_per saying how the posting gave it.
+POSTINGS_VIEW = """CREATE VIEW postings AS SELECT
+    j.uid AS id, j.title, j.company,
+    j.location,
+    (SELECT group_concat(value, ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))) AS all_locations,
+    replace(trim(j.countries, ','), ',', ', ') AS countries,
+    j.workplace_eff AS workplace,
+    j.emp_type AS employment_type,
+    j.seniority,
+    j.job_function,
+    j.yoe_min AS years_experience,
+    j.yoe_source AS years_experience_source,
+    j.degree,
+    j.visa AS visa_sponsorship,
+    j.clearance,
+    j.citizenship AS us_citizens_only,
+    CAST(j.pay_min_annual AS INTEGER) AS pay_min_per_year,
+    CAST(j.pay_max_annual AS INTEGER) AS pay_max_per_year,
+    j.pay_currency,
+    j.pay_interval AS pay_stated_per,
+    replace(trim(j.skills, ','), ',', ', ') AS skills,
+    replace(trim(j.benefits, ','), ',', ', ') AS benefits,
+    j.travel,
+    replace(trim(j.languages, ','), ',', ', ') AS languages_required,
+    (SELECT group_concat(value, ', ') FROM json_each(COALESCE(j.departments, '[]'))) AS departments,
+    substr(j.posted_at, 1, 10) AS posted_on,
+    substr(j.effective_first_seen, 1, 10) AS first_seen_on,
+    j.cluster_count AS times_listed,
+    j.repost_count AS reposts,
+    j.ghost_score,
+    (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))) AS ghost_signals,
+    x.text IS NOT NULL AS has_description,
+    (SELECT group_concat(f.key, ', ') FROM extractions e, json_each(e.data) f
+      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') IS NOT NULL) AS filled_by_ai,
+    j.url,
+    j.source AS ats,
+    j.source_board AS board,
+    x.text AS excerpt
+FROM jobs j LEFT JOIN excerpts x ON x.content_hash = j.content_hash
+WHERE j.active = 1 AND j.is_canonical = 1"""
 
 
-def _update_signatures(conn, now: str) -> int:
-    """Remember, per posting, a hash of everything a reader receives (and separately of its search
-    text and its description), and when each last changed. Deltas carry only what changed."""
-    conn.execute("CREATE TABLE IF NOT EXISTS export_sig (uid TEXT PRIMARY KEY, sig TEXT NOT NULL, "
-                 "changed_at TEXT NOT NULL)")
-    have = set(_cols(conn, "export_sig"))
-    for col in ("fts_sig", "fts_changed_at", "content_sig", "content_changed_at"):
-        if col not in have:
-            conn.execute(f"ALTER TABLE export_sig ADD COLUMN {col} TEXT")
-    cols = [n for n, _ in _job_columns(conn) if n not in VOLATILE_JOB_COLUMNS | BLANK_JOB_COLUMNS]
-    old = {r[0]: r[1:] for r in conn.execute("SELECT uid, sig, fts_sig, content_sig FROM export_sig")}
-    sel = ", ".join(f"j.{c}" for c in cols)
-    changed, n = [], 0
-    h = lambda v: hashlib.blake2b(repr(v).encode(), digest_size=12).hexdigest()
-    for row in conn.execute(f"SELECT {sel}, e.model, (SELECT 1 FROM job_content c WHERE c.uid = j.uid), "
-                            f"{_ships('j', 'main')} FROM jobs j "
-                            "LEFT JOIN extractions e ON e.content_hash = j.content_hash"):
-        rec = dict(zip(cols, row))
-        uid = rec["uid"]
-        sig = h(tuple(row[:-1]))
-        # Search text: canonical open rows only, with every place the role is listed in.
-        lead = rec["active"] and rec["is_canonical"]
-        fts = h((rec["title"], rec["company"], rec["location"], rec["content_hash"], rec["active"],
-                 rec["is_canonical"], rec["cluster_locations"] if lead else None))
-        content = h((rec["content_hash"], row[-2], row[-1]))
-        prev = old.get(uid, (None, None, None))
-        if prev != (sig, fts, content):
-            n += prev[0] != sig
-            changed.append((uid, sig, now, fts, now, content, now))
-    with conn:
-        conn.executemany(
-            """INSERT INTO export_sig(uid, sig, changed_at, fts_sig, fts_changed_at, content_sig, content_changed_at)
-               VALUES (?,?,?,?,?,?,?) ON CONFLICT(uid) DO UPDATE SET
-                   changed_at = CASE WHEN export_sig.sig IS excluded.sig THEN export_sig.changed_at ELSE excluded.changed_at END,
-                   sig = excluded.sig,
-                   fts_changed_at = CASE WHEN export_sig.fts_sig IS NOT excluded.fts_sig
-                                         THEN excluded.fts_changed_at ELSE export_sig.fts_changed_at END,
-                   fts_sig = excluded.fts_sig,
-                   content_changed_at = CASE WHEN export_sig.content_sig IS NOT excluded.content_sig
-                                             THEN excluded.content_changed_at ELSE export_sig.content_changed_at END,
-                   content_sig = excluded.content_sig""", changed)
-    return n
-
-
-def _plain_db(out_path: Path) -> Path:
-    plain = out_path.with_name(out_path.name.removesuffix(".xz"))
-    for p in (plain, out_path, Path(str(plain) + "-wal"), Path(str(plain) + "-shm"), Path(str(plain) + "-journal")):
-        p.unlink(missing_ok=True)
-    return plain
-
-
-def _finish(c, plain: Path, out_path: Path) -> dict:
-    rows = c.execute("SELECT COUNT(*) FROM main.jobs").fetchone()[0]
-    active = c.execute("SELECT COUNT(*) FROM main.jobs WHERE active = 1").fetchone()[0]
-    c.execute("DETACH DATABASE src")
-    c.execute("VACUUM")
-    c.close()
-    _xz(plain, out_path)
-    plain.unlink()
-    return {"file": out_path.name, "sha256": _sha256(out_path), "bytes": out_path.stat().st_size,
-            "rows": rows, "active": active}
+def _compact_extraction(data: str | None) -> str | None:
+    """Rule extractions without their empty fields: most postings mention only a few, so ~4x smaller."""
+    try:
+        d = json.loads(data)
+    except (TypeError, ValueError):
+        return data
+    if not isinstance(d, dict):
+        return data
+    keep = {k: v for k, v in d.items() if not (isinstance(v, dict) and v.get("value") in (None, [], "")
+                                               and not v.get("evidence"))}
+    return json.dumps(keep, separators=(",", ":"), ensure_ascii=False)
 
 
 def _xz(plain: Path, out_path: Path) -> None:
-    """Compress with the xz tool on every core when it's installed (GitHub's runners have it: a base
-    takes ~2 minutes instead of ~9), else with Python's lzma. Same .xz format either way."""
+    """Compress with the xz tool on every core when it's installed (GitHub's runners have it), else
+    with Python's lzma. Same .xz format either way."""
     import subprocess
     exe = shutil.which("xz")
     if exe:
@@ -460,279 +413,87 @@ def _xz(plain: Path, out_path: Path) -> None:
         shutil.copyfileobj(fin, fout, 1 << 20)
 
 
-def _open_writer(src_path: Path, plain: Path, dicts: dict[str, bytes]):
-    from .sanitize import html_to_text
+def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict | None]:
+    """Write jobs.db.xz and jobs.csv.gz into `out` from the builder database. Returns what was written
+    for each ({file, bytes, ...}; None for the CSV if it couldn't be written)."""
+    plain = out / DB_NAME.removesuffix(".xz")
+    for f in (plain, out / DB_NAME, out / CSV_NAME):
+        f.unlink(missing_ok=True)
     c = sqlite3.connect(plain)
     c.execute("PRAGMA journal_mode=OFF")
     c.execute("PRAGMA synchronous=OFF")
-    c.create_function("unz", 1, db.unpack, deterministic=True)
     c.create_function("compact", 1, _compact_extraction, deterministic=True)
-    shared = dicts.get("", b"")
-    c.create_function("zd", 2, lambda board, h: db.pack_with(db.unpack(h), dicts.get(board) or shared),
-                      deterministic=True)
-    c.create_function("fts_text", 1, lambda h: html_to_text(db.unpack(h))[:db.FTS_BODY_CHARS], deterministic=True)
-    c.create_function("places", 2, _places, deterministic=True)
     c.execute("ATTACH DATABASE ? AS src", (str(src_path),))
-    return c
-
-
-BOARD_DICT_MIN = 30        # a board with this many descriptions gets a dictionary of its own
-BOARD_DICT_SAMPLE = 1500
-
-
-def _board_expr(alias: str = "j") -> str:
-    return f"{alias}.source || ':' || {alias}.source_board"
-
-
-def _compact_extraction(data: str | None) -> str | None:
-    """Rule extractions without their empty fields (readers treat a missing field as unknown):
-    most postings mention only a few of them, so this is ~4x smaller."""
-    try:
-        d = json.loads(data)
-    except (TypeError, ValueError):
-        return data
-    if not isinstance(d, dict):
-        return data
-    keep = {k: v for k, v in d.items() if not (isinstance(v, dict) and v.get("value") in (None, [], "")
-                                               and not v.get("evidence"))}
-    return json.dumps(keep, separators=(",", ":"), ensure_ascii=False)
-
-
-def _zdicts(src_path: Path, new: bool) -> dict[str, bytes]:
-    """Description dictionaries, {board: dict} plus "" for the shared one: trained afresh for each
-    base (kept in the builder's database), reused by its deltas."""
-    import random
-    from collections import defaultdict
-    conn = db.connect(src_path)
-    try:
-        conn.execute("CREATE TABLE IF NOT EXISTS index_zdicts (board TEXT PRIMARY KEY, data BLOB NOT NULL)")
-        dicts = {b: bytes(d) for b, d in conn.execute("SELECT board, data FROM index_zdicts")}
-        if new or "" not in dicts:
-            by = defaultdict(list)
-            for board, uid in conn.execute(f"SELECT {_board_expr()}, j.uid FROM jobs j WHERE j.active = 1 AND "
-                                           "EXISTS (SELECT 1 FROM job_content c WHERE c.uid = j.uid)"):
-                by[board].append(uid)
-            rng = random.Random(7)
-
-            def sample(uids, n):
-                return [db.unpack(r[0]) for u in rng.sample(uids, min(n, len(uids)))
-                        for r in conn.execute("SELECT html FROM job_content WHERE uid = ?", (u,))]
-            everyone = [u for us in by.values() for u in us]
-            shared = db.train_zdict(sample(everyone, 30000)) if everyone else b""
-            dicts, seen = {"": shared}, {zlib.adler32(shared)}
-            for board, uids in by.items():
-                if len(uids) < BOARD_DICT_MIN:
-                    continue
-                d = db.train_zdict(sample(uids, BOARD_DICT_SAMPLE))
-                if len(d) < 16000 and shared:       # little of its own: fill up with common text
-                    d = (shared[-(32768 - len(d) - 1):] + b"\n" + d)[-32768:]
-                if d and zlib.adler32(d) not in seen:
-                    dicts[board] = d
-                    seen.add(zlib.adler32(d))
-            with conn:
-                conn.execute("DELETE FROM index_zdicts")
-                conn.executemany("INSERT INTO index_zdicts (board, data) VALUES (?, ?)", dicts.items())
-        for d in dicts.values():
-            db.register_zdict(d)
-        return dicts
-    finally:
-        conn.close()
-
-
-def _copy_shared(c, uid_filter: str, args=()) -> None:
-    """Tables both files carry: extractions, events, boards, companies (+ the description dictionary)."""
-    c.execute("INSERT INTO main.extractions (content_hash, method, data, model, at) "
-              "SELECT content_hash, method, compact(data), model, at FROM src.extractions "
-              "WHERE content_hash IN (SELECT content_hash FROM main.jobs)")
-    c.execute(f"INSERT INTO main.events (uid, kind, at) SELECT uid, kind, at FROM src.events "
-              f"WHERE uid IN ({uid_filter}) ORDER BY id", args)
-    bcols = ", ".join(x for x in _cols(c, "boards") if x in set(_cols(c, "boards", "src")))
-    c.execute(f"INSERT INTO main.boards ({bcols}) SELECT {bcols} FROM src.boards")
-    ccols = ", ".join(x for x in _cols(c, "companies") if x in set(_cols(c, "companies", "src")))
-    c.execute(f"INSERT INTO main.companies ({ccols}) SELECT {ccols} FROM src.companies")
-
-
-def _put_zdicts(c, dicts: dict[str, bytes]) -> None:
-    c.executemany("INSERT OR IGNORE INTO main.zdict (id, data) VALUES (?, ?)",
-                  [(zlib.adler32(d), d) for d in dicts.values() if d])
-
-
-def _write_base(src_path: Path, out_path: Path, meta: dict) -> dict:
-    """The whole index, ready to open: every posting, each description compressed against its
-    board's dictionary (readable one row at a time, ~5x smaller than plain text), and a contentless
-    search index over open postings."""
-    plain = _plain_db(out_path)
-    dicts = _zdicts(src_path, new=True)
-    c = _open_writer(src_path, plain, dicts)
-    cols = _job_columns(c, "src")
-    db.create_index_tables(c, cols, fts=True, indexes=False)   # indexes after the bulk insert: faster
-    names = [n for n, _ in cols]
-    sel = ", ".join("NULL" if n in BLANK_JOB_COLUMNS else n for n in names)
-    with c:
-        c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs ORDER BY uid")
-        c.execute(f"INSERT INTO main.job_content (uid, html) SELECT c.uid, zd({_board_expr()}, c.html) "
-                  f"FROM src.job_content c JOIN src.jobs j ON j.uid = c.uid WHERE {_ships()}")
-        _copy_shared(c, "SELECT uid FROM main.jobs")
-        _put_zdicts(c, dicts)
-        c.execute("""INSERT INTO main.jobs_fts (rowid, title, company, location, body)
-                     SELECT j.rowid, j.title, j.company, places(j.cluster_locations, j.location), fts_text(c.html)
-                     FROM main.jobs j LEFT JOIN main.job_content c ON c.uid = j.uid
-                     WHERE j.active = 1 AND j.is_canonical = 1""")
-        c.execute("UPDATE main.jobs SET fts_rowid = rowid WHERE active = 1 AND is_canonical = 1")
-        c.executemany("INSERT INTO main.index_meta(key, value) VALUES (?, ?)",
-                      [(k, json.dumps(v)) for k, v in meta.items()])
-    c.executescript(db.INDEX_INDEXES)
-    c.execute("INSERT INTO main.jobs_fts(jobs_fts) VALUES ('optimize')")
+    cols = ", ".join(n for n in _cols(c, "jobs", "src") if n not in PRIVATE_JOB_COLUMNS)
+    c.executescript(f"""
+        CREATE TABLE jobs AS SELECT {cols} FROM src.jobs ORDER BY uid;
+        CREATE UNIQUE INDEX jobs_uid ON jobs(uid);
+        CREATE INDEX jobs_cluster ON jobs(cluster_id);
+        CREATE INDEX jobs_hash ON jobs(content_hash);
+        CREATE TABLE excerpts AS SELECT content_hash, text FROM src.site_excerpts WHERE text <> '';
+        CREATE UNIQUE INDEX excerpts_hash ON excerpts(content_hash);
+        CREATE TABLE events AS SELECT uid, kind, at FROM src.events ORDER BY id;
+        CREATE INDEX events_uid ON events(uid);
+        CREATE TABLE extractions AS SELECT content_hash, method, compact(data) AS data, model, at
+            FROM src.extractions WHERE content_hash IN (SELECT content_hash FROM jobs);
+        CREATE UNIQUE INDEX extractions_hash ON extractions(content_hash);
+        CREATE TABLE boards AS SELECT * FROM src.boards;
+        CREATE TABLE companies AS SELECT * FROM src.companies;
+        CREATE TABLE about (key TEXT PRIMARY KEY, value TEXT);
+        {POSTINGS_VIEW};
+    """)
+    c.executemany("INSERT INTO about (key, value) VALUES (?, ?)", [(k, json.dumps(v)) for k, v in about.items()])
     c.commit()
-    return _finish(c, plain, out_path)
+    c.execute("DETACH DATABASE src")
+    rows, active = c.execute("SELECT COUNT(*), COALESCE(SUM(active), 0) FROM jobs").fetchone()
+    csv_info = None
+    try:        # a convenience for people: never stops the database from publishing
+        cur = c.execute("SELECT * FROM postings ORDER BY company COLLATE NOCASE, title COLLATE NOCASE")
+        keep = [i for i, d in enumerate(cur.description) if d[0] != "excerpt"]
+        n = 0
+        with gzip.open(out / CSV_NAME, "wt", encoding="utf-8", newline="", compresslevel=6) as f:
+            w = csv.writer(f)
+            w.writerow([cur.description[i][0] for i in keep])
+            for row in cur:
+                w.writerow([row[i] for i in keep])
+                n += 1
+        csv_info = {"file": CSV_NAME, "rows": n, "bytes": (out / CSV_NAME).stat().st_size}
+    except Exception as exc:
+        log.warning("%s not written: %s", CSV_NAME, exc)
+    c.close()
+    _xz(plain, out / DB_NAME)
+    plain.unlink()
+    return ({"file": DB_NAME, "sha256": _sha256(out / DB_NAME), "bytes": (out / DB_NAME).stat().st_size,
+             "rows": rows, "active": active}, csv_info)
 
 
-def _write_delta(src_path: Path, out_path: Path, since: str, meta: dict) -> dict:
-    """Postings changed after `since` (the previous build): full job rows; descriptions only where
-    they changed; the search text of rows whose title/company/location/description changed or that
-    reopened. Descriptions use the base's dictionaries (a board new since the base: the shared one)."""
-    plain = _plain_db(out_path)
-    dicts = _zdicts(src_path, new=False)
-    c = _open_writer(src_path, plain, dicts)
-    cols = _job_columns(c, "src")
-    db.create_index_tables(c, cols, fts=False, indexes=False)
-    c.execute("CREATE TABLE fts_rows (uid TEXT PRIMARY KEY, title TEXT, company TEXT, location TEXT, body TEXT, "
-              "changed_at TEXT)")
-    names = [n for n, _ in cols]
-    sel = ", ".join("NULL" if n in BLANK_JOB_COLUMNS else n for n in names)
-    with c:
-        c.execute("CREATE TEMP TABLE pick AS SELECT uid, fts_changed_at > ? AS fts, content_changed_at > ? AS content, "
-                  "fts_changed_at "
-                  "FROM src.export_sig WHERE changed_at > ? OR fts_changed_at > ? OR content_changed_at > ?",
-                  (since,) * 5)
-        c.execute("CREATE UNIQUE INDEX temp.pick_uid ON pick(uid)")
-        c.execute(f"INSERT INTO main.jobs ({', '.join(names)}) SELECT {sel} FROM src.jobs "
-                  "WHERE uid IN (SELECT uid FROM pick)")
-        c.execute(f"INSERT INTO main.job_content (uid, html) SELECT c.uid, zd({_board_expr()}, c.html) "
-                  "FROM src.job_content c JOIN src.jobs j ON j.uid = c.uid "
-                  f"WHERE c.uid IN (SELECT uid FROM pick WHERE content) AND {_ships()}")
-        _copy_shared(c, "SELECT uid FROM pick")
-        c.execute("""INSERT INTO main.fts_rows (uid, title, company, location, body, changed_at)
-                     SELECT j.uid, j.title, j.company, places(j.cluster_locations, j.location), fts_text(c.html),
-                            p.fts_changed_at
-                     FROM src.jobs j JOIN temp.pick p ON p.uid = j.uid LEFT JOIN src.job_content c ON c.uid = j.uid
-                     WHERE j.active = 1 AND j.is_canonical = 1 AND p.fts""")
-        # Postings deleted since: readers delete them too (a reader on an older version ignores this table
-        # and keeps them, closed and out of every list, until its next base).
-        c.execute("CREATE TABLE main.tombstones (uid TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)")
-        if c.execute("SELECT 1 FROM src.sqlite_master WHERE name = 'tombstones'").fetchone():
-            c.execute("INSERT INTO main.tombstones (uid, deleted_at) SELECT uid, deleted_at FROM src.tombstones "
-                      "WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM src.jobs)", (since,))
-        c.executemany("INSERT INTO main.index_meta(key, value) VALUES (?, ?)",
-                      [(k, json.dumps(v)) for k, v in meta.items()])
-    return _finish(c, plain, out_path)
-
-
-def export(db_path: Path | str, out_dir: Path | str, countries=(), published=None, full: bool = False,
-           write_table: bool = True) -> dict:
-    """Write dist/manifest.json plus either a new base-<time>.db.xz, or a delta-<time>.db.xz holding
-    what changed since the previous build. The manifest lists the base and the chain of deltas since
-    it, so a reader downloads only the builds it hasn't applied. Only new files are written, so the
-    workflow uploads only those."""
+def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
+    """Write the public files into out_dir: jobs.db.xz, jobs.csv.gz and manifest.json (returned)."""
+    from . import llm_fill, site
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for f in [*out.glob("base*.db.xz"), *out.glob("delta*.db.xz"), out / MANIFEST, out / CSV_NAME]:
-        f.unlink(missing_ok=True)
     now = _now()
-    stamp = re.sub(r"[^0-9T]", "", now)[:21]     # every build's files get their own names, so an upload never
-                                                 # replaces a file the published manifest still points at
     conn = db.connect(db_path)
-    changed = _update_signatures(conn, now)
-    state = db.get_meta(conn, "index_base") or {}
-    pub = json.loads(Path(published).read_text(encoding="utf-8")) if published and Path(published).exists() else None
-    total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-    since = state.get("built_at")
-    pending = conn.execute("SELECT COUNT(*) FROM export_sig WHERE changed_at > ? OR fts_changed_at > ? "
-                           "OR content_changed_at > ?", (since or "",) * 3).fetchone()[0]
-    coverage = _coverage(conn)
-    from . import llm_fill
-    llm = llm_fill.summary(conn)
-    build_health = db.get_meta(conn, "build_health")
-    chain = [d for d in (pub or {}).get("deltas") or [] if d.get("base_built_at") == since]
-    prev = chain[-1]["built_at"] if chain else since       # the last build readers can have
-    deleted = conn.execute("SELECT COUNT(*) FROM tombstones WHERE deleted_at > ? AND uid NOT IN (SELECT uid FROM jobs)",
-                           (prev or "",)).fetchone()[0]
-    conn.close()
-    reason = ("asked for" if full else "first build" if not since
-              else "published index differs from this builder's" if not pub or (pub.get("base") or {}).get("built_at") != since
-              or pub.get("format") != FORMAT or pub.get("index_schema") != db.INDEX_SCHEMA
-              or pub.get("rules_version") != workers.RULES_VERSION
-              else "weekly rebuild" if age_hours(since) > BASE_EVERY_DAYS * 24
-              else "changes outgrew half the base" if pending > total / 2
-              else "long chain of deltas" if len(chain) >= MAX_DELTAS else None)
-    meta = {"built_at": now, "rules_version": workers.RULES_VERSION, "lighthouse": __version__,
-            "countries": list(countries)}
-    if reason:
-        log.info("writing a new base: %s", reason)
-        base = {**_write_base(Path(db_path), out / f"base-{stamp}.db.xz", {**meta, "base_built_at": now}), "built_at": now}
-        chain, deleted = [], 0
-    else:
-        base = pub["base"]
-        if changed or deleted:
-            chain = chain + [{**_write_delta(Path(db_path), out / f"delta-{stamp}.db.xz", prev,
-                                             {**meta, "base_built_at": since, "since": prev}),
-                              "built_at": now, "since": prev, "base_built_at": since}]
-    csv_info = None
-    if write_table:
-        try:
-            csv_info = write_csv(db_path, out / CSV_NAME)
-        except Exception as exc:   # a convenience for people: never stops the index from publishing
-            log.warning("%s not written: %s", CSV_NAME, exc)
-    conn = db.connect(db_path)
-    if reason:
-        db.set_meta(conn, "index_base", {"built_at": now, "schema": db.SCHEMA_VERSION})
+    site.excerpts(conn)          # an excerpt for every open role, kept in the builder database
     # A role listed in 40 places is one role, 40 postings. "jobs" counts roles: the number every list adds up to.
     roles, postings = conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone()
-    manifest = {"format": FORMAT, "index_schema": db.INDEX_SCHEMA, "schema": db.SCHEMA_VERSION,
-                "rules_version": workers.RULES_VERSION, "lighthouse": __version__, "built_at": now,
+    manifest = {"lighthouse": __version__, "rules_version": workers.RULES_VERSION, "built_at": now,
                 "countries": list(countries), "jobs": roles, "postings": postings,
                 "boards": conn.execute("SELECT COUNT(*) FROM boards WHERE enabled = 1 AND last_ok IS NOT NULL").fetchone()[0],
-                "changed_this_run": changed, "deleted_this_run": deleted,
                 # boards that stopped existing, for the maintainer to fix or drop
                 "switched_off": [f"{a}:{b}" for a, b in conn.execute(
                     "SELECT ats, slug FROM boards WHERE last_error LIKE 'Switched off automatically%' ORDER BY ats, slug")],
-                "coverage": coverage, "llm": llm, "fill": _fill_rates(conn), "health": build_health,
-                "csv": csv_info,
-                "base": base, "deltas": chain}
+                "coverage": _coverage(conn), "llm": llm_fill.summary(conn), "fill": _fill_rates(conn),
+                "health": db.get_meta(conn, "build_health")}
     conn.close()
+    manifest["db"], manifest["csv"] = write_public_db(Path(db_path), out, {
+        "built_at": now, "lighthouse": __version__, "countries": list(countries),
+        "about": "Open job postings read from employers' own careers sites by Lighthouse. Descriptions are "
+                 "excerpts; jobs.url is the employer's page. The postings view has one row per open role."})
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 
 
-def _read_only(path) -> sqlite3.Connection:
-    return sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
-
-
-def write_csv(db_path: Path | str, out_path: Path | str) -> dict:
-    """Every open role (duplicates collapsed) with one column per filter, as gzip CSV: the postings
-    view of the index, for a spreadsheet or pandas. Works on the builder database or any index file;
-    opened read-only. Returns {file, rows, bytes}."""
-    import csv
-    import gzip
-    out_path = Path(out_path)
-    tmp = out_path.with_name(out_path.name + ".part")
-    conn = _read_only(db_path)
-    n = 0
-    try:
-        cur = conn.execute(db.POSTINGS_SELECT + " ORDER BY j.company COLLATE NOCASE, j.title COLLATE NOCASE")
-        with gzip.open(tmp, "wt", encoding="utf-8", newline="", compresslevel=6) as f:
-            w = csv.writer(f)
-            w.writerow([d[0] for d in cur.description])
-            for row in cur:
-                w.writerow(row)
-                n += 1
-    finally:
-        conn.close()
-    tmp.replace(out_path)
-    return {"file": out_path.name, "rows": n, "bytes": out_path.stat().st_size}
-
-
-# How many open roles each filter column is filled for (shown in the build summary).
 FILL_COLUMNS = ("yoe_min", "degree", "visa", "workplace_eff", "pay_max_annual", "seniority", "job_function",
                 "emp_type", "clearance", "citizenship", "travel", "benefits", "languages", "skills")
 
@@ -786,7 +547,7 @@ def summary_markdown(m: dict) -> str:
     """The build's summary for the Actions run page (and the log)."""
     h = m.get("health") or {}
     b, p = h.get("boards") or {}, h.get("postings") or {}
-    files = [f for f in [m["base"], *m["deltas"]] if f.get("built_at") == m["built_at"]]
+    size = lambda f: f"{f['file']} ({f['rows']:,} rows, {f['bytes'] / 1e6:.1f} MB)" if f else "not written"
     out = ["## Job index build", "",
            f"**{m['jobs']:,} open roles** ({m.get('postings') or 0:,} postings) from {m['boards']:,} boards.", "",
            "| | |", "|---|---|",
@@ -798,10 +559,7 @@ def summary_markdown(m: dict) -> str:
            f"| Companies list covered | {h.get('coverage_pct', '?')}% ({m.get('coverage')}) |",
            f"| Descriptions read | {h.get('with_description_pct', '?')}% of open postings |",
            f"| Likely ghost jobs | {h.get('ghost_pct', '?')}% of open roles |",
-           "| Published | " + (", ".join(f"{f['file']} ({f['rows']:,} rows, {f['bytes'] / 1e6:.1f} MB)" for f in files)
-                               or "nothing changed") + f"; {len(m['deltas'])} deltas since the base |",
-           f"| jobs.csv.gz | {m.get('csv')} |",
-           f"| Deleted (closed long ago) | {m.get('deleted_this_run')} |",
+           f"| Published | {size(m.get('db'))}, {size(m.get('csv'))} |",
            f"| Open-model gap fill so far | {m.get('llm')} |", "",
            "<details><summary>Filters filled, % of open roles</summary>", "", f"`{m.get('fill')}`", "", "</details>", ""]
     if h.get("systems"):
@@ -834,309 +592,3 @@ def boards_markdown(m: dict) -> str:
 def _coverage(conn) -> dict:
     rows = conn.execute("SELECT status, COUNT(*) FROM companies GROUP BY status").fetchall()
     return {r[0]: r[1] for r in rows}
-
-
-# ================================================================ reader (everyone else)
-
-def _url(repo: str, name: str) -> str:
-    return f"https://github.com/{repo}/releases/download/{TAG}/{name}"
-
-
-def _check_repo(repo: str) -> str:
-    repo = (repo or "").strip().strip("/")
-    if repo.count("/") != 1 or any(ch in repo for ch in " ?#"):
-        raise IndexProblem(f"[index] repo should look like 'owner/name', not '{repo}'")
-    return repo
-
-
-def _get(client, url: str, stream: bool = False):
-    """GET following redirects by hand, so every hop is checked against the network allowlist."""
-    for _ in range(6):
-        r = client.get(url, allow_redirects=False, stream=stream, headers={"Accept": "application/octet-stream"})
-        if r.status_code in (301, 302, 303, 307, 308):
-            url = urljoin(url, r.headers.get("Location", ""))
-            continue
-        if r.status_code == 404:
-            raise IndexProblem("no job index published there yet (or the repo is private)")
-        r.raise_for_status()
-        return r
-    raise IndexProblem("too many redirects")
-
-
-def latest_manifest(client, repo: str) -> dict:
-    return _get(client, _url(_check_repo(repo), MANIFEST)).json()
-
-
-def compatible(m: dict, repo: str = "") -> str | None:
-    """None if this copy can read the index, else what to do about it."""
-    if m.get("format") == FORMAT and m.get("index_schema") == db.INDEX_SCHEMA:
-        return None
-    if (m.get("index_schema") or 0) > db.INDEX_SCHEMA or (m.get("format") or 0) > FORMAT:
-        where = f" from github.com/{repo}" if repo else ""
-        return f"the job index needs a newer Lighthouse ({m.get('lighthouse')}). Download the latest version{where}."
-    return "the job index was built by an older Lighthouse; it updates itself after its next build"
-
-
-def _data_dir(conn) -> Path:
-    return Path(conn.execute("PRAGMA database_list").fetchone()[2]).parent
-
-
-def download(client, repo: str, info: dict, folder: Path, name: str | None = None) -> Path:
-    """Stream one index file, check size and SHA-256, unpack into `folder`. Returns the database path."""
-    if int(info.get("bytes") or 0) > MAX_BYTES:
-        raise IndexProblem("index file is unexpectedly large")
-    folder.mkdir(parents=True, exist_ok=True)
-    fd, xz_path = tempfile.mkstemp(prefix="download-", suffix=".xz", dir=folder)
-    h, n = hashlib.sha256(), 0
-    try:
-        with os.fdopen(fd, "wb") as f:
-            r = _get(client, _url(_check_repo(repo), info["file"]), stream=True)
-            for chunk in r.iter_content(1 << 20):
-                n += len(chunk)
-                if n > MAX_BYTES:
-                    raise IndexProblem("index download is larger than its manifest says")
-                h.update(chunk)
-                f.write(chunk)
-        if h.hexdigest() != info.get("sha256"):
-            raise IndexProblem("index download is incomplete or corrupt (checksum mismatch); will retry")
-        out = folder / (name or Path(xz_path).name.replace(".xz", ".db"))
-        part = Path(str(out) + ".part")
-        with lzma.open(xz_path, "rb") as fin, open(part, "wb") as fout:
-            shutil.copyfileobj(fin, fout, 1 << 20)
-        part.replace(out)
-        return out
-    finally:
-        Path(xz_path).unlink(missing_ok=True)
-
-
-def _check_index_file(path: Path, kind: str) -> None:
-    c = sqlite3.connect(path)
-    try:
-        app, ver = c.execute("PRAGMA application_id").fetchone()[0], c.execute("PRAGMA user_version").fetchone()[0]
-        if app != db.INDEX_APP_ID or ver != db.INDEX_SCHEMA:
-            raise IndexProblem(f"{kind} file isn't a job index this Lighthouse can read")
-        if kind == "base":
-            c.execute("PRAGMA journal_mode=WAL")   # readers keep reading while a delta is applied
-    except sqlite3.DatabaseError as exc:
-        raise IndexProblem(f"{kind} file is damaged: {exc}") from exc
-    finally:
-        c.close()
-
-
-def install_base(conn, path: Path) -> None:
-    """Make `path` (an unpacked base in data/index/) the current index, for this connection and every
-    connection opened after. The previous index file is deleted once nothing has it open."""
-    _check_index_file(path, "base")
-    folder = _data_dir(conn)
-    old = db.index_path(conn, folder)
-    conn.commit()
-    if db.is_reader(conn):
-        conn.execute("DETACH DATABASE idx")
-    db.set_meta(conn, "index_file", str(Path(path).resolve().relative_to(folder.resolve())).replace("\\", "/"))
-    conn.execute("ATTACH DATABASE ? AS idx", (str(path),))
-    db._tune(conn, "idx")
-    db.load_zdicts(conn, "idx")
-    db.ensure_index_columns(conn)
-    cleanup(conn, keep=Path(path))
-    if old and old.name != "index-empty.db" and old.resolve() != Path(path).resolve():
-        _unlink_db(old)
-
-
-def _unlink_db(path: Path) -> None:
-    for p in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:   # still open somewhere (Windows): removed by a later cleanup
-            pass
-
-
-def cleanup(conn, keep: Path | None = None) -> None:
-    """Remove index files that are no longer current, and the pre-0.6 single-file database once a
-    real index has been installed (it held a full copy of the jobs: often 1 GB+)."""
-    folder = _data_dir(conn)
-    cur = (keep or db.index_path(conn, folder) or Path()).resolve()
-    keep_files = {cur, (db.attached_index(conn) or Path()).resolve()}
-    for p in (folder / "index").glob("index-*.db"):
-        if p.resolve() not in keep_files and p.name != "index-empty.db":
-            _unlink_db(p)
-    for p in (folder / "index").glob("download-*"):
-        _unlink_db(p)
-    legacy = db.get_meta(conn, "legacy_db")
-    if legacy and db.index_base_built_at(conn) and not _marked_missing(conn):
-        _unlink_db(folder / legacy)
-        if not (folder / legacy).exists():
-            db.set_meta(conn, "legacy_db", None)
-
-
-def _marked_missing(conn) -> int:
-    """Saved/applied jobs the index doesn't have (e.g. from boards you used to fetch yourself): while
-    there are any, the pre-0.6 database that still holds them is kept."""
-    return conn.execute("SELECT COUNT(*) FROM main.marks m WHERE m.status IN ('saved', 'applied') "
-                        "AND NOT EXISTS (SELECT 1 FROM idx.jobs j WHERE j.uid = m.uid)").fetchone()[0]
-
-
-def apply_delta(conn, path: Path, since: str | None = None) -> dict:
-    """Bring a delta into the current index with a handful of SQL statements. `since`: when the last
-    file this index took in (base or delta) was built. Deltas are cumulative, so search text that
-    changed before then is already in the index and isn't added again."""
-    _check_index_file(path, "delta")
-    conn.commit()
-    conn.execute("ATTACH DATABASE ? AS d", (str(path),))
-    try:
-        db.load_zdicts(conn, "d")
-        cols = [c for c in _cols(conn, "jobs", "d") if c in set(_cols(conn, "jobs", "idx")) and c not in ("mark", "fts_rowid")]
-        safe_url = "CASE WHEN url LIKE 'https://%' OR url LIKE 'http://%' THEN url ELSE '' END"
-        select = ", ".join(safe_url if c == "url" else c for c in cols)
-        updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "uid")
-        bcols = ", ".join(c for c in _cols(conn, "boards", "d") if c in set(_cols(conn, "boards", "idx")))
-        ccols = ", ".join(c for c in _cols(conn, "companies", "d") if c in set(_cols(conn, "companies", "idx")))
-        tomb = conn.execute("SELECT 1 FROM d.sqlite_master WHERE name = 'tombstones'").fetchone() is not None
-        with conn:
-            deleted = 0
-            if tomb:   # postings the builder deleted for good (closed long ago): first, so a re-listing below wins
-                gone = "SELECT uid FROM d.tombstones WHERE uid NOT IN (SELECT uid FROM d.jobs)"
-                deleted = conn.execute(f"DELETE FROM idx.jobs WHERE uid IN ({gone})").rowcount
-                conn.execute(f"DELETE FROM idx.job_content WHERE uid IN ({gone})")
-                conn.execute(f"DELETE FROM idx.events WHERE uid IN ({gone})")
-            new = conn.execute("SELECT COUNT(*) FROM d.jobs WHERE uid NOT IN (SELECT uid FROM idx.jobs)").fetchone()[0]
-            conn.execute(f"INSERT INTO idx.jobs ({', '.join(cols)}) SELECT {select} FROM d.jobs WHERE true "
-                         f"ON CONFLICT(uid) DO UPDATE SET {updates}")
-            conn.execute("INSERT INTO idx.job_content (uid, html) SELECT uid, html FROM d.job_content WHERE true "
-                         "ON CONFLICT(uid) DO UPDATE SET html = excluded.html")
-            conn.execute("INSERT INTO idx.extractions (content_hash, method, data, model, at) "
-                         "SELECT content_hash, method, data, model, at FROM d.extractions WHERE true "
-                         "ON CONFLICT(content_hash) DO UPDATE SET method = excluded.method, data = excluded.data, "
-                         "model = excluded.model, at = excluded.at")
-            conn.execute("DELETE FROM idx.events WHERE uid IN (SELECT uid FROM d.jobs)")
-            conn.execute("INSERT INTO idx.events (uid, kind, at) SELECT uid, kind, at FROM d.events ORDER BY id")
-            conn.execute("DELETE FROM idx.boards")
-            conn.execute(f"INSERT INTO idx.boards ({bcols}) SELECT {bcols} FROM d.boards")
-            conn.execute("DELETE FROM idx.companies")
-            conn.execute(f"INSERT INTO idx.companies ({ccols}) SELECT {ccols} FROM d.companies")
-            conn.execute("INSERT OR REPLACE INTO idx.index_meta (key, value) SELECT key, value FROM d.index_meta")
-            conn.execute("INSERT OR IGNORE INTO idx.zdict (id, data) SELECT id, data FROM d.zdict")
-            # Search text: new rows get fresh search-index rowids (the old entries simply stop matching any job).
-            start = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM idx.jobs_fts").fetchone()[0]
-            conn.execute("CREATE TEMP TABLE fts_new AS SELECT ? + row_number() OVER (ORDER BY uid) AS rid, uid, title, "
-                         "company, location, body FROM d.fts_rows WHERE ? IS NULL OR changed_at > ?",
-                         (start, since, since))
-            conn.execute("INSERT INTO idx.jobs_fts (rowid, title, company, location, body) "
-                         "SELECT rid, title, company, location, body FROM temp.fts_new")
-            conn.execute("UPDATE idx.jobs SET fts_rowid = (SELECT rid FROM temp.fts_new f WHERE f.uid = jobs.uid) "
-                         "WHERE uid IN (SELECT uid FROM temp.fts_new)")
-            conn.execute("DROP TABLE temp.fts_new")
-            # Search covers a role's open main listing only: a listing that closed or stopped leading its
-            # role leaves search (its role is found through the listing that leads it now).
-            conn.execute("UPDATE idx.jobs SET fts_rowid = NULL WHERE (active = 0 OR is_canonical = 0) "
-                         "AND fts_rowid IS NOT NULL AND uid IN (SELECT uid FROM d.jobs)")
-            changed = conn.execute("SELECT COUNT(*) FROM d.jobs").fetchone()[0]
-    finally:
-        conn.execute("DETACH DATABASE d")
-    return {"postings": changed, "new": new, "deleted": deleted}
-
-
-def _personal_refresh(conn) -> None:
-    """Put your own layer back on top of a new index: marks, your Claude extractions, sponsor matches."""
-    from . import extract, sponsors
-    db.sync_marks(conn)
-    extract.derive_claude(conn)
-    if conn.execute("SELECT 1 FROM sponsor_files LIMIT 1").fetchone():
-        sponsors.refresh_matches(conn, None)
-    conn.commit()
-    db.bump_generation(conn)
-
-
-def import_file(conn, cfg, path: Path | str, full: bool = True, built_at: str | None = None) -> dict:
-    """Use a local index file (.db or .db.xz): a base replaces the index, a delta is applied to it.
-    For testing a build before publishing it."""
-    path = Path(path)
-    folder = _data_dir(conn) / "index"
-    folder.mkdir(parents=True, exist_ok=True)
-    stamp = (built_at or _now()).replace(":", "").replace("+", "")[:22]
-    target = folder / (f"index-{stamp}.db" if full else f"download-{stamp}.db")
-    if path.suffix == ".xz":
-        with lzma.open(path, "rb") as fin, open(target, "wb") as fout:
-            shutil.copyfileobj(fin, fout, 1 << 20)
-    else:
-        shutil.copyfile(path, target)
-    if full:
-        install_base(conn, target)
-        stats = {"postings": conn.execute("SELECT COUNT(*) FROM idx.jobs").fetchone()[0]}
-    else:
-        try:
-            stats = apply_delta(conn, target)
-        finally:
-            _unlink_db(target)
-    _personal_refresh(conn)
-    return stats
-
-
-def sync(conn, cfg, client, folder: Path | None = None) -> dict:
-    """Bring this copy up to date with the published index. Never raises: if anything goes wrong,
-    the jobs you already have stay, and the Sources page says why."""
-    repo = cfg.index.repo
-    folder = Path(folder or _data_dir(conn))
-    info = db.get_meta(conn, "index") or {}
-    did = []
-    try:
-        if not db.is_user_db(conn):
-            raise IndexProblem("this database isn't set up as a reader (run the app once to convert it)")
-        m = latest_manifest(client, repo)
-        why = compatible(m, repo)
-        if why:
-            raise IndexProblem(why)
-        base = m["base"]
-        have = info.get("built_at") or ""
-        todo = sorted((d for d in m.get("deltas") or [] if d.get("base_built_at") == base["built_at"]
-                       and d["built_at"] > have), key=lambda d: d["built_at"])
-        stale = (info.get("base_built_at") != base["built_at"] or db.index_base_built_at(conn) != base["built_at"]
-                 or (todo and todo[0].get("since", "") > have)                          # a gap in the chain
-                 or sum(int(d.get("bytes") or 0) for d in todo) > int(base.get("bytes") or 0))
-        if stale:
-            stamp = base["built_at"].replace(":", "").replace("+", "")[:22]
-            path = download(client, repo, base, folder / "index", name=f"index-{stamp}.db")
-            install_base(conn, path)
-            info.update(base_built_at=base["built_at"], built_at=base["built_at"])
-            db.set_meta(conn, "index", info)   # a failed delta below won't redo the base
-            did.append({"file": "base", "postings": base.get("rows")})
-            todo = sorted((d for d in m.get("deltas") or [] if d.get("base_built_at") == base["built_at"]),
-                          key=lambda d: d["built_at"])
-        for delta in todo:
-            path = download(client, repo, delta, folder / "index")
-            try:
-                stats = apply_delta(conn, path, since=info.get("built_at"))
-            finally:
-                _unlink_db(path)
-            info["built_at"] = delta["built_at"]
-            db.set_meta(conn, "index", info)   # applied: a failure further down the chain won't redo it
-            did.append({"file": "delta", **stats})
-        if did:
-            _personal_refresh(conn)
-        info.update(error=None, jobs=m.get("jobs"), boards=m.get("boards"), countries=m.get("countries"),
-                    lighthouse=m.get("lighthouse"), coverage=m.get("coverage"))
-    except Exception as exc:
-        log.warning("job index not updated: %s", exc)
-        info["error"] = str(exc)
-    info["checked_at"] = _now()
-    db.set_meta(conn, "index", info)
-    try:
-        cleanup(conn)
-    except OSError:
-        pass
-    return {"source": "index", "board": repo, "updated": did, "error": info.get("error")}
-
-
-def status(conn, cfg) -> dict:
-    info = db.get_meta(conn, "index") or {}
-    return {"repo": cfg.index.repo or None, "built_at": info.get("built_at"),
-            "base_built_at": info.get("base_built_at"), "checked_at": info.get("checked_at"),
-            "jobs": info.get("jobs"), "boards": info.get("boards"), "countries": info.get("countries") or [],
-            "coverage": info.get("coverage") or {}, "error": info.get("error"),
-            "stale": bool(info.get("built_at")) and age_hours(info.get("built_at")) > cfg.index.stale_after_hours}
-
-
-def suggest_url(repo: str) -> str:
-    """Where users suggest a new board: a pre-filled GitHub issue on the index repo."""
-    from urllib.parse import quote
-    return (f"https://github.com/{repo}/issues/new?title={quote('Board suggestion: ')}"
-            f"&body={quote('Company:' + chr(10) + 'Careers page or job-board link:' + chr(10))}")

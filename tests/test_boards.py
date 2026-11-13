@@ -86,7 +86,7 @@ def test_workday_not_found():
         pass
 
 
-def test_board_lists_load_and_respect_ui_toggles(tmp_path):
+def test_board_lists_load(tmp_path):
     (tmp_path / "boards").mkdir()
     (tmp_path / "boards" / "mine.csv").write_text(
         "# comment\nats,slug,company,enabled\nlever,palantir,Palantir,yes\nworkday,acme.wd5/Careers,Acme,no\nbogus,x,X,yes\n")
@@ -96,11 +96,9 @@ def test_board_lists_load_and_respect_ui_toggles(tmp_path):
     assert [(b["ats"], b["slug"], b["enabled"]) for b in cfg.boards] == [("lever", "palantir", True), ("workday", "acme.wd5/Careers", False)]
     conn = db.connect(tmp_path / "b.db")
     db.sync_config_boards(conn, cfg.boards)
-    db.set_board_enabled(conn, "workday", "acme.wd5/Careers", True)   # user turns it on
-    db.sync_config_boards(conn, cfg.boards)                           # list says no: user wins
-    on = {b["slug"] for b in db.list_boards(conn, enabled_only=True)}
-    assert on == {"palantir", "acme.wd5/Careers"}
-    assert db.board_counts(conn)["total"] == 2
+    db.sync_config_boards(conn, cfg.boards)                           # again: no duplicates
+    assert {b["slug"] for b in db.list_boards(conn, enabled_only=True)} == {"palantir"}
+    assert len(db.list_boards(conn)) == 2
 
 
 def test_dead_board_switched_off_after_two_not_found(tmp_path, monkeypatch):

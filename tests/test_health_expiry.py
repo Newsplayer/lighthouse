@@ -59,8 +59,6 @@ def test_a_posting_past_its_closing_date_is_closed(tmp_path):
     db.upsert_board(conn, "greenhouse", "acme", [replace(job(1, title="Data Analyst II"), partial=True), job(2)],
                     keep_alive={"greenhouse:acme:3"})
     assert _state(conn, 1) == (1, 1)
-    # builder bookkeeping only: the published index doesn't carry the column
-    assert "expires_at" not in [c for c, _ in snapshot._job_columns(conn)]
 
 
 def test_closing_date_formats():

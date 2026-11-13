@@ -135,55 +135,9 @@ def test_eligibility(tmp_path):
     assert db.list_jobs(conn, db.Filters(eligible_only=True))[1] == 2               # no profile: nothing ruled out
 
 
-def test_redaction():
-    text = "Jane Q Doe\njane@doe.com · (512) 555-0134 · linkedin.com/in/jane · 12 Oak Street, Austin\nAnalyst, 5 years"
-    out = profile.redact(text)
-    for leaked in ("Jane", "jane@", "555-0134", "linkedin", "Oak Street"):
-        assert leaked not in out
-    assert "Analyst, 5 years" in out
-
-
-def test_marks_hide_whole_cluster(tmp_path):
-    conn = db.connect(tmp_path / "t.db")
-    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, loc="Denver, CO")])
-    fetch.postprocess(conn, config.load(tmp_path / "none.toml"))
-    db.set_mark(conn, "greenhouse:acme:2", "hidden")  # hide via the non-canonical listing
-    assert db.list_jobs(conn, db.Filters())[1] == 0
-    assert db.list_jobs(conn, db.Filters(view="hidden"))[1] == 1
-    db.set_mark(conn, "greenhouse:acme:2", "applied")
-    assert db.list_jobs(conn, db.Filters(view="applied"))[1] == 1 and db.list_jobs(conn, db.Filters())[1] == 1
-
-
-def test_fts_search(tmp_path):
-    conn = db.connect(tmp_path / "t.db")
-    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, title="Designer", body="<p>" + "Figma prototypes. " * 30 + "</p>")])
-    fetch.postprocess(conn, config.load(tmp_path / "none.toml"))
-    assert db.has_fts(conn)
-    assert [r["title"] for r in db.list_jobs(conn, db.Filters(q="figma"))[0]] == ["Designer"]
-    assert db.list_jobs(conn, db.Filters(q="payment"))[1] == 1
-
-
-def test_migrates_v01_database(tmp_path, gh):
-    path = tmp_path / "old.db"
-    raw = sqlite3.connect(path)
-    raw.executescript(db.V1)
-    raw.execute("INSERT INTO jobs VALUES ('greenhouse:acme:1','acme|x|y','greenhouse','acme','1','Analyst','Acme',"
-                "'Austin, TX','https://x','<p>hi there friend of mine</p>','[]','2026-10-20T09:00:00-05:00',NULL,"
-                "'2026-11-02T17:00:00+00:00','2026-11-02T17:00:00+00:00',1,'[\"open 5 days\"]')")
-    raw.commit()
-    raw.close()
-    conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-    r = db.get_job(conn, "greenhouse:acme:1")
-    assert r["posted_at"] == "2026-10-20T14:00:00+00:00" and r["company_key"] == "acme"
-    assert fetch.needs_reprocess(conn)
-    fetch.postprocess(conn, config.load(tmp_path / "none.toml"))
-    assert not fetch.needs_reprocess(conn) and db.list_jobs(conn, db.Filters())[1] == 1
-
-
 def test_fetch_run_parallel_with_errors(tmp_path, monkeypatch, gh):
     cfgp = tmp_path / "s.toml"
-    cfgp.write_text('[[boards]]\nats="greenhouse"\nslug="acme"\n[[boards]]\nats="greenhouse"\nslug="broken"\n[[greenhouse]]\ntoken="legacy"\n')
+    cfgp.write_text('[[boards]]\nats="greenhouse"\nslug="acme"\n[[boards]]\nats="greenhouse"\nslug="broken"\n[[boards]]\nats="greenhouse"\nslug="legacy"\n')
     from lighthouse.sources.greenhouse import GreenhouseSource as G
 
     def fake_fetch(self, slug, known=None):
@@ -197,3 +151,41 @@ def test_fetch_run_parallel_with_errors(tmp_path, monkeypatch, gh):
     conn = db.connect(tmp_path / "f.db")
     boards = {b["slug"]: b for b in db.list_boards(conn)}
     assert boards["broken"]["last_error"] == "boom" and boards["acme"]["job_count"] == 2
+
+
+def test_a_database_from_before_the_local_app_was_retired_is_cleaned_once(tmp_path):
+    path = tmp_path / "old.db"
+    conn = db.connect(path)
+    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, title="Designer")])
+    fetch.postprocess(conn, config.load(tmp_path / "none.toml"))
+    # what schema 8 also held: the app's tables, its indexes, and its columns on jobs
+    conn.executescript("""
+        CREATE TABLE marks (uid TEXT PRIMARY KEY, status TEXT, at TEXT);
+        CREATE TABLE export_sig (uid TEXT PRIMARY KEY, sig TEXT);
+        CREATE TABLE sponsor_match (company_key TEXT PRIMARY KEY);
+        ALTER TABLE jobs ADD COLUMN mark INTEGER;
+        ALTER TABLE jobs ADD COLUMN elig INTEGER;
+        CREATE INDEX idx_jobs_mark ON jobs(mark) WHERE mark IS NOT NULL;
+        CREATE INDEX idx_jobs_list ON jobs(active, is_canonical, effective_first_seen, ghost_score, elig);
+        PRAGMA user_version = 8;
+    """)
+    conn.close()
+    conn = db.connect(path)
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+    assert not names & {"marks", "export_sig", "sponsor_match", "idx_jobs_mark", "idx_jobs_list"}
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+    assert db.list_jobs(conn, db.Filters())[1] == 2                          # the postings are untouched
+    conn.close()
+    from lighthouse import snapshot
+    snapshot.export(path, tmp_path / "dist")                                 # its leftover columns aren't published
+    import lzma
+    (tmp_path / "pub.db").write_bytes(lzma.decompress((tmp_path / "dist" / "jobs.db.xz").read_bytes()))
+    cols = {r[1] for r in sqlite3.connect(tmp_path / "pub.db").execute("PRAGMA table_info(jobs)")}
+    assert "title" in cols and not cols & {"mark", "elig"}
+    # anything older can't be read: say so instead of guessing
+    older = sqlite3.connect(tmp_path / "older.db")
+    older.executescript("CREATE TABLE jobs (uid TEXT); PRAGMA user_version = 5;")
+    older.close()
+    import pytest
+    with pytest.raises(RuntimeError, match="older Lighthouse"):
+        db.connect(tmp_path / "older.db")

@@ -210,12 +210,6 @@ def recompute(conn, company_keys, repost_gap_days: int = 7) -> None:
                         conn.execute(
                             "UPDATE jobs SET cluster_id=?, is_canonical=?, cluster_count=?, cluster_locations=?, "
                             "effective_first_seen=?, repost_count=? WHERE uid=?", (*new, r["uid"]))
-            marked = [x[0] for x in conn.execute(
-                "SELECT DISTINCT k.cluster_id FROM marks m JOIN jobs k ON k.uid = m.uid WHERE k.company_key = ?", (ck,))]
-            conn.execute("UPDATE jobs SET mark = NULL WHERE company_key = ? AND mark IS NOT NULL", (ck,))
-            if marked:
-                from .db import sync_marks
-                sync_marks(conn, marked)
 
 
 def _count_reposts(members, gap: timedelta) -> int:
