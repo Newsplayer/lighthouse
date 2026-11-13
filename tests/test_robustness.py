@@ -1,8 +1,6 @@
 """Edge cases found in review: a lost index file, search-index growth, ambiguous job links, boards of
 other companies, slow responses, and conversion of an old database."""
 import io
-import json
-import sqlite3
 
 import pytest
 import requests
@@ -10,102 +8,13 @@ import requests
 from conftest import FakeClient, FakeResp
 from test_companies import Site
 from test_enterprise import _ld
-from test_index import Builder, GitHubFake, base_file, job, reader
 
-from lighthouse import config, db, discover, net, snapshot
+from lighthouse import discover, net
 from lighthouse.sources import SOURCES, detect
 
 
 def fts_entries(conn):
     return conn.execute("SELECT COUNT(*) FROM idx.jobs_fts").fetchone()[0]
-
-
-def test_lost_index_file_is_downloaded_again(tmp_path):
-    b = Builder(tmp_path)
-    b.ingest("acme", [job(i) for i in range(1, 11)])
-    b.export()
-    gh = GitHubFake([b.dist])
-    conn, cfg = reader(tmp_path)
-    snapshot.sync(conn, cfg, gh)
-    data = tmp_path / "data"
-    recorded = db.get_meta(conn, "index_file")
-    conn.close()
-    for p in (data / "index").glob("index-2*.db"):
-        p.unlink()                                       # deleted by the user or an antivirus
-    conn = db.connect(data / "user.db")
-    assert db.get_meta(conn, "index_file") == recorded  # the empty stand-in is never recorded
-    assert db.index_base_built_at(conn) is None
-    snapshot.sync(conn, cfg, gh)
-    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active = 1").fetchone()[0] == 10
-
-
-def test_search_index_grows_only_with_real_changes(tmp_path):
-    b = Builder(tmp_path)
-    jobs = [job(i) for i in range(1, 21)]
-    b.ingest("acme", jobs)
-    b.export()
-    gh = GitHubFake([b.dist])
-    conn, cfg = reader(tmp_path)
-    snapshot.sync(conn, cfg, gh)
-    start = fts_entries(conn)
-    jobs[0] = job(1, "Senior Data Analyst")                 # one posting changes after the base
-    b.ingest("acme", jobs)
-    b.export()
-    gh.publish(b.dist)
-    snapshot.sync(conn, cfg, gh)
-    assert fts_entries(conn) == start + 1
-    for _ in range(4):                                     # later builds: nothing changes
-        b.ingest("acme", jobs)
-        b.export()
-        gh.publish(b.dist)
-        snapshot.sync(conn, cfg, gh)
-    assert fts_entries(conn) == start + 1                  # cumulative deltas don't re-add the same text
-    assert db.list_jobs(conn, db.Filters(q="Senior"))[1] == 1
-    b.ingest("acme", jobs[1:])                             # the changed posting closes
-    b.export()
-    gh.publish(b.dist)
-    snapshot.sync(conn, cfg, gh)
-    assert conn.execute("SELECT fts_rowid FROM jobs WHERE external_id = '1'").fetchone()[0] is None
-    assert db.list_jobs(conn, db.Filters(q="Senior"))[1] == 0
-
-
-def test_new_base_is_readable_on_the_same_connection(tmp_path):
-    b = Builder(tmp_path)
-    b.ingest("acme", [job(1), job(2)])
-    b.export()
-    conn, cfg = reader(tmp_path)
-    snapshot.import_file(conn, cfg, base_file(b))
-    assert db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")
-
-
-def test_failed_conversion_is_retried_and_old_file_kept_while_needed(tmp_path, monkeypatch):
-    data = tmp_path / "data"
-    data.mkdir()
-    old = db.connect(data / "lighthouse.db")
-    old.execute("INSERT INTO marks(uid, status, at) VALUES ('greenhouse:gone:1', 'saved', 'x')")
-    old.commit()
-    old.close()
-    cfg = config.load(tmp_path / "none.toml")
-    cfg.index.repo = "o/r"
-
-    def boom(legacy, user):
-        raise sqlite3.OperationalError("disk I/O error")
-    monkeypatch.setattr(db, "_convert_legacy", boom)
-    with pytest.raises(sqlite3.OperationalError):
-        db.app_db(cfg, data)
-    assert not (data / "user.db").exists()                 # tried again next start
-    monkeypatch.undo()
-    conn = db.connect(db.app_db(cfg, data))
-    assert conn.execute("SELECT uid FROM marks").fetchone()[0] == "greenhouse:gone:1"
-    b = Builder(tmp_path)
-    b.ingest("acme", [job(1)])
-    b.export()
-    snapshot.import_file(conn, cfg, base_file(b))
-    assert (data / "lighthouse.db").exists()               # still holds a saved job the index doesn't have
-    conn.execute("DELETE FROM marks")
-    conn.commit()
-    snapshot.cleanup(conn)
-    assert not (data / "lighthouse.db").exists()
 
 
 def test_job_links_that_differ_only_by_query_stay_apart_and_listings_go_last():
@@ -157,7 +66,7 @@ def trickle(kbytes):
 
 
 def test_whole_response_is_bounded(monkeypatch):
-    c = net.open_network(net.Client(timeout=5, per_host_rps=0, max_bytes=50_000))
+    c = net.Client(timeout=5, per_host_rps=0, max_bytes=50_000)
     sess = c._session()
     monkeypatch.setattr(sess, "request", lambda *a, **k: trickle(100))
     with pytest.raises(net.ResponseLimit):                 # larger than allowed
@@ -185,7 +94,7 @@ def test_workday_sites_share_one_adaptive_budget_per_data_center(monkeypatch):
         t.ok("acme.wd5.myworkdayjobs.com")
     assert t._interval["wd5.myworkdayjobs.com"] == pytest.approx(4 / 3 * 0.8)   # and eases back
 
-    c = net.open_network(net.Client(timeout=5, per_host_rps=0))
+    c = net.Client(timeout=5, per_host_rps=0)
     answers = iter([429, 429, 200])
     pauses = []
 
@@ -220,31 +129,3 @@ def test_rate_limited_board_is_tried_again(monkeypatch):
     assert jobs == [] and Flaky.calls == 2
 
 
-def test_reader_catches_up_through_the_chain(tmp_path):
-    from test_index import kinds
-    b = Builder(tmp_path)
-    jobs = [job(i) for i in range(1, 81)]
-    b.ingest("acme", jobs)
-    b.export()
-    gh = GitHubFake([b.dist])
-    conn, cfg = reader(tmp_path)
-    snapshot.sync(conn, cfg, gh)
-    for n in (81, 82, 83):                                    # three builds while this copy was off
-        jobs.append(job(n, f"Role {n}"))
-        b.ingest("acme", jobs)
-        b.export()
-        gh.publish(b.dist)
-    gh.calls.clear()
-    snapshot.sync(conn, cfg, gh)
-    assert kinds(gh) == ["delta", "delta", "delta"]       # each small file once, oldest first
-    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE active = 1").fetchone()[0] == 83
-    assert snapshot.status(conn, cfg)["built_at"] == json.loads(gh.files["manifest.json"])["deltas"][-1]["built_at"]
-    m = json.loads(gh.files["manifest.json"])
-    m["deltas"] = m["deltas"][1:]                          # the first delta is gone: a gap
-    gh.files["manifest.json"] = json.dumps(m).encode()
-    info = db.get_meta(conn, "index")
-    info["built_at"] = m["base"]["built_at"]
-    db.set_meta(conn, "index", info)
-    gh.calls.clear()
-    snapshot.sync(conn, cfg, gh)
-    assert kinds(gh)[0] == "base"                          # can't bridge a gap: start from the base

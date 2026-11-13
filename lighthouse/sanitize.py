@@ -6,6 +6,7 @@ from functools import lru_cache
 import re
 from html import escape, unescape
 from html.parser import HTMLParser
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 ALLOWED_TAGS = {
     "p", "br", "ul", "ol", "li", "strong", "b", "em", "i", "u",
@@ -96,16 +97,17 @@ def html_to_text(html: str) -> str:
     return "\n".join(text).strip()
 
 
-# Exactly the tags sanitize_html emits. After removing them, a clean document has no '<' or '>' left
-# (text is escaped), so one regex pass proves a description is safe without re-parsing it.
-_SAFE_TAG = re.compile(
-    r"</?(?:" + "|".join(sorted(ALLOWED_TAGS - {"a"})) + r")>"
-    r'|<a href="(?:https?://|mailto:)[^"<>]*" target="_blank" rel="noopener noreferrer">|<a>|</a>')
+_TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
 
 
-def ensure_safe(html: str) -> str:
-    """For descriptions that come from someone else's database (the shared job index): pass
-    through if already in sanitized form, otherwise sanitize again."""
-    html = html or ""
-    rest = _SAFE_TAG.sub("", html)
-    return html if "<" not in rest and ">" not in rest else sanitize_html(html)
+def clean_url(url: str | None) -> str:
+    """Only http(s) links, with common tracking parameters removed (the posting is the same)."""
+    u = (url or "").strip()
+    if not u.lower().startswith(("https://", "http://")):
+        return ""
+    if "?" not in u:       # most links: nothing to remove (the website cleans 600,000 links a build)
+        return u
+    parts = urlsplit(u)
+    q = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+         if not k.lower().startswith(_TRACKING[0]) and k.lower() not in _TRACKING[1:]]
+    return urlunsplit(parts._replace(query=urlencode(q)))

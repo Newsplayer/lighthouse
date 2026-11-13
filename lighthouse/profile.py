@@ -1,26 +1,20 @@
-"""Your profile (stored locally in the database) and the deterministic eligibility filter.
+"""The eligibility rules, in Python: the reference the website's "Can you apply?" answers are tested
+against (site/logic.js is the copy that runs in the browser; tests/test_site.py compares the two).
 
-Eligibility is rules, not judgment: it only removes a posting when the posting clearly
-states something you can't meet (no sponsorship, citizenship, clearance, location,
-years of experience, salary floor, degree). Unknown values never disqualify.
-No API calls; it runs on every posting and gates which ones Claude is asked about.
+Eligibility is rules, not judgment: a posting is ruled out only when it clearly states something the
+person can't meet (no sponsorship, citizenship, clearance, location, years of experience, salary floor,
+degree). Unknown values never disqualify.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
-
-from . import db
 
 CLEARANCE_ORDER = {"none": 0, "public_trust": 1, "secret": 2, "ts": 3, "ts_sci": 4}
 DEGREE_ORDER = {"none": 0, "bachelors": 1, "masters": 2, "phd": 3}
 DEGREE_LABEL = {"bachelors": "a bachelor's degree", "masters": "a master's degree", "phd": "a PhD"}
 
 DEFAULT = {
-    "about": "",                 # plain-language: what you want next
-    "resume": "",                # pasted resume text (stays local; redacted before any API call)
     "years_experience": None,
     "degree": "none",
     "needs_sponsorship": False,
@@ -29,32 +23,11 @@ DEFAULT = {
     "locations": [],             # e.g. ["Austin", "New York", "Remote"]
     "workplaces": ["remote", "hybrid", "onsite"],
     "min_salary": None,          # annual, posting currency
-    "countries": [],             # only keep/process jobs located here, e.g. ["US"]; empty = everywhere
 }
-
-FIT_KEYS = ("about", "resume", "years_experience", "degree")
-
-
-def load(conn) -> dict:
-    return {**DEFAULT, **(db.get_meta(conn, "profile", {}) or {})}
-
-
-def save(conn, p: dict) -> None:
-    db.set_meta(conn, "profile", {k: p.get(k, DEFAULT[k]) for k in DEFAULT})
 
 
 def is_set(p: dict) -> bool:
-    return bool(p.get("about") or p.get("resume") or p.get("years_experience") is not None
-                or p.get("locations") or p.get("needs_sponsorship"))
-
-
-def _hash(p: dict, keys) -> str:
-    return hashlib.blake2b(json.dumps({k: p.get(k) for k in keys}, sort_keys=True).encode(),
-                           digest_size=8).hexdigest()
-
-
-def fit_hash(p: dict) -> str:
-    return _hash(p, FIT_KEYS)
+    return bool(p.get("years_experience") is not None or p.get("locations") or p.get("needs_sponsorship"))
 
 
 def check(row, p: dict, yoe_slack: int = 2) -> list[str]:
@@ -103,9 +76,8 @@ def _posted_places(cluster_locations, location) -> str:
 
 
 def eligibility_sql(conn, p: dict, yoe_slack: int = 2, alias: str = "j") -> tuple[str, list] | None:
-    """The same rules as check(), as one WHERE clause over the job index (None = no profile, so
-    everything counts as eligible). Nothing is stored per job: changing your profile or getting a
-    new index never needs a recompute. Locations use a small SQL function for exact matching."""
+    """The same rules as check(), as one WHERE clause over jobs (None = no profile, so everything
+    counts as eligible). Locations use a small SQL function for exact matching."""
     if not is_set(p):
         return None
     j = alias
@@ -161,41 +133,3 @@ def annotate(rows: list[dict], p: dict, yoe_slack: int = 2) -> None:
         reasons = check(r, p, yoe_slack) if on else []
         r["elig"] = (0 if reasons else 1) if on else None
         r["elig_reasons"] = json.dumps(reasons)
-
-
-def recompute(*_a, **_k) -> int:
-    """Kept for old callers: eligibility is now evaluated at query time (eligibility_sql)."""
-    return 0
-
-
-# ------------------------------------------------------------ privacy: what Claude may see
-
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-_PHONE = re.compile(r"(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)|\d{2,4})[\s.-]?\d{3,4}[\s.-]?\d{3,4}")
-_URL = re.compile(r"(https?://\S+|www\.\S+|\b(?:linkedin|github)\.com/\S*)", re.I)
-_ADDRESS = re.compile(r"\b\d{1,6}\s+(?:[A-Z][\w.]*\s){1,4}(?:St|Street|Ave|Avenue|Rd|Road|Blvd|Boulevard|Ln|Lane|Dr|Drive|"
-                      r"Ct|Court|Way|Pl|Place|Ter|Terrace|Pkwy)\b\.?(?:,?\s*(?:Apt|Unit|Suite|#)\s*\w+)?", re.I)
-_NAME_LINE = re.compile(r"^[A-Z][a-zA-Z'’-]+(?:\s+[A-Z][a-zA-Z'’.-]*){1,3}$")
-
-
-def redact(text: str) -> str:
-    """Strip contact details and the name line from a resume before it leaves the machine."""
-    lines = (text or "").strip().splitlines()
-    if lines and _NAME_LINE.match(lines[0].strip()):
-        lines[0] = "[name removed]"
-    out = "\n".join(lines)
-    out = _EMAIL.sub("[email removed]", out)
-    out = _URL.sub("[link removed]", out)
-    out = _ADDRESS.sub("[address removed]", out)
-    out = _PHONE.sub(lambda m: "[phone removed]" if sum(c.isdigit() for c in m.group(0)) >= 9 else m.group(0), out)
-    return out
-
-
-def for_claude(p: dict) -> dict:
-    """The only profile data that's ever sent: derived fields + redacted resume."""
-    return {
-        "looking_for": p.get("about") or "",
-        "years_experience": p.get("years_experience"),
-        "highest_degree": p.get("degree"),
-        "resume": redact(p.get("resume") or ""),
-    }

@@ -32,92 +32,29 @@ Measured on the real list (226,771 roles, 2026-11-09), fast connection / phone-l
 - Searching: 0.1 s / 0.3 s. Filtering: under 10 ms. Opening a job: 0.1 s / 0.3 s.
 - A visit after an update downloads only what changed since the weekly list (0.5 MB two days in).
 
-## The local app (optional)
+## Use the data
 
-The same job data in an app on your computer, for working offline or using Claude to judge how
-well each role fits you. It downloads a read-only **job index** that the same GitHub Action
-publishes. It gets bug fixes only; new features go to the website.
+Every build publishes the same data on this repo's
+[`job-index` release](https://github.com/Newsplayer/lighthouse/releases/tag/job-index), free for anyone to use:
 
-## Quick start
-
-Needs Python 3.11+ ([python.org](https://www.python.org/downloads/)). Download this repo
-(**Code → Download ZIP**, then unzip) and start it:
-
-| System | How to start |
+| File | What it is |
 |---|---|
-| Windows | Double-click `start-windows.bat` |
-| macOS | Double-click `start-mac.command` (first time: right-click → Open) |
-| Linux | `./start.sh` |
+| [`jobs.db.xz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.db.xz) | The whole database as one SQLite file. Unpack it (`xz -d jobs.db.xz`, or 7-Zip) and open it with any SQLite tool: DB Browser for SQLite, Datasette, `sqlite3`, pandas. |
+| [`jobs.csv.gz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.csv.gz) | Every open role as a spreadsheet: one row per role, one column per filter. |
+| [`manifest.json`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/manifest.json) | When it was built, how many roles, and how the build went. |
 
-The first start sets everything up and downloads the job index (a few hundred MB: a few minutes). After that,
-startup takes a couple of seconds and only the changes are downloaded (usually a few MB).
-Your browser opens to the site; close the terminal window to stop it.
+What's in the database:
 
-Then:
-1. **Profile:** add your experience, location, countries and visa needs. Roles you can't apply to
-   are filtered out, each with the reason.
-2. **Claude (optional):** paste an API key on the **Claude** page, or connect your own Claude app
-   (see [Claude, two ways](#claude-two-ways)) to get fit tiers.
+| Table | Holds |
+|---|---|
+| `postings` (a view) | One row per open role, duplicates collapsed, with the columns below plus `excerpt`. Start here. |
+| `jobs` | Every listing, open and recently closed, with every field the build worked out and when it was first and last seen. |
+| `excerpts` | About 600 characters describing each open role. The full posting is on the employer's page (`jobs.url`). |
+| `events` | When each listing appeared, closed and reopened. |
+| `extractions` | For each description, the sentence each field was read from. |
+| `boards`, `companies` | The job boards read, and which listed companies are covered. |
 
-**Updating Lighthouse:** download the latest version and replace the folder (keep `data/`, which
-holds your profile, marks and verdicts in `data/user.db`). Coming from 0.5 or earlier, your data is
-moved into `user.db` automatically on first start. The old `data/lighthouse.db` is deleted once
-the new index has downloaded. If the job index ever needs a newer version, the
-**Sources** page says so.
-
-### Manual setup
-
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m lighthouse start
-```
-
-## Where the jobs come from
-
-| Step | Where it runs | Who can change it |
-|---|---|---|
-| Find each listed company's job board from its careers page | GitHub Action (re-checked every 3–14 days) | the maintainer only |
-| Fetch every board, de-duplicate, analyse descriptions, score ghosts | GitHub Action, every 3 hours (about an hour each) | the maintainer only |
-| Ask Claude about the few postings the free rules couldn't read (optional) | GitHub Action, the maintainer's key, capped monthly | the maintainer only |
-| Close postings that are no longer listed; delete them 45 days later | GitHub Action, every 3 hours | the maintainer only |
-| Publish a ready-to-use database on the repo's `job-index` release | GitHub | the Action only |
-| Use that database as downloaded; add eligibility, fit, saved/applied/hidden | your computer | you (personal data only) |
-
-Your copy never contacts job boards and does no processing of its own. About once a week it
-downloads a full index, already de-duplicated, analysed and search-indexed, and opens it as is
-(a few seconds). After that it applies a small "what changed" file every few hours. Your own data
-(profile, marks, Claude verdicts) lives in a separate file, `data/user.db`, which a new index
-never touches. Every download is checked against its published SHA-256. A description and its
-links are sanitized again when a page shows them, so a damaged or tampered file can't put scripts
-into your site. If an update fails, the jobs you already have stay and the **Sources** page says why.
-
-**Companies covered:**
-- `config/companies.csv`: about 700 large employers by name and careers page. The Action works out
-  which careers system each one uses and reads it.
-- `config/boards/top-companies.csv`: 926 direct employer boards (about 510 switched on), mostly
-  tech companies, startups and trading firms.
-
-Supported careers systems: Workday, Oracle Recruiting, SAP SuccessFactors, Phenom, iCIMS (Jibe
-sites), Eightfold, Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee and Amazon. Also
-any careers site whose job pages carry standard schema.org JobPosting data (the format Google for
-Jobs reads). The **Sources** page lists every company in the companies list. For each it shows
-whether it's covered, which system it uses, how many open roles it has, and, if it isn't covered,
-why (for example, a careers system Lighthouse can't read yet). Clearly hourly titles (warehouse
-associate, cashier, delivery driver...) are left out.
-
-**Missing a company?** On the **Sources** page, click **Suggest a board**. It opens a pre-filled
-GitHub issue; once the maintainer adds it, it shows up for everyone after the next build.
-
-**Running your own index** (maintainers, or anyone who wants a private board list): see
-[MAINTAINING.md](MAINTAINING.md). Without an `[index] repo` set, Lighthouse fetches boards itself,
-as it did before v0.5.
-
-## The jobs as one table
-
-Every build also publishes **`jobs.csv.gz`** on the repo's `job-index` release: every open role
-(duplicate listings collapsed into one row), with one column per filter and the apply link:
+Columns of `postings` and of the CSV:
 
 `id, title, company, location, all_locations, countries, workplace, employment_type, seniority,
 job_function, years_experience, years_experience_source, degree, visa_sponsorship, clearance,
@@ -126,165 +63,126 @@ travel, languages_required, departments, posted_on, first_seen_on, times_listed,
 ghost_signals, has_description, filled_by_ai, url, ats, board`
 
 Empty means the posting doesn't say. Pay is per year (hourly × 2080; `pay_stated_per` says how the
-posting gave it). Open it in a spreadsheet or pandas. The same table is the `postings` view inside
-the index file your copy downloads (`data/index/index-*.db`), which any SQLite viewer (DB Browser for
-SQLite, Datasette...) can browse, sort and filter. `python -m lighthouse index csv` writes the CSV
-from your copy.
+posting gave it). For example:
 
-## What you get
+```sql
+SELECT title, company, all_locations, pay_max_per_year, url
+FROM postings
+WHERE job_function = 'Data & Analytics' AND workplace = 'remote' AND ghost_score < 3
+ORDER BY first_seen_on DESC LIMIT 50;
+```
+
+## Where the jobs come from
+
+A GitHub Action in this repo (the **builder**) does all the work, every 3 hours:
+
+1. Finds each listed company's job board from its careers page (re-checked every 3–14 days).
+2. Reads every board, politely: only the public feeds the careers sites themselves load, within
+   robots.txt and a rate limit per site.
+3. Collapses duplicates and reposts, reads each description with free rules (pay, years asked, visa
+   language, degree, clearance, skills...), and scores likely ghost jobs.
+4. Closes postings that are no longer listed, and deletes them 45 days later.
+5. Publishes the database and the website.
+
+**Companies covered:**
+- `config/companies.csv`: about 700 large employers by name and careers page. The builder works out
+  which careers system each one uses and reads it.
+- `config/boards/top-companies.csv`: 926 direct employer boards (about 510 switched on), mostly
+  tech companies, startups and trading firms.
+
+Supported careers systems: Workday, Oracle Recruiting, SAP SuccessFactors, Phenom, iCIMS (Jibe
+sites), Eightfold, Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee and Amazon. Also
+any careers site whose job pages carry standard schema.org JobPosting data (the format Google for
+Jobs reads). On the website, **Sources** lists every company in the companies list: whether it's
+covered, which system it uses, how many open roles it has, and, if it isn't covered, why. Clearly
+hourly titles (warehouse associate, cashier, delivery driver...) are left out.
+
+**Missing a company?** Open an issue with its careers page. Once it's added to the list, it shows up
+for everyone after the next build.
+
+**Running your own copy:** fork the repo and follow [MAINTAINING.md](MAINTAINING.md).
+
+## What the builder works out
 
 - **One row per role.** Exact duplicates (same company, title, location) and near-duplicates
   (same title, near-identical description, e.g. one role posted in six cities) collapse
-  into one listing that shows every location.
-- **Repost-aware dates.** "Since" is the earliest date the role was seen, by the ATS or by
+  into one role that shows every location and every apply link.
+- **Repost-aware dates.** A role's date is the earliest it was seen, by the careers system or by
   Lighthouse. A role taken down and reposted keeps its original date.
 - **Ghost score with reasons.** Signals: open longer than 60 days, reposted, evergreen title,
-  talent-pool wording, not updated in months. One signal never flags. Two = "possible ghost".
-  Three or more are hidden by default (one click shows them).
-- **Filters.** Date posted, salary (or only roles that list pay), workplace, **years of experience
-  asked** (min–max, with or without roles that don't say), countries, visa language (doesn't rule out
-  sponsorship / says it sponsors / sponsorship history), degree asked, security clearance, U.S.-citizens-only
-  roles, travel, languages required, benefits offered, fit tier, company, location, full-text search.
-  The less common ones sit under **More filters**. Sort by newest, best fit, highest pay or fewest years asked.
-- **Postings come and go with the employer's site.** Each build adds new postings and closes the ones no
-  longer listed. Most large employers' systems list jobs page by page, which can skip a posting when
-  the order shifts, so there a posting closes once it's missing two builds in a row. If a large board
-  suddenly lists less than half of its open roles, that's usually a
-  glitch on their side, so those closures wait one build for confirmation. A posting closed 45 days
-  ago is deleted once no other listing of the same role is open (until then it's what lets a repost keep
-  its original date), and your copy deletes it with the next update.
+  talent-pool wording, not updated in months. One signal never flags. Three or more are hidden on
+  the website by default (one click shows them).
+- **Postings come and go with the employer's site.** Each build adds new postings and closes the ones
+  no longer listed. Most large employers' systems list jobs page by page, which can skip a posting
+  when the order shifts, so there a posting closes once it's missing two builds in a row. If a large
+  board suddenly lists less than half of its open roles, that's usually a glitch on their side, so
+  those closures wait one build for confirmation. A careers-site page that gives its own closing date
+  closes when that date passes.
 - **Years asked** is read from the posting ("5+ years of…", "at least one year", "minimum 2–5
   years"), labelled *preferred* when it sits under "Preferred / Nice to have", and estimated from the
   title only when the posting gives no number (Intern/New Grad → 0, Senior → 5, Staff → 8,
-  Principal/Director → 10, shown as "from title"). Only a stated requirement can rule you out.
-- **Save / Applied / Hide**, plus a "New since last visit" tab.
-- **Eligibility (Profile page).** Deterministic rules remove roles that clearly rule you
-  out (no sponsorship, citizenship or clearance, location, years of experience, salary floor,
-  degree). Unknown never disqualifies. Each exclusion says why.
-- **Fit tiers (optional, Claude).** Strong / Possible / Weak with each requirement marked
-  met, missing or unclear. No 0–100 scores.
-- **Sponsorship history (optional).** Import DOL LCA and USCIS H-1B Employer Data Hub files
-  on the **Sponsorship** page; each job shows the employer's filings and approvals, kept separate.
-- **Filters from the description.** Job function (Software Engineering, Data & Analytics, Finance...),
-  seniority (intern to executive), employment type, skills the posting mentions (python, sql, aws,
-  excel...), years asked, pay (hourly roles shown per hour), workplace, visa language, degree,
-  clearance, citizenship, travel (none / up to 25% / more), languages other than English that are
-  required, and benefits offered (health, 401(k), equity, bonus, unlimited PTO, parental leave,
-  learning budget, relocation). Free rules read these in the GitHub Action. When a posting clearly
-  talks about one of them but no rule can read the answer (sponsorship in unusual wording, years written
-  oddly, a title no rule recognises), the Action asks Claude about that posting once. Claude's answer only
-  fills that gap and never replaces a rule's answer, and the job page marks it "read by Claude". On real
-  boards that's about 1 posting in 7. Either way, filtering needs no API and no work on your computer.
-- **Every apply link.** When the same role is listed on several sites, the job page links each
-  open copy, with tracking parameters removed.
-
-## Claude, two ways
-
-**Your own API key.** Claude page → paste key (stored in your OS keychain). Extraction uses
-Haiku, fit uses Sonnet; 20+ requests go through the Batch API at half price; the candidate
-profile is a cached prompt prefix. A monthly cap (default $5) blocks runs that would exceed it.
-The Profile page shows the exact request before anything is sent. Your resume's name, email,
-phone, links and street address are stripped first.
-
-**Your own Claude app (no key).** Lighthouse is an MCP server. In Claude Desktop's or Claude
-Code's MCP config:
-
-```json
-{"mcpServers": {"lighthouse": {
-  "command": "C:/Users/you/Coding/lighthouse/.venv/Scripts/python.exe",
-  "args": ["-m", "lighthouse", "mcp"],
-  "cwd": "C:/Users/you/Coding/lighthouse"}}}
-```
-
-Then ask your Claude app something like "use Lighthouse to find eligible roles I haven't
-judged yet and save a verdict for each". Tools: `search_jobs`, `get_posting`, `get_profile`,
-`save_verdict`, `set_mark`. On consumer Claude plans, check the "Help improve Claude" setting.
+  Principal/Director → 10, marked "title"). Only a stated requirement can rule anyone out.
+- **Filter fields from the description.** Job category, seniority, employment type, skills, pay
+  (hourly roles shown per hour), workplace, visa language, degree, clearance, citizenship, travel,
+  required languages and benefits. Free rules read these. When a posting clearly talks about one of
+  them but no rule can read the answer, a free open model on the build machine reads the sentences
+  around it once and fills only that gap; `filled_by_ai` names those fields. A rule's answer is
+  never replaced, and an answer is kept only when its quote is really in the text.
+- **Excerpts, not full postings.** The public files carry about 600 characters per role and a link
+  to the employer's own page, where you read the rest and apply.
 
 ## Privacy
 
-No Lighthouse server, no telemetry. Outbound requests are limited in code to the job index's release
-files on `github.com` (served from `*.githubusercontent.com`) and, if you use Claude with a key,
-`api.anthropic.com`; see the **Network** page. Your copy never contacts job boards. Nothing is
-uploaded anywhere: your profile, marks and verdicts live only in `data/user.db`. The site only
-answers on 127.0.0.1, rejects foreign Host headers, and requires a per-session token on every form.
+There is no server and no account. The website talks only to its own GitHub Pages address: no
+analytics, no fonts or scripts from anywhere else. Your answers to "Can you apply?" and your saved,
+applied and hidden lists stay in your browser. The published files hold job data only.
 
-## Speed: doing less work, not just faster work
-
-On your computer the work is a download and fast local queries: the index arrives ready to
-search, and eligibility is worked out inside each query, only for the rows you're looking at. The rest of this table
-is what keeps the index build itself cheap (it runs on GitHub, in [MAINTAINING.md](MAINTAINING.md)).
+## How the build stays cheap
 
 | What | How |
 |---|---|
-| Unchanged boards | The whole response is hashed; byte-identical to last run → nothing is parsed or written (16 ms instead of ~3 s for a 1,700-posting board) |
-| Unchanged postings | Each raw description is hashed; only new/edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
-| Countries | The index covers the US, Canada and Mexico; postings located only elsewhere are skipped before any detail download. Locations are read without any API, using a built-in list of 77k city names (GeoNames, CC BY 4.0). Your Profile countries filter the list on top |
-| Hourly roles | Skipped before any per-posting call |
-| Shared index | The fetching, analysis and search indexing run once, on GitHub, for everyone. Your computer downloads a ready-to-use file weekly and opens it as is (a few seconds), then applies a small change file every few hours |
-| Descriptions on disk | Each is compressed against one shared dictionary of common posting text: about 3× smaller than plain text, and a page still reads only the one it shows |
-| Analysis | Runs on every CPU core; field extraction only scans short windows around keywords ("year", "sponsor"…): 5× faster with identical results |
-| Search | The job list reads one table through partial indexes (marks and filter fields are stored on each row), counts stop at 5,000, dropdown lists are cached until data changes; page loads at 52k postings 17–145 ms (were 240–330 ms) |
-
-## How it scales
-
-| Concern | Approach |
-|---|---|
-| Many boards | Thread pool (`fetch_workers`), shared per-host rate limit, retries with backoff; one failing board never stops a run |
-| Big boards | SmartRecruiters/Workday descriptions fetched only for new postings, capped per run; hourly titles dropped before any detail call |
-| ~900 boards | Board lists in `config/boards/*.csv`; 48 parallel workers in the build with a per-host limit; fetching stops starting new work after 40 minutes (boards not reached go first next run); dead boards switched off automatically |
-| Sites that push back | A bot check, 403 or run of edge errors from a site (or a Workday data center, or a shared API host) leaves it alone for the rest of the build, never worked around; its postings stay as they were and it goes first next build. Workday sites share a limit per data center and are refreshed every other build |
-| Duplicates | One-pass MinHash per description + LSH banding per company, so cost grows with postings, not pairs |
-| Re-runs | Only companies whose postings changed are re-clustered and re-extracted; signatures and extractions are cached by description hash |
-| The list | Cluster/filter fields (function, seniority, skills, pay...) are precomputed by the builder and indexed; pages are `LIMIT/OFFSET` queries; FTS5 search |
-| Claude spend | Eligibility and ghost filters run first; Batch API; prompt caching; cache by (description, profile); monthly cap |
-| Storage | Descriptions stored zlib-compressed in their own table; the published index keeps one per role (its duplicate listings show the same text) and stores a role's places once, on its main listing; search indexes the first 4,000 characters; postings closed 45+ days are deleted once no open listing of the role remains (deltas carry the deletions to readers); sponsorship data aggregated per employer-year |
-| Claude in the build | Only postings the rules couldn't settle; once per description (cached by hash, kept across reposts); Batch API; monthly cap; a failure never blocks publishing |
-| Schema | Versioned migrations (`PRAGMA user_version`) |
-| New ATS | One subclass of `sources.base.Source` + one line in `sources/__init__.py` |
+| Unchanged boards | The whole response is hashed; byte-identical to last run → nothing is parsed or written |
+| Unchanged postings | Each raw description is hashed; only new or edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
+| Countries | Postings located only outside the US, Canada and Mexico are skipped before any description call. Locations are read without any API, using a built-in list of 77k city names (GeoNames, CC BY 4.0) |
+| Many boards | 48 boards at a time with a rate limit per site; nothing new starts after 40 minutes, and boards not reached go first next build |
+| Big boards | Descriptions are fetched only for new postings, a capped number per build, newest first |
+| Sites that push back | A bot check, 403 or run of edge errors leaves that site (or Workday data center, or shared API host) alone for the rest of the build, never worked around; it goes first next build |
+| Duplicates | One MinHash signature per description, compared within a company; identical groups are compared once |
+| Analysis | Runs on every CPU core; only companies whose postings changed are re-clustered and re-read |
+| The website | A weekly job list plus a small "what changed" file; the page downloads only the search words and job details it needs |
+| A new careers system | One subclass of `sources.base.Source` and one line in `sources/__init__.py` |
 
 ## Code map
 
 | Piece | File |
 |---|---|
 | Company list → job boards | `config/companies.csv`, `lighthouse/discover.py` |
-| ATS adapters | `lighthouse/sources/` |
-| HTTP allowlist + throttle | `lighthouse/net.py` |
-| Storage, migrations, list query | `lighthouse/db.py` |
-| Fetch + post-processing | `lighthouse/fetch.py` |
+| Readers for each careers system | `lighthouse/sources/` |
+| HTTP rules and rate limits | `lighthouse/net.py` |
+| The builder's database | `lighthouse/db.py` |
+| Fetch and post-processing | `lighthouse/fetch.py` |
 | Clustering, reposts | `lighthouse/dedupe.py` |
 | Ghost score | `lighthouse/ghost.py` |
-| Field extraction; function, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
-| Gap fill in the build: a free open model reads what the rules couldn't settle; categories from similar titles | `lighthouse/llm_fill.py`, `lighthouse/local_llm.py`, `lighthouse/categorize.py`, `scripts/get_llm.sh` |
-| Profile, eligibility, redaction | `lighthouse/profile.py` |
-| Claude API (extraction, fit, batches, spend) | `lighthouse/claude_api.py` |
-| Sponsorship data | `lighthouse/sponsors.py` |
-| MCP server | `lighthouse/mcp_server.py` |
-| Job index: build, download, merge | `lighthouse/snapshot.py`, `.github/workflows/job-index.yml` |
-| Scheduler | `lighthouse/scheduler.py` |
-| Website (GitHub Pages): generator / page | `lighthouse/site.py` / `site/` (`logic.js` has no DOM: Node tests it) |
-| Local app UI | `lighthouse/web.py`, `templates/` |
+| Field rules; category, seniority, skills, benefits, travel, languages | `lighthouse/extract.py`, `lighthouse/classify.py` |
+| Gap fill: a free open model reads what the rules couldn't settle; categories from similar titles | `lighthouse/llm_fill.py`, `lighthouse/local_llm.py`, `lighthouse/categorize.py`, `scripts/get_llm.sh` |
+| The build and the public files | `lighthouse/snapshot.py`, `.github/workflows/job-index.yml` |
+| Website: generator / page | `lighthouse/site.py` / `site/` (`logic.js` has no DOM: Node tests it) |
+| The page's filters and eligibility, in Python (what the page is tested against) | `lighthouse/db.py` (`Filters`, `list_jobs`), `lighthouse/profile.py` |
 
-## CLI
+## CLI (what the Actions run)
 
 ```
-python -m lighthouse start | serve | fetch       # fetch = update the job index (or fetch boards, without [index] repo)
-python -m lighthouse add https://jobs.lever.co/palantir urls.txt ...   # without [index] repo only
-python -m lighthouse boards
-python -m lighthouse reprocess
-python -m lighthouse visa import [files]       # default: everything in data/visa/
-python -m lighthouse claude extract|fit|poll [--limit N]
-python -m lighthouse key set|clear
-python -m lighthouse mcp
-python -m lighthouse index status                 # when the job index was built, what it covers
-python -m lighthouse index import [FILE.db.xz]   # update now, or merge a local index file
-python -m lighthouse index build --out dist       # what the GitHub Action runs (MAINTAINING.md)
-python -m lighthouse index csv [--out FILE]      # every open role, one column per filter (jobs.csv.gz)
+python -m lighthouse index build --out dist      # find boards, fetch, analyse, write the public files
+python -m lighthouse index seed jobs.db.xz       # start the builder from the published database
+python -m lighthouse index fill                  # the open-model gap fill alone
+python -m lighthouse index summary [--boards]    # how the build went
 python -m lighthouse site --out site_out         # the website's files, from the builder database
+python -m lighthouse discover [--report]         # find boards from careers pages; check board names
 ```
 
 ## Not doing
 
-Auto-apply, resume rewriting, LinkedIn scraping, contact harvesting, chat coach. See the market scan.
+Accounts, auto-apply, resume rewriting, LinkedIn or Indeed scraping, paid feeds.
 
 ## Tests
 

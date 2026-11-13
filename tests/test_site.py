@@ -1,5 +1,5 @@
 """The website (lighthouse/site.py + site/): generated files, update files, and the page's logic
-agreeing with the local app's (Node runs site/logic.js; a browser runs the page)."""
+agreeing with the Python reference (Node runs site/logic.js; a browser runs the page)."""
 import functools
 import http.server
 import json
@@ -184,7 +184,7 @@ def test_excerpt_starts_at_the_role_and_skips_boilerplate():
     assert len(site.excerpt("<p>" + "word " * 400 + "</p>")) <= site.EXCERPT_CHARS + 1
 
 
-# ------------------------------------------------------------------ the page's logic agrees with the local app
+# ------------------------------------------------------------------ the page's logic agrees with the Python reference
 
 def _store_script():
     return """
@@ -198,7 +198,7 @@ const store = logic.buildStore(base, delta, latest.vocab);
 
 
 @needs_node
-def test_page_filters_match_the_local_app(tmp_path):
+def test_page_filters_match_the_python_reference(tmp_path):
     b = varied_builder(tmp_path)
     out = tmp_path / "site"
     gen(b, out)
@@ -206,7 +206,7 @@ def test_page_filters_match_the_local_app(tmp_path):
     uid_of = {i: u for u, i in conn.execute("SELECT uid, id FROM site_ids")}
     prof = {**profile.DEFAULT, "years_experience": 3, "needs_sponsorship": True,   # where: the Where filter, not the profile
             "min_salary": 100000, "degree": "bachelors"}
-    cases = [  # (local app Filters; a list = any of them, the page's filters)
+    cases = [  # (reference Filters; a list = any of them, the page's filters)
         ({}, {}),
         ({"function": "Software Engineering"}, {"fns": ["Software Engineering"]}),
         ([{"function": "Software Engineering"}, {"function": "Data & Analytics"}],
@@ -233,7 +233,7 @@ def test_page_filters_match_the_local_app(tmp_path):
     for py, _ in cases:
         uids = set()
         for one in py if isinstance(py, list) else [py]:
-            rows, _ = db.list_jobs(conn, db.Filters(**{"eligible_only": False, **one}), per_page=1000, with_count=False)
+            rows, _ = db.list_jobs(conn, db.Filters(**{"eligible_only": False, **one}), per_page=1000)
             uids |= {r["uid"] for r in rows}
         expected.append(sorted(uids))
     conn.close()
@@ -250,7 +250,7 @@ console.log(JSON.stringify(out));
 def _where_expected(r, where: set, remote_too: bool, metro_country: dict) -> bool:
     """The page's place filter, in Python: any of the role's places is in a chosen place, or (remote
     roles, when asked) the role is open in a chosen place's country."""
-    locs = site._places(r)[:site.MAX_PLACES]
+    locs = site._places(dict(r))[:site.MAX_PLACES]
     if places.keys_of(locs) & where:
         return True
     want = {metro_country[k[1:]] if k.startswith("@") else k[:2] for k in where}

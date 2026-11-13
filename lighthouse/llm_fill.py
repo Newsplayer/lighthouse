@@ -14,7 +14,7 @@ Answers are kept only when they're grounded: the model must quote the words it r
 the text it was shown, and numbers (pay, years) must appear in their quote. A rule answer is never
 replaced, and filled fields are marked "by": "model" so the job page can say so. Values outside the known
 vocabularies are dropped. Postings are untrusted input: no tools, a strict JSON schema, escaped output.
-A failure here never fails the build: the index is published with the rule answers.
+A failure here never fails the build: the rule answers are published.
 """
 
 from __future__ import annotations

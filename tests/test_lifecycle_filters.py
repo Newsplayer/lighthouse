@@ -1,8 +1,7 @@
-"""The job database's lifecycle (new, closed, held, deleted -> readers delete too), the filter fields read
+"""The job database's lifecycle (new, closed, held, deleted), the filter fields read
 from descriptions, and the builder filling only the gaps the rules couldn't settle (an open model, and
 categories from similar titles)."""
 import json
-import sqlite3
 import zlib
 from datetime import datetime, timedelta, timezone
 
@@ -12,7 +11,7 @@ from lighthouse import classify, config, db, extract, fetch, llm_fill, snapshot
 from lighthouse.models import Job
 from lighthouse.sanitize import sanitize_html
 
-from test_index import Builder, base_file, reader, unpacked
+from test_index import Builder, public_db
 
 FILLER = " ".join(f"word{k}" for k in range(60))
 
@@ -24,7 +23,7 @@ def posting(eid, title, body, board="acme", company="Acme", posted_at=None):
 
 def cfg_file(tmp_path, extra=""):
     p = tmp_path / "lc.toml"
-    p.write_text('[settings]\nfetch_interval_hours = 0\n\n[[boards]]\nats = "greenhouse"\nslug = "acme"\n' + extra)
+    p.write_text('[[boards]]\nats = "greenhouse"\nslug = "acme"\n' + extra)
     return config.load(p), p
 
 
@@ -227,7 +226,7 @@ def test_gap_fill_without_a_model_is_rules_only(builder_db, monkeypatch):
         llm_fill.server_from_env(cfg)
 
 
-def test_gap_fills_ship_in_the_index_and_survive_a_lost_cache(tmp_path):
+def test_gap_fills_ship_in_the_public_database_and_survive_a_lost_cache(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [posting(1, "Data Analyst", "Must be authorized to work in the U.S. without the need for "
                                                  "employer support.")])
@@ -236,14 +235,13 @@ def test_gap_fills_ship_in_the_index_and_survive_a_lost_cache(tmp_path):
     conn.close()
     m = b.export()
     assert m["llm"]["descriptions_read"] == 1 and m["llm"]["model"] == "fake-model"
-    r, rcfg = reader(tmp_path)
-    snapshot.import_file(r, rcfg, base_file(b), full=True)
-    assert db.list_jobs(r, db.Filters(visa="not_no"))[1] == 0
-    ch = r.execute("SELECT content_hash FROM jobs").fetchone()[0]
-    assert extract.get(r, ch)[0]["visa"]["by"] == "model"
-    # Actions cache expired: a new builder seeded from the published base knows it was already read
+    pub = public_db(b, tmp_path)
+    assert pub.execute("SELECT visa_sponsorship, filled_by_ai FROM postings").fetchone() == ("no", "visa")
+    ch = pub.execute("SELECT content_hash FROM jobs").fetchone()[0]
+    assert json.loads(pub.execute("SELECT data FROM extractions").fetchone()[0])["visa"]["by"] == "model"
+    # Actions cache lost: a new builder seeded from the published database knows it was already read
     seeded = tmp_path / "seeded.db"
-    snapshot.seed_builder(base_file(b), seeded)
+    snapshot.seed_builder(b.dist / snapshot.DB_NAME, seeded)
     s = db.connect(seeded)
     assert s.execute("SELECT model FROM llm_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "seeded"
     assert llm_fill.candidates(s, 100, 99) == []
@@ -258,16 +256,13 @@ def test_a_description_the_model_found_nothing_in_is_not_read_again(tmp_path):
     ch = conn.execute("SELECT content_hash FROM jobs").fetchone()[0]
     assert "llm_read" in json.loads(conn.execute("SELECT data FROM extractions").fetchone()[0])
     conn.close()
-    b.export(full=True)
+    b.export()
     seeded = tmp_path / "seeded.db"
-    snapshot.seed_builder(base_file(b), seeded)               # the Actions cache is gone
+    snapshot.seed_builder(b.dist / snapshot.DB_NAME, seeded)  # the Actions cache is gone
     s = db.connect(seeded)
     assert s.execute("SELECT data FROM llm_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "{}"
     assert llm_fill.candidates(s, 100, 99) == []              # nothing to read again
-    r, rcfg = reader(tmp_path)
-    snapshot.import_file(r, rcfg, base_file(b), full=True)
-    data = extract.get(r, ch)[0]
-    assert not [v for v in data.values() if isinstance(v, dict) and v.get("by")]   # the job page shows no fills
+    assert public_db(b, tmp_path).execute("SELECT filled_by_ai FROM postings").fetchone()[0] is None   # no fills shown
 
 
 # ---------------------------------------------------------------- job categories from similar titles
@@ -320,7 +315,7 @@ def test_builder_reprocesses_everything_once_after_an_upgrade(tmp_path, monkeypa
               "beta": [posting(2, "Accountant", "Ledgers.", board="beta", company="Beta")]}
     stub = type("S", (), {"wanted": lambda s, j: True, "dropped": set(), "body_hash": "x"})()
     monkeypatch.setattr(fetch, "_fetch_board", lambda board, *a, **k: (boards[board["slug"]], stub))
-    fetch.run(cfgp, path, use_snapshot=False)
+    fetch.run(cfgp, path)
     conn = db.connect(path)
     assert db.get_meta(conn, "processed_versions") == fetch.processed_versions()
     # as an older version left it: acme's row derived without the new fields
@@ -329,18 +324,18 @@ def test_builder_reprocesses_everything_once_after_an_upgrade(tmp_path, monkeypa
     conn.close()
     monkeypatch.setattr(fetch, "_fetch_board", lambda board, *a, **k: (None, stub))   # nothing changed anywhere
     monkeypatch.setattr(db, "board_unchanged", lambda *a, **k: None)
-    fetch.run(cfgp, path, use_snapshot=False)
+    fetch.run(cfgp, path)
     conn = db.connect(path)
     assert classify.decode_list(conn.execute("SELECT benefits FROM jobs WHERE source_board='acme'").fetchone()[0]) == ["equity"]
     calls = []
     real = fetch.postprocess
     monkeypatch.setattr(fetch, "postprocess", lambda c, cfg, keys=None: (calls.append(keys), real(c, cfg, keys)))
-    fetch.run(cfgp, path, use_snapshot=False)
+    fetch.run(cfgp, path)
     assert calls == [set()]          # up to date: only what changed (nothing) is reprocessed
 
 def test_a_sudden_mass_disappearance_waits_for_confirmation(tmp_path):
     conn = db.connect(tmp_path / "m.db")
-    db.add_board(conn, "greenhouse", "acme")
+    db.sync_config_boards(conn, [{"ats": "greenhouse", "slug": "acme"}])
     many = [posting(i, f"Analyst {i}", "Work.") for i in range(30)]
     db.upsert_board(conn, "greenhouse", "acme", many)
     glitch = db.upsert_board(conn, "greenhouse", "acme", many[:3])        # API hiccup: 3 of 30 listed
@@ -355,32 +350,21 @@ def test_a_sudden_mass_disappearance_waits_for_confirmation(tmp_path):
     assert small["closed"] == 3
 
 
-def test_long_closed_postings_are_deleted_and_readers_follow(tmp_path):
+def test_long_closed_postings_are_deleted(tmp_path):
     b = Builder(tmp_path)
     b.ingest("acme", [posting(1, "Data Analyst", "Dashboards."), posting(2, "Accountant", "Ledgers.")])
-    b.export()
-    r, rcfg = reader(tmp_path)
-    snapshot.import_file(r, rcfg, base_file(b), full=True)
     b.ingest("acme", [posting(1, "Data Analyst", "Dashboards.")])         # 2 is no longer listed: closed
-    b.export()
-    snapshot.import_file(r, rcfg, next(b.dist.glob("delta-*.db.xz")), full=False)
-    assert r.execute("SELECT active FROM jobs WHERE external_id='2'").fetchone()[0] == 0
     conn = db.connect(b.path)
+    assert conn.execute("SELECT active FROM jobs WHERE external_id='2'").fetchone()[0] == 0
     assert db.purge_closed(conn, 45) == 0                                  # closed today: kept for now
     old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
     conn.execute("UPDATE jobs SET closed_at=? WHERE external_id='2'", (old,))
     conn.commit()
     assert db.purge_closed(conn, 45) == 1
-    assert conn.execute("SELECT COUNT(*) FROM jobs WHERE external_id='2'").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM tombstones").fetchone()[0] == 1
+    for table, key in (("jobs", "external_id = '2'"), ("job_content", "uid LIKE '%:2'"), ("events", "uid LIKE '%:2'")):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {key}").fetchone()[0] == 0, table
     conn.close()
-    m = b.export()
-    assert m["deleted_this_run"] == 1 and m["deltas"][-1]["rows"] == 0
-    stats = snapshot.import_file(r, rcfg, sorted(b.dist.glob("delta-*.db.xz"))[-1], full=False)
-    assert stats["deleted"] == 1
-    assert r.execute("SELECT COUNT(*) FROM jobs WHERE external_id='2'").fetchone()[0] == 0
-    assert r.execute("SELECT COUNT(*) FROM job_content WHERE uid LIKE '%:2'").fetchone()[0] == 0
-    assert db.list_jobs(r, db.Filters())[1] == 1
+    assert b.export()["db"]["rows"] == 1                                   # gone from the public database too
 
 
 def test_closed_rows_of_an_open_role_are_kept_for_repost_history(tmp_path):
@@ -395,11 +379,9 @@ def test_closed_rows_of_an_open_role_are_kept_for_repost_history(tmp_path):
     conn.execute("UPDATE jobs SET closed_at=? WHERE external_id='1'", (old,))
     conn.commit()
     assert db.purge_closed(conn, 45) == 0       # its repost (2) is still open
-    db.set_mark(conn, "greenhouse:acme:1", "applied")
     conn.execute("UPDATE jobs SET active=0, closed_at=? WHERE external_id='2'", (old,))
     conn.commit()
-    assert db.purge_closed(conn, 45) == 1       # role gone; the posting you applied to stays
-    assert conn.execute("SELECT uid FROM jobs").fetchall()[0][0] == "greenhouse:acme:1"
+    assert db.purge_closed(conn, 45) == 2       # the role is gone: both go
 
 
 # ---------------------------------------------------------------- filters
@@ -427,46 +409,6 @@ def test_new_filters(tmp_path):
     row = conn.execute("SELECT benefits, travel, languages FROM jobs WHERE external_id='1'").fetchone()
     assert classify.decode_list(row[0]) == ["retirement", "equity", "unlimited_pto"]
     assert row[1] == "frequent" and classify.decode_list(row[2]) == ["german"]
-
-
-def test_an_older_index_gains_the_new_columns(tmp_path):
-    b = Builder(tmp_path)
-    b.ingest("acme", [posting(1, "Data Analyst", "Dashboards.")])
-    b.export()
-    path = unpacked(base_file(b), tmp_path)
-    c = sqlite3.connect(path)
-    c.execute("DROP VIEW postings")                     # what a 0.6 builder published: no view,
-    for col in ("benefits", "travel", "languages"):    # none of these columns
-        c.execute(f"ALTER TABLE jobs DROP COLUMN {col}")
-    c.commit()
-    c.close()
-    r, rcfg = reader(tmp_path)
-    snapshot.import_file(r, rcfg, path, full=True)
-    assert db.list_jobs(r, db.Filters(benefits=("equity",), travel="low", language="english"))[1] == 0
-    assert db.list_jobs(r, db.Filters(travel="low"))[1] == 1
-
-
-def test_filter_bar_and_job_page(tmp_path, cfg_path):
-    from lighthouse.web import create_app
-    cfg, _ = cfg_file(tmp_path)
-    path = tmp_path / "w.db"
-    conn = db.connect(path)
-    db.upsert_board(conn, "greenhouse", "acme", [posting(1, "Data Analyst", "Stock options and unlimited PTO. "
-                                                                            "Fluency in German is required.")])
-    fetch.postprocess(conn, cfg)
-    ch = conn.execute("SELECT content_hash FROM jobs").fetchone()[0]
-    conn.execute("INSERT INTO llm_extractions(content_hash, data, model, at) VALUES (?, ?, 'm', '9999')",
-                 (ch, json.dumps({"visa": {"value": "yes", "evidence": "we sponsor"}})))
-    conn.commit()
-    llm_fill.apply(conn)
-    conn.close()
-    client = create_app(path, cfg_path, visa_dir=tmp_path / "visa").test_client()
-    page = client.get("/?benefit=equity&benefit=unlimited_pto&posted=7&language=german&visa=yes").get_data(as_text=True)
-    assert "Data Analyst" in page and "More filters (on)" in page and "German required" in page
-    assert "?benefit=equity&amp;benefit=unlimited_pto&amp;posted=7" in page   # tab links keep every benefit
-    assert "Data Analyst" not in client.get("/?language=english").get_data(as_text=True)
-    detail = client.get("/job/greenhouse:acme:1").get_data(as_text=True)
-    assert "read by Claude" in detail and "Equity / stock" in detail and "German" in detail
 
 
 FAKE_LLAMA_SERVER = '''#!/usr/bin/env python3

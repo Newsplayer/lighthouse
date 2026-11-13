@@ -6,8 +6,7 @@ Tiers, all cached by description hash so identical text is never processed twice
   gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
              rules can't settle it (unresolved()), a free open model on the build machine reads it once
              and fills that gap; categorize.py places titles the rules can't. Rule answers are never
-             overwritten; filled fields carry "by": "model" or "titles" ("claude" in older indexes).
-  claude   — optional, your own key (claude_api.py); replaces the rules result when present
+             overwritten; filled fields carry "by": "model" or "titles" ("claude" in data from 2026-11).
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
 matches the value is None ("unknown"), never a guess.
@@ -21,7 +20,7 @@ import hashlib
 import json
 import re
 
-from .models import utcnow
+from .models import strings, utcnow
 from .sanitize import html_to_text
 
 FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
@@ -304,7 +303,7 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
 
 # ---------------------------------------------------------------- what the rules couldn't settle
 # A field is "unresolved" when the posting clearly talks about it (the gate matches) but the rules found
-# no answer. Only those postings go to Claude, so a posting that simply never mentions sponsorship
+# no answer. Only those postings go to the gap fill, so a posting that simply never mentions sponsorship
 # (most of them) costs nothing. Each gate is behind a cheap substring check.
 _GATES: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
     "salary": (("$", "£", "€", "usd", "eur", "gbp", "cad", "salary", "compensation", "pay", "wage"), re.compile(
@@ -385,18 +384,15 @@ def merge_llm(data: dict, llm: dict | None) -> dict:
 
 
 def llm_for(conn, hashes) -> dict[str, dict]:
-    """Claude gap-fill readings (builder / local database only) for these description hashes."""
+    """The gap fill's readings for these description hashes."""
     hashes = [h for h in hashes if h]
     if not hashes:
         return {}
-    try:
-        rows = []
-        for i in range(0, len(hashes), 500):
-            part = hashes[i:i + 500]
-            rows += conn.execute(f"SELECT content_hash, data FROM llm_extractions WHERE content_hash IN "
-                                 f"({','.join('?' * len(part))})", part).fetchall()
-    except Exception:   # a reader's database has no such table
-        return {}
+    rows = []
+    for i in range(0, len(hashes), 500):
+        part = hashes[i:i + 500]
+        rows += conn.execute(f"SELECT content_hash, data FROM llm_extractions WHERE content_hash IN "
+                             f"({','.join('?' * len(part))})", part).fetchall()
     return {r[0]: json.loads(r[1]) for r in rows if r[1]}
 
 
@@ -442,10 +438,8 @@ def _annual(v, per):
 
 _DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
        j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
-       j.employment_type, COALESCE(ce.data, e.data) AS data, CASE WHEN ce.data IS NOT NULL THEN 'claude' ELSE e.method END AS method,
-       COALESCE(ce.at, e.at) AS data_at
-FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash
-LEFT JOIN claude_extractions ce ON ce.content_hash = j.content_hash"""
+       j.employment_type, e.data, e.method, e.at AS data_at
+FROM jobs j LEFT JOIN extractions e ON e.content_hash = j.content_hash"""
 
 
 def derive(conn, company_keys) -> None:
@@ -453,13 +447,6 @@ def derive(conn, company_keys) -> None:
     filter columns on jobs. Pure lookups and string checks: no description parsing here."""
     for ck in company_keys:
         _derive_rows(conn, conn.execute(_DERIVE_SELECT + " WHERE j.company_key=? AND j.active=1", (ck,)).fetchall())
-
-
-def derive_claude(conn) -> int:
-    """Reader: re-apply your own Claude extractions on top of the job index (only those rows differ)."""
-    rows = conn.execute(_DERIVE_SELECT + " WHERE j.active=1 AND ce.data IS NOT NULL").fetchall()
-    _derive_rows(conn, rows)
-    return len(rows)
 
 
 def _derive_rows(conn, rows) -> None:
@@ -493,7 +480,7 @@ def _derive_rows(conn, rows) -> None:
             if yoe is None:
                 yoe = yoe_from_title(r["title"])
                 ysrc = "title" if yoe is not None else None
-            locs = json.loads(r["cluster_locations"] or "[]") or ([r["location"]] if r["location"] else [])
+            locs = strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
             stated = yoe if ysrc == "stated" else None
             pick = lambda v, allowed: v if v in allowed else None   # a Claude value must be one we know
             travel = pick(val("travel"), classify.TRAVEL)
@@ -516,10 +503,8 @@ def _derive_rows(conn, rows) -> None:
 
 
 def get(conn, content_hash: str) -> tuple[dict, str | None]:
-    """Your Claude extraction if you have one, else the free rule-based one."""
-    r = conn.execute("SELECT data, 'claude' AS method FROM claude_extractions WHERE content_hash=?",
-                     (content_hash,)).fetchone()
-    r = r or conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
+    """What the rules (and the gap fill) read from a description: ({field: {value, evidence}}, method)."""
+    r = conn.execute("SELECT data, method FROM extractions WHERE content_hash=?", (content_hash,)).fetchone()
     if not r:
         return {}, None
     data = json.loads(r["data"]) or {}

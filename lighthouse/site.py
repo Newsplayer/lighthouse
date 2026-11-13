@@ -43,8 +43,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import classify, db, geo, places
-from .sanitize import html_to_text
-from .web import clean_url
+from .models import strings
+from .sanitize import clean_url, html_to_text
 
 FORMAT = 2                         # 2: normalized places (dict loc, column L); internships are a level
 ASSETS = Path(__file__).resolve().parent.parent / "site"
@@ -190,17 +190,10 @@ def _rows(conn, countries) -> list[dict]:
     return rows
 
 
-def _strings(value) -> list[str]:
-    """The strings in a stored JSON list ([] when it's empty or unreadable)."""
-    try:
-        items = json.loads(value or "[]")
-    except ValueError:
-        return []
-    return [x for x in items if isinstance(x, str) and x.strip()] if isinstance(items, list) else []
-
-
-def _places(r) -> list[str]:
-    return _strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
+def _places(r: dict) -> list[str]:
+    if "places" not in r:      # read three times per role (list, search words, details): parsed once
+        r["places"] = strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
+    return r["places"]
 
 
 def _card(r, dicts: dict[str, dict]) -> list:
@@ -387,7 +380,7 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
         word_bytes = sum(_write_json(wdir / f"{name}.json", sh) for name, sh in shards.items())
 
         # Details, 128 roles per file, by id
-        excerpts = _excerpts(conn, [r["content_hash"] for r in rows if r["content_hash"]])
+        texts = excerpts(conn)
         links = _apply_links(conn, {r["cluster_id"] or r["uid"] for r in rows})
         ddir = data / f"d-{stamp}"
         ddir.mkdir()
@@ -396,9 +389,9 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
             i = id_of[u]
             own = clean_url(r["url"])
             files.setdefault(i // DETAIL_PER_FILE, {})[str(i)] = {
-                "k": key_of(u), "x": excerpts.get(r["content_hash"], ""),
+                "k": key_of(u), "x": texts.get(r["content_hash"], ""),
                 "u": links.get(r["cluster_id"] or u) or ([[r["source"], own]] if own else []),
-                "L": _places(r), "dep": _departments(r), "gr": _strings(r["ghost_reasons"])}
+                "L": _places(r), "dep": _departments(r), "gr": strings(r["ghost_reasons"])}
         detail_bytes = sum(_write_json(ddir / f"{n}.json", f) for n, f in files.items())
 
         sources_file = f"sources-{stamp}.json"
@@ -442,27 +435,29 @@ def generate(db_path: Path | str, out_dir: Path | str, countries=("US", "CA", "M
             "detail_files": len(files), "top_bytes": top_bytes, "site_bytes": total}
 
 
-def _departments(r) -> list[str]:
-    return _strings(r["departments"])[:5]
+def _departments(r: dict) -> list[str]:
+    if "deps" not in r:
+        r["deps"] = strings(r["departments"])[:5]
+    return r["deps"]
 
 
-def _excerpts(conn, hashes: list[str]) -> dict[str, str]:
-    """Excerpts by description hash, cached in the builder database (most don't change)."""
-    have = {h: t for h, t in conn.execute("SELECT content_hash, text FROM site_excerpts")}
-    todo = [h for h in set(hashes) if h not in have]
+def excerpts(conn) -> dict[str, str]:
+    """An excerpt of every open role's description, by description hash. Kept in the builder database
+    (most don't change between builds); the public database ships them too."""
+    conn.executescript(_STATE_TABLES)
+    open_roles = "FROM jobs WHERE active = 1 AND is_canonical = 1 AND content_hash IS NOT NULL"
+    todo = [r[0] for r in conn.execute(f"SELECT DISTINCT content_hash {open_roles} "
+                                       "AND content_hash NOT IN (SELECT content_hash FROM site_excerpts)")]
     new = []
     for h in todo:
         row = conn.execute("SELECT c.html FROM jobs j JOIN job_content c ON c.uid = j.uid "
                            "WHERE j.content_hash = ? LIMIT 1", (h,)).fetchone()
-        text = excerpt(db.unpack(row[0])) if row else ""
-        have[h] = text
-        new.append((h, text))
+        if row:              # no description yet (not read, or a builder seeded from the public database): later
+            new.append((h, excerpt(db.unpack(row[0]))))
     with conn:
         conn.executemany("INSERT OR REPLACE INTO site_excerpts (content_hash, text) VALUES (?, ?)", new)
-        live = set(hashes)
-        stale = [(h,) for h in have if h not in live]
-        conn.executemany("DELETE FROM site_excerpts WHERE content_hash = ?", stale)
-    return have
+        conn.execute(f"DELETE FROM site_excerpts WHERE content_hash NOT IN (SELECT content_hash {open_roles})")
+    return dict(conn.execute("SELECT content_hash, text FROM site_excerpts"))
 
 
 def _apply_links(conn, clusters: set[str]) -> dict[str, list]:

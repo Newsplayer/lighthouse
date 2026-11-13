@@ -14,11 +14,15 @@ order: the eval set (P0-3), hourly runs (P2-1: the gap fill's answers must be sa
 database first), and more careers systems (P2-4). Those need real sites or hand labels, so they start
 with a network probe.
 
+**Update (2026-11-12):** the local app is retired (P1-3, D9). Lighthouse is now two things: a public
+database anyone can download (`jobs.db.xz`, `jobs.csv.gz`) and the website.
+
 **Direction (owner, 2026-11-07):** the top priority is a functional, effective job aggregator.
 - **Hosting:** Lighthouse becomes a **website hosted on GitHub Pages**, so users install and
   download nothing (P1).
 - **AI fit:** deferred.
-- **The local app** keeps working from the published index but gets no new features.
+- **The local app** was retired on 2026-11-12 (owner, D9). What remains: a good public database
+  and the website to browse it.
 
 The goal is:
 - **The postings:** every real, open, de-duplicated role at the listed employers in the US,
@@ -139,6 +143,20 @@ Work top to bottom.
   - **Out-of-scope rows:** 112,794 postings stored before the US/Canada/Mexico scope (76,110 still
     marked open) are deleted, then the file is compacted. This happens once, in the first build
     after merging: 26 s to delete, 32 s to compact, and a one-time 31.5 MB update for the local app.
+  - **Where a build's own steps spend their time, 2026-11-12** (profiled on the last production
+    database: 392,792 open postings, 237,680 roles; probes `probe/profile-build`, `probe/profile-site`):
+
+    | Step | Time | Mostly |
+    |---|---|---|
+    | Writing the website, every build | 27 s → 20 s | was: cleaning 630,000 links (now skipped when a link has no query) and reading each role's places three times (now once) |
+    | Full index file for the local app, weekly | about 6.5 min, 489 MB | compressing (xz), search text for every description, re-compressing descriptions (gone since 2026-11-12) |
+    | Index bookkeeping, every build | about 23 s | hashing every posting to find what changed (14 s), the CSV (7 s) (gone since 2026-11-12) |
+    | The public database, every build (since 2026-11-12) | 100–130 s | writing the plain file, excerpts and CSV (~30 s), `xz -6` (~98 s) |
+    | Re-processing every company (after an upgrade only) | 47 s | clustering (32 s), ghost scores (8 s) |
+    | Build health, closing dates | under 1 s | |
+
+    - The website's files are byte-for-byte the same before and after (detail files 154,415,711 bytes).
+    - The two index rows existed for the local app, and went with it (P1-3).
   - **Scaling notes:**
     - Post-processing now grows with the number of *different* postings per company, not with the
       square of a company's size.
@@ -164,10 +182,8 @@ Work top to bottom.
   - Job details (excerpt, all apply links, skills, ghost reasons) in 128-job files: 41 MB on the
     site, ~25 KB gzip per file.
   - Generated in 30 s.
-- **Local app (reader):**
-  - Eligibility is computed at query time (`profile.eligibility_sql`).
-  - Fit comes from Claude (API key, or the user's Claude app via MCP).
-  - The job page links every open copy of the role, with tracking parameters removed.
+- **Local app:** retired 2026-11-12 (D9). Its eligibility rules live on as the Python reference the
+  page's JavaScript is tested against (`profile.py`, `db.Filters`).
 
 ## 3. Freshness: how updates reach users
 
@@ -188,9 +204,8 @@ Job boards change all day, so freshness is a core feature.
    - It fetches a ~1 KB `latest.json` on each visit and every 15 minutes while open.
    - When there's a newer build, it applies the change file in memory and shows the new jobs as
      "new since your last visit". No reload, no waiting.
-4. **The local app** (frozen) keeps working as today: a chain of per-build deltas on the
-   `job-index` release.
-   - Measured: 42 KB fixed + ~1.3 KB per changed posting with full text; less with excerpts.
+4. **The public database** (`jobs.db.xz`, `jobs.csv.gz`) is written new by every build, under the
+   same names, so anyone's download link always gives the latest.
 
 **Rough budget** at ~255k jobs (US/CA/MX, one row per role), assuming ~3% change per day
 (measure it, P0-5):
@@ -213,15 +228,15 @@ Job boards change all day, so freshness is a core feature.
 | Ghost / spam controls, audits | ✓ Multi-signal ghost score with reasons | No measurement (P0-3). User reports: not for now (§8) |
 | Keyword search + filters (date, type, industry, location, salary, experience) | ✓ All of those except industry and radius; on the website as one-click pills with counts (P1-4) | Richer filters (P3-1); radius, industry (P3-4, P3-5) |
 | Ranking by relevance, recency, preferences | Sort by date / pay / YOE | Relevance for keyword search on the website (P1-1) |
-| AI matching | Claude only (optional, local app) | Deferred (§6 "Later") |
+| AI matching | None (it lived in the local app, retired) | Deferred (§6 "Later") |
 | Clean cards that link to the original | ✓ | None |
-| Search without registering | Local app only (install needed) | **Website (P1-1)** |
+| Search without registering | ✓ The website | None |
 | Check application links | Postings come from live feeds | Sitemap pages (P0-2) |
-| Copyright: avoid reproducing descriptions verbatim | ✗ Full descriptions are republished in a public release | Excerpts only (P1-2, decided) |
+| Copyright: avoid reproducing descriptions verbatim | ✓ The website and the public database carry ~600-character excerpts and link to the employer (P1-2) | None |
 | Privacy (GDPR/CCPA) | ✓ No server, no accounts, personal data local | Keep it that way |
 | Source changes break crawlers | Per-board failure counts, auto switch-off, 14-day re-discovery; one GitHub issue lists boards that stopped answering (P2-3 ✓) | None |
 | Metrics / KPIs | ✓ Build health in the manifest, the Actions summary and the website's Sources view (P2-3) | Daily change rate over a week (P0-5) |
-| SEO pages, accounts, monetization, Stripe | n/a (private local app) | Non-goal |
+| SEO pages, accounts, monetization, Stripe | n/a | Non-goal |
 
 ## 5. LLM and ML options (verified 2026-11-07)
 
@@ -256,8 +271,7 @@ Job boards change all day, so freshness is a core feature.
 | **Local AI app on this computer:** Ollama (`127.0.0.1:11434`), LM Studio (`:1234`), llama.cpp server (`:8080`) | Fit verdicts for a shortlist (≤ 50), in the background | Lighthouse looks for these on localhost (OpenAI-compatible API), so there's nothing to sign in to and no key. Loopback only. Suggested models: Qwen3.5 4B (JSON extraction), Phi-4-mini (structured output), SmolLM3 3B. CPU-only laptops take ~30–90 s per job. |
 | **Chrome's built-in model** (Prompt API, Chrome 148+) | Fit check of the job being viewed; plain words → filters | Runs in the page, nothing to install or sign in to. Needs ≥ 22 GB free disk and > 4 GB VRAM, or 16 GB RAM + 4 cores. JSON schema via `responseConstraint`. Handle `downloading`/`unavailable`. |
 | In-browser WebGPU (WebLLM, Transformers.js) | Same, other browsers | Big one-time download; needs a WebGPU GPU. Low priority. |
-| **User's Claude app via MCP** (exists) | Best-quality fit, on the user's own Claude plan, no key | Keep |
-| Claude API key (exists) | Same, batch | Optional, paid by the user. Never required. |
+| User's Claude app via MCP, or a Claude API key | Fit verdicts in the local app | **Removed with the local app (2026-11-12)** |
 
 **Rejected:**
 - For users: any service that needs the user to make a key or an account.
@@ -356,14 +370,40 @@ means. Keep every change incremental and measured (§2 baselines).
      - filter/sort < 50 ms and opening a job < 300 ms on ~255k jobs
      - works on a phone (no horizontal scroll)
      - a Playwright test drives the page against a generated test site
-2. **Excerpts instead of full descriptions** (decided) in the website and the published index.
+2. **✓ Excerpts instead of full descriptions** (decided) in the website and, since 2026-11-12, the
+   public database (it used to carry one full description per role).
    - Use the LLM summary when there is one (P3-1). Otherwise a ~600-character excerpt that skips
      boilerplate ("About us", benefits, EEO), preferring the responsibilities/requirements part.
    - The full text stays in the builder for analysis and search.
    - The job panel says "Read the full posting on <employer>".
-3. **The local app is frozen:** bug fixes only. Its README section points to the website.
-   - Decide at the first major change whether to retire it.
-   - The `job-index` release keeps being published while it exists.
+3. **✓ The local app is retired (2026-11-12, D9).** Gone: its pages, Claude fit, the MCP server,
+   sponsorship imports, the start scripts, three packages (Flask, keyring, openpyxl), and the
+   machinery that kept its copy up to date (weekly base, per-build deltas, a search index and
+   per-board dictionaries inside the file).
+   - **What is published instead:** one plain SQLite file, `jobs.db.xz`, that any tool opens, plus
+     `jobs.csv.gz` and `manifest.json`; all three new every build (README, "Use the data").
+   - **Restarting the builder** when the Actions cache is lost now seeds from `jobs.db.xz`. It
+     carries no descriptions, so each posting takes its text back when its board is next read; until
+     then a role stays as it was published, and the website shows the published excerpt.
+   - **Measured on the last production database (2026-11-13; probes `probe/public-db`):**
+
+     | | Before (local app's index) | After (public database) |
+     |---|---|---|
+     | File | `base-*.db.xz` 489 MB weekly + a delta per build; readable only with Lighthouse's own code | `jobs.db.xz` 116 MB every build (1.0 GB unpacked); plain SQLite |
+     | Contents | every listing, one full description per role, a search index | 528,584 listings (393,167 open, 237,783 roles), 176,020 excerpts, 667,504 events |
+     | Spreadsheet | `jobs.csv.gz` 14 MB | the same, 14.2 MB |
+     | Writing it | ~23 s per build + 6.5 min weekly (≈ 28 min a week) | 100–130 s per build (≈ 1.5–2 h a week of free Actions time) |
+     | A query on `postings` (software roles paying $200k+, newest first) | — | 0.13 s |
+
+   - **Compression:** `xz -6` takes ~98 s for 116 MB; `-3` 45 s / 141 MB; `-2` 24 s / 147 MB; `-1`
+     14 s / 156 MB; zstd -10 11 s / 144 MB. Kept `-6`: the file is the product and is downloaded
+     whole, and the site goes live ~1.5 min later on a 3-hour cycle. Biggest parts unpacked: `jobs`
+     490 MB, `extractions` 172 MB, `excerpts` 98 MB, `events` 75 MB, indexes ~185 MB.
+   - **Restarting the builder from the file:** seeding 23 s; the first post-processing then takes
+     ~9 min (every company, once), and roles stay exactly as published (237,783 before and after).
+     The website written from a seeded builder matches (237,783 roles, 192 MB).
+   - **Upgrading the production database:** the first build drops the retired tables (13 s) and
+     re-processes every company once (22 s).
 4. **✓ Filters redesigned (2026-11-07; on `main` since 2026-11-09).**
    - **What other boards do:** LinkedIn, Indeed and Google Jobs put the same few filters in one row:
      date posted, experience level, workplace (remote/hybrid/on-site), job type, pay, company,
@@ -549,7 +589,8 @@ means. Keep every change incremental and measured (§2 baselines).
 | D3 | Community ghost/closed reports? | **Not for now** |
 | D4 | AI on the user's computer? | **Yes, linked locally** (loopback, no sign-in or key), **but deferred** with AI fit |
 | D5 | Paid/keyed APIs? | **None.** Users never need one; the builder uses a free open model on its own machine (D8) |
-| D6 | Hosting? | **A website on GitHub Pages; users download nothing** (P1, built). The local app is frozen. |
+| D6 | Hosting? | **A website on GitHub Pages; users download nothing** (P1, built). |
+| D9 | The local app? | **Retired** (owner, 2026-11-12). Keep the database public for anyone to use; the two things that matter are building a good database and the website to browse it. |
 | D8 | LLM in the builder? | **A free open model on the build machine** (owner, 2026-11-09; was Claude Haiku with the maintainer's key), for fields the rules couldn't settle |
 | D7 | Priority? | **A functional, effective aggregator first; AI fit later** |
 | — | Update frequency | **As close to constant as polite crawling allows** (P2-1) |

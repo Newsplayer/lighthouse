@@ -80,7 +80,7 @@ def test_country_scope_filters_list_and_ingest_without_closing(tmp_path, monkeyp
     fetch.run(cfgp, path)
     conn = db.connect(path)
     assert db.list_jobs(conn, db.Filters(countries=("US",)))[1] == 2          # London hidden
-    profile.save(conn, {**profile.DEFAULT, "countries": ["US"]})
+    cfgp.write_text(cfgp.read_text().replace("[settings]", '[settings]\ncountries = ["US"]'))   # the builder's scope
     res = fetch.run(cfgp, path)[0]
     assert res["filtered_out"] == 1 and res["closed"] == 0                       # skipped, not "closed"
     assert db.get_job(conn, "greenhouse:acme:2")["active"] == 1
@@ -126,24 +126,6 @@ def test_precompute_parallel_matches_serial(tmp_path, monkeypatch):
     q = "SELECT j.uid, j.minhash, e.data FROM jobs j JOIN extractions e ON e.content_hash = j.content_hash ORDER BY j.uid"
     assert [tuple(r) for r in a.execute(q)] == [tuple(r) for r in b.execute(q)]
     assert fetch.precompute(a) == 0   # nothing left to do
-
-
-def test_marks_column_follows_clusters(tmp_path):
-    conn = db.connect(tmp_path / "m.db")
-    db.upsert_board(conn, "greenhouse", "acme", [job(1), job(2, loc="Denver, CO", body=job(1).content_html)])
-    fetch.postprocess(conn, cfg(tmp_path))
-    db.set_mark(conn, "greenhouse:acme:2", "saved")
-    assert {r["mark"] for r in conn.execute("SELECT mark FROM jobs")} == {2}
-    assert db.list_jobs(conn, db.Filters(view="saved"))[1] == 1
-
-
-def test_counts_are_capped(tmp_path, monkeypatch):
-    conn = db.connect(tmp_path / "c.db")
-    db.upsert_board(conn, "greenhouse", "acme", [job(i, title=f"Role {i}") for i in range(30)])
-    fetch.postprocess(conn, cfg(tmp_path))
-    n = db.count_jobs(conn, db.Filters(), cap=10)
-    assert n == 10 and n.capped
-    assert not db.count_jobs(conn, db.Filters(), cap=100).capped
 
 
 def test_geo_north_america_shapes():
@@ -218,8 +200,6 @@ def test_postings_stored_before_the_country_scope_are_deleted(tmp_path):
     assert n == 2 and keys == {"acme"}
     left = {r[0] for r in conn.execute("SELECT external_id FROM jobs")}
     assert left == {"1", "3", "4", "6"}                                      # unknown places are kept
-    gone = {r[0] for r in conn.execute("SELECT uid FROM tombstones")}        # readers are told to delete them
-    assert gone == {"greenhouse:acme:2", "greenhouse:acme:5"}
     assert conn.execute("SELECT COUNT(*) FROM job_content").fetchone()[0] == 4
     assert db.purge_out_of_scope(conn, ["US", "CA", "MX"])[0] == 0
 

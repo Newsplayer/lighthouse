@@ -1,8 +1,10 @@
-# Lighthouse configuration. Every setting is optional; defaults are shown.
+# Lighthouse builder configuration. Every setting is optional; defaults are shown.
 #
-# Boards: add them here, on the website's Sources page, or with
-#   python -m lighthouse add https://jobs.lever.co/<slug>
-# Supported ATSs and where the slug comes from:
+# Boards come from three places (see MAINTAINING.md):
+#   - config/companies.csv: large employers by careers page; the build finds each one's job board
+#   - config/boards/*.csv: boards checked by hand (columns ats, slug, company, enabled)
+#   - [[boards]] entries at the end of this file
+# Careers systems and where the slug comes from:
 #   greenhouse       job-boards.greenhouse.io/<slug>
 #   lever            jobs.lever.co/<slug>
 #   ashby            jobs.ashbyhq.com/<slug>
@@ -10,44 +12,25 @@
 #   smartrecruiters  jobs.smartrecruiters.com/<CompanyId>   (case-sensitive)
 #   recruitee        <slug>.recruitee.com
 #   workday          <tenant>.wd<N>.myworkdayjobs.com/<Site>   ->  slug = "<tenant>.wd<N>/<Site>"
-# Optional per board: company = "Display Name", sponsor_name = "Legal name used in DOL/USCIS filings"
-#
-# Board lists: every CSV in config/boards/ is loaded too. top-companies.csv ships ~900 checked
-# employer boards (~500 switched on). Turn boards on/off on the website's Sources page.
 
 [settings]
 ghost_age_days = 60              # open longer than this = one ghost signal
-ghost_flag_signals = 2           # flag a possible ghost at this many signals (never on one alone)
-ghost_hide_signals = 3           # hide likely ghosts by default at this many (one click shows them)
+ghost_hide_signals = 3           # the website hides roles with this many signals by default
 repost_gap_days = 7              # near-identical posting this much later = a repost
 request_timeout_seconds = 20
-per_host_requests_per_second = 4 # politeness limit per ATS host, shared by all workers
-fetch_workers = 16               # boards fetched in parallel
-fetch_interval_hours = 6         # automatic refresh while the site is open (0 = off)
-max_detail_calls_per_board = 150 # SmartRecruiters/Workday: description calls per board per run; the rest fill in later
-fetch_minutes = 0                # start no new board after this many minutes (0 = no limit; the index build uses 40)
+per_host_requests_per_second = 4 # politeness limit per careers-system host, shared by all workers
+fetch_workers = 16               # boards fetched in parallel (the build uses at least 48)
+max_detail_calls_per_board = 150 # description calls per board per run; the rest fill in later (the build passes 1000)
+fetch_minutes = 0                # start no new board after this many minutes (0 = no limit; the build uses 40)
 disable_after_failures = 2       # switch off a board that reports "not found" this many runs in a row
 skip_hourly_titles = true        # skip clearly hourly/frontline titles (warehouse, cashier, driver...)
 inactive_content_retention_days = 180
 closed_retention_days = 45       # delete postings closed this long ago (once no listing of the same role is open)
 hold_mass_closures = true        # a board suddenly listing < half its 20+ open roles: close only if the next run agrees
-yoe_slack_years = 2              # "asks 5+ years" still counts as eligible with 3
 
-[claude]
-extract_model = "claude-haiku-5-5"
-fit_model = "claude-sonnet-5-5"
-monthly_cap_usd = 5.0
-batch_threshold = 20             # this many requests or more use the Batch API (half price)
-
-# The shared job index. With repo set, this copy downloads the index that repo's GitHub Action
-# publishes (every 3 hours) and never fetches job boards itself. Leave it empty only on the
-# machine that builds the index. Maintainers: see MAINTAINING.md.
+# The gap fill: a free open model on the build machine reads the postings whose filter fields the rules
+# couldn't settle, and fills only those gaps. No key or account. See MAINTAINING.md.
 [index]
-repo = "Newsplayer/lighthouse"   # the public repo whose GitHub Action publishes the index
-check_every_hours = 1            # look for a newer index this often while the app is open
-stale_after_hours = 30           # warn on the Sources page when the index is older than this
-# Builder only (the GitHub Action): a free open model on the build machine reads the postings whose
-# filter fields the rules couldn't settle, and fills only those gaps. No key or account. See MAINTAINING.md.
 llm_fill = true
 llm_minutes = 60                 # reading time per build; the LIGHTHOUSE_LLM_MINUTES repository variable overrides it
 llm_parallel = 2
