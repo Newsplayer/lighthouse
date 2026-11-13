@@ -149,13 +149,14 @@ Work top to bottom.
     | Step | Time | Mostly |
     |---|---|---|
     | Writing the website, every build | 27 s → 20 s | was: cleaning 630,000 links (now skipped when a link has no query) and reading each role's places three times (now once) |
-    | Full index file for the local app, weekly | about 6.5 min, 489 MB | compressing (xz), search text for every description, re-compressing descriptions |
-    | Index bookkeeping, every build | about 23 s | hashing every posting to find what changed (14 s), the CSV (7 s) |
+    | Full index file for the local app, weekly | about 6.5 min, 489 MB | compressing (xz), search text for every description, re-compressing descriptions (gone since 2026-11-12) |
+    | Index bookkeeping, every build | about 23 s | hashing every posting to find what changed (14 s), the CSV (7 s) (gone since 2026-11-12) |
+    | The public database, every build (since 2026-11-12) | 100–130 s | writing the plain file, excerpts and CSV (~30 s), `xz -6` (~98 s) |
     | Re-processing every company (after an upgrade only) | 47 s | clustering (32 s), ghost scores (8 s) |
     | Build health, closing dates | under 1 s | |
 
     - The website's files are byte-for-byte the same before and after (detail files 154,415,711 bytes).
-    - The two index rows exist for the local app. See P1-3: retiring it would remove them.
+    - The two index rows existed for the local app, and went with it (P1-3).
   - **Scaling notes:**
     - Post-processing now grows with the number of *different* postings per company, not with the
       square of a company's size.
@@ -384,7 +385,25 @@ means. Keep every change incremental and measured (§2 baselines).
    - **Restarting the builder** when the Actions cache is lost now seeds from `jobs.db.xz`. It
      carries no descriptions, so each posting takes its text back when its board is next read; until
      then a role stays as it was published, and the website shows the published excerpt.
-   - Numbers: PUBLIC_DB_NUMBERS
+   - **Measured on the last production database (2026-11-13; probes `probe/public-db`):**
+
+     | | Before (local app's index) | After (public database) |
+     |---|---|---|
+     | File | `base-*.db.xz` 489 MB weekly + a delta per build; readable only with Lighthouse's own code | `jobs.db.xz` 116 MB every build (1.0 GB unpacked); plain SQLite |
+     | Contents | every listing, one full description per role, a search index | 528,584 listings (393,167 open, 237,783 roles), 176,020 excerpts, 667,504 events |
+     | Spreadsheet | `jobs.csv.gz` 14 MB | the same, 14.2 MB |
+     | Writing it | ~23 s per build + 6.5 min weekly (≈ 28 min a week) | 100–130 s per build (≈ 1.5–2 h a week of free Actions time) |
+     | A query on `postings` (software roles paying $200k+, newest first) | — | 0.13 s |
+
+   - **Compression:** `xz -6` takes ~98 s for 116 MB; `-3` 45 s / 141 MB; `-2` 24 s / 147 MB; `-1`
+     14 s / 156 MB; zstd -10 11 s / 144 MB. Kept `-6`: the file is the product and is downloaded
+     whole, and the site goes live ~1.5 min later on a 3-hour cycle. Biggest parts unpacked: `jobs`
+     490 MB, `extractions` 172 MB, `excerpts` 98 MB, `events` 75 MB, indexes ~185 MB.
+   - **Restarting the builder from the file:** seeding 23 s; the first post-processing then takes
+     ~9 min (every company, once), and roles stay exactly as published (237,783 before and after).
+     The website written from a seeded builder matches (237,783 roles, 192 MB).
+   - **Upgrading the production database:** the first build drops the retired tables (13 s) and
+     re-processes every company once (22 s).
 4. **✓ Filters redesigned (2026-11-07; on `main` since 2026-11-09).**
    - **What other boards do:** LinkedIn, Indeed and Google Jobs put the same few filters in one row:
      date posted, experience level, workplace (remote/hybrid/on-site), job type, pay, company,
