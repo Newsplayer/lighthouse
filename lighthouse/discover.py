@@ -530,8 +530,8 @@ class Discoverer:
 
 def discovery_client(per_host_rps: float = 4.0):
     """Careers sites vary: a short timeout and one retry keep a dead site from costing minutes."""
-    from .net import Client, open_network
-    return open_network(Client(timeout=10, per_host_rps=per_host_rps, retries=1, deadline=45, max_bytes=60_000_000))
+    from .net import Client
+    return Client(timeout=10, per_host_rps=per_host_rps, retries=1, deadline=45, max_bytes=60_000_000)
 
 
 # Systems where a careers page's link often goes to a partner's or portfolio company's board: a

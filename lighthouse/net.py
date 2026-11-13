@@ -1,7 +1,5 @@
-"""Outbound HTTP. Every request Lighthouse makes goes through here.
+"""Outbound HTTP. Every request the builder makes goes through here, as BUILDER_AGENT, over https only.
 
-- Host allowlist: only ATS APIs and api.anthropic.com. Anything else raises
-  BlockedHost, unless the user explicitly asked for that one URL (careers-page probe).
 - Per-host politeness: a minimum gap between requests to the same host, shared by
   all worker threads, so fetching many boards in parallel never hammers one API.
 - Hosts that share a rate limit share one budget: every company's Workday site on one data center
@@ -9,12 +7,11 @@
   A 429 slows that host or group down for every thread (and honours Retry-After); it speeds back
   up gradually as requests succeed.
 - Retries with backoff on 429/5xx.
-- A per-host counter feeds the Network page.
+- A whole response is bounded in time and size, so one slow or endless answer can't hold a worker.
 """
 
 from __future__ import annotations
 
-import fnmatch
 import threading
 import time
 from collections import Counter
@@ -26,32 +23,8 @@ from urllib3.util.retry import Retry
 
 from . import __version__
 
-ALLOWED_HOSTS = (
-    "boards-api.greenhouse.io",
-    "api.lever.co",
-    "api.ashbyhq.com",
-    "apply.workable.com",
-    "api.smartrecruiters.com",
-    "*.recruitee.com",
-    "*.myworkdayjobs.com",
-    "api.anthropic.com",
-    "github.com",                  # the shared job index (release files of the [index] repo)
-    "*.githubusercontent.com",     # where GitHub serves those files from
-)
-
-USER_AGENT = f"Lighthouse/{__version__} (personal job aggregator; local)"
-# The job-index builder (GitHub Action) reads employers' own careers sites, so it may reach any
-# https host. It says who it is and where to find the project.
+# The builder reads employers' own careers sites. It says who it is and where to find the project.
 BUILDER_AGENT = f"Lighthouse-index/{__version__} (+https://github.com/Newsplayer/lighthouse)"
-
-
-class BlockedHost(Exception):
-    pass
-
-
-def host_allowed(host: str) -> bool:
-    host = (host or "").lower()
-    return any(fnmatch.fnmatch(host, pat) for pat in ALLOWED_HOSTS)
 
 
 # Host suffixes whose sites share one rate limit per data center (the label before the suffix:
@@ -132,18 +105,13 @@ class Client:
     max_bytes=). Streamed requests (stream=True) are left to the caller."""
 
     def __init__(self, timeout: float = 20, per_host_rps: float = 4.0, retries: int = 3,
-                 deadline: float | None = None, max_bytes: int | None = None):
+                 deadline: float | None = 300, max_bytes: int | None = 300_000_000):
         self.timeout = timeout
         self.deadline = deadline
         self.max_bytes = max_bytes
         self.retries = retries
         self.throttle = _HostThrottle(1.0 / per_host_rps if per_host_rps > 0 else 0)
-        self.counts: Counter = Counter()
-        self.blocked: Counter = Counter()
         self._local = threading.local()
-        self._count_lock = threading.Lock()
-        self.open = False          # builder only: any https host (see open_network)
-        self.agent = USER_AGENT
 
     def _session(self) -> requests.Session:
         s = getattr(self._local, "s", None)
@@ -152,22 +120,18 @@ class Client:
             retry = Retry(total=self.retries, backoff_factor=1.0, status_forcelist=(500, 502, 503, 504),
                           allowed_methods=("GET", "POST"), respect_retry_after_header=True)
             s.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=8))
-            s.headers["User-Agent"] = self.agent
+            s.headers["User-Agent"] = BUILDER_AGENT
             self._local.s = s
         return s
 
-    def request(self, method: str, url: str, *, allow_once: bool = False, **kw) -> requests.Response:
+    def request(self, method: str, url: str, **kw) -> requests.Response:
         parts = urlsplit(url)
         host = (parts.hostname or "").lower()
-        if parts.scheme != "https" or not (allow_once or self.open or host_allowed(host)):
-            with self._count_lock:
-                self.blocked[host] += 1
-            raise BlockedHost(f"{host} is not on Lighthouse's network allowlist")
+        if parts.scheme != "https":
+            raise requests.exceptions.InvalidSchema(f"only https addresses are fetched: {url[:200]}")
         kw.setdefault("timeout", self.timeout)
         for attempt in range(RATE_LIMIT_TRIES):
             self.throttle.wait(host)
-            with self._count_lock:
-                self.counts[host] += 1
             r = self._send(method, url, host, dict(kw))
             if r.status_code != 429:
                 self.throttle.ok(host)
@@ -211,21 +175,9 @@ _default_lock = threading.Lock()
 
 
 def default_client(timeout: float = 20, per_host_rps: float = 4.0) -> Client:
-    """Process-wide client so the throttle and counters are shared."""
+    """Process-wide client, so every board shares one throttle."""
     global _default
     with _default_lock:
         if _default is None:
             _default = Client(timeout=timeout, per_host_rps=per_host_rps)
         return _default
-
-
-def open_network(client: Client | None = None) -> Client:
-    """Builder only (the job-index Action): let the client reach any https host, as the
-    BUILDER_AGENT. Readers never call this; their allowlist stays as above."""
-    client = client or default_client()
-    client.open = True
-    client.deadline = client.deadline or 300           # no single response may take more than 5 minutes
-    client.max_bytes = client.max_bytes or 300_000_000
-    client.agent = BUILDER_AGENT
-    client._local = threading.local()   # new sessions pick up the agent
-    return client

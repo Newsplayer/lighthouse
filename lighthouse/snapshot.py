@@ -88,7 +88,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     conn = db.connect(db_path)
     cfg = config_mod.load(config_path)
     s = cfg.settings
-    client = net.open_network(net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second))
+    client = net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second)
     boards = list(cfg.boards)
     if discover_companies:
         boards += discover_boards(conn, config_path.parent, client, full=full, listed=cfg.boards)

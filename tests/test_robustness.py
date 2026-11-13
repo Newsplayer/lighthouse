@@ -66,7 +66,7 @@ def trickle(kbytes):
 
 
 def test_whole_response_is_bounded(monkeypatch):
-    c = net.open_network(net.Client(timeout=5, per_host_rps=0, max_bytes=50_000))
+    c = net.Client(timeout=5, per_host_rps=0, max_bytes=50_000)
     sess = c._session()
     monkeypatch.setattr(sess, "request", lambda *a, **k: trickle(100))
     with pytest.raises(net.ResponseLimit):                 # larger than allowed
@@ -94,7 +94,7 @@ def test_workday_sites_share_one_adaptive_budget_per_data_center(monkeypatch):
         t.ok("acme.wd5.myworkdayjobs.com")
     assert t._interval["wd5.myworkdayjobs.com"] == pytest.approx(4 / 3 * 0.8)   # and eases back
 
-    c = net.open_network(net.Client(timeout=5, per_host_rps=0))
+    c = net.Client(timeout=5, per_host_rps=0)
     answers = iter([429, 429, 200])
     pauses = []
 
