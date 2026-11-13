@@ -29,7 +29,7 @@ def _events(conn, eid):
 
 def test_a_posting_past_its_closing_date_is_closed(tmp_path):
     conn = db.connect(tmp_path / "b.db")
-    db.add_board(conn, "greenhouse", "acme")
+    db.sync_config_boards(conn, [{"ats": "greenhouse", "slug": "acme"}])
     jobs = [replace(job(1), expires_at=FUTURE), job(2), job(3)]
     db.upsert_board(conn, "greenhouse", "acme", jobs)
     assert _state(conn, 1) == (1, 1) and _state(conn, 2) == (1, 0)
@@ -77,7 +77,7 @@ def test_jsonld_reader_reads_valid_through_and_a_lapsed_page_closes(tmp_path):
         return r
     slug = "https://www.example.com/sitemap.xml"
     conn = db.connect(tmp_path / "b.db")
-    db.add_board(conn, "jsonld", slug)
+    db.sync_config_boards(conn, [{"ats": "jsonld", "slug": slug}])
     first = SOURCES["jsonld"](client=FakeClient(routes({1: FUTURE.date().isoformat(), 2: "2026-10-02"}))).fetch(slug)
     assert [j.expires_at is not None for j in first] == [True, False]
     db.upsert_board(conn, "jsonld", slug, first)

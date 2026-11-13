@@ -150,7 +150,7 @@ def posting(eid, city="Austin, TX", board="acme", title="Data Analyst", body=BOD
 
 def test_paged_listings_close_a_posting_after_two_misses(tmp_path):
     conn = db.connect(tmp_path / "c.db")
-    db.add_board(conn, "workday", "acme")
+    db.sync_config_boards(conn, [{"ats": "workday", "slug": "acme"}])
     jobs = [posting(i, title=f"Analyst {i}", body=f"<p>Role {i}</p>") for i in range(5)]
     db.upsert_board(conn, "workday", "acme", jobs, close_after=2)
     seen = lambda: conn.execute("SELECT last_seen FROM jobs WHERE external_id='4'").fetchone()[0]

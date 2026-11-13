@@ -276,7 +276,7 @@ export function eligibility(store, i, p, yoeSlack = 2) {
 // ---------------------------------------------------------------- filters
 
 // Lists hold choices, any of which matches (several levels, several places...). The rest have
-// the same meaning as the local app's (lighthouse/db.py _where).
+// the same meaning as the Python reference's (lighthouse/db.py _where).
 export const LISTS = ["where", "companies", "fns", "levels", "emps", "workplaces", "skills", "benefits"];
 export const DEFAULT_FILTERS = {
   q: "", where: [], remoteToo: false, companies: [], fns: [], levels: [], emps: [], workplaces: [],

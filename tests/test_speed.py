@@ -128,15 +128,6 @@ def test_precompute_parallel_matches_serial(tmp_path, monkeypatch):
     assert fetch.precompute(a) == 0   # nothing left to do
 
 
-def test_counts_are_capped(tmp_path, monkeypatch):
-    conn = db.connect(tmp_path / "c.db")
-    db.upsert_board(conn, "greenhouse", "acme", [job(i, title=f"Role {i}") for i in range(30)])
-    fetch.postprocess(conn, cfg(tmp_path))
-    n = db.count_jobs(conn, db.Filters(), cap=10)
-    assert n == 10 and n.capped
-    assert not db.count_jobs(conn, db.Filters(), cap=100).capped
-
-
 def test_geo_north_america_shapes():
     """Real location strings from the large-employer build, for a US/Canada/Mexico scope."""
     cases = {"Tampa Florida United States": {"US"}, "Erie PA, 16502, 232 West 25th St": {"US"},

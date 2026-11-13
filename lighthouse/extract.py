@@ -6,8 +6,7 @@ Tiers, all cached by description hash so identical text is never processed twice
   gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
              rules can't settle it (unresolved()), a free open model on the build machine reads it once
              and fills that gap; categorize.py places titles the rules can't. Rule answers are never
-             overwritten; filled fields carry "by": "model" or "titles" ("claude" in older indexes).
-  claude   — optional, your own key (claude_api.py); replaces the rules result when present
+             overwritten; filled fields carry "by": "model" or "titles" ("claude" in data from 2026-11).
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
 matches the value is None ("unknown"), never a guess.
@@ -304,7 +303,7 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
 
 # ---------------------------------------------------------------- what the rules couldn't settle
 # A field is "unresolved" when the posting clearly talks about it (the gate matches) but the rules found
-# no answer. Only those postings go to Claude, so a posting that simply never mentions sponsorship
+# no answer. Only those postings go to the gap fill, so a posting that simply never mentions sponsorship
 # (most of them) costs nothing. Each gate is behind a cheap substring check.
 _GATES: dict[str, tuple[tuple[str, ...], re.Pattern]] = {
     "salary": (("$", "£", "€", "usd", "eur", "gbp", "cad", "salary", "compensation", "pay", "wage"), re.compile(
@@ -385,18 +384,15 @@ def merge_llm(data: dict, llm: dict | None) -> dict:
 
 
 def llm_for(conn, hashes) -> dict[str, dict]:
-    """Claude gap-fill readings (builder / local database only) for these description hashes."""
+    """The gap fill's readings for these description hashes."""
     hashes = [h for h in hashes if h]
     if not hashes:
         return {}
-    try:
-        rows = []
-        for i in range(0, len(hashes), 500):
-            part = hashes[i:i + 500]
-            rows += conn.execute(f"SELECT content_hash, data FROM llm_extractions WHERE content_hash IN "
-                                 f"({','.join('?' * len(part))})", part).fetchall()
-    except Exception:   # a reader's database has no such table
-        return {}
+    rows = []
+    for i in range(0, len(hashes), 500):
+        part = hashes[i:i + 500]
+        rows += conn.execute(f"SELECT content_hash, data FROM llm_extractions WHERE content_hash IN "
+                             f"({','.join('?' * len(part))})", part).fetchall()
     return {r[0]: json.loads(r[1]) for r in rows if r[1]}
 
 

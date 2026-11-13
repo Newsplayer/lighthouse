@@ -199,15 +199,6 @@ def sync_config_boards(conn, boards: list[dict]) -> None:
              for b in boards])
 
 
-def add_board(conn, ats: str, slug: str, company: str | None = None, origin: str = "ui") -> bool:
-    cur = conn.execute(
-        """INSERT INTO boards(ats, slug, company, origin, added_at) VALUES (?,?,?,?,?)
-           ON CONFLICT(ats, slug) DO UPDATE SET enabled=1""",
-        (ats, slug, company, origin, utcnow()))
-    conn.commit()
-    return cur.rowcount > 0
-
-
 def list_boards(conn, enabled_only: bool = False) -> list[sqlite3.Row]:
     return conn.execute(f"SELECT * FROM boards {'WHERE enabled = 1' if enabled_only else ''} "
                         "ORDER BY enabled DESC, COALESCE(company, slug) COLLATE NOCASE").fetchall()
@@ -520,12 +511,6 @@ class Filters:
     language: str = ""           # "" | english (no other language required) | a language, e.g. "german"
 
 
-class Count(int):
-    """A result count that may be capped (shown as "5,000+")."""
-    capped = False
-
-
-COUNT_CAP = 5000
 _DEGREE_RANK = {"bachelors": 1, "masters": 2, "phd": 3}
 _DEGREE_SQL = "CASE j.degree WHEN 'bachelors' THEN 1 WHEN 'masters' THEN 2 WHEN 'phd' THEN 3 ELSE 0 END"
 _LIST_COLS ="""j.uid, j.title, j.company, j.company_key, j.location, j.cluster_locations, j.cluster_count,
@@ -613,18 +598,9 @@ def _where(conn, f: Filters) -> tuple[list[str], list]:
     return where, args
 
 
-def count_jobs(conn, f: Filters, cap: int = COUNT_CAP) -> Count:
-    where, args = _where(conn, f)
-    n = conn.execute(f"SELECT COUNT(*) FROM (SELECT 1 FROM jobs j WHERE {' AND '.join(where)} LIMIT ?)",
-                     args + [cap + 1]).fetchone()[0]
-    out = Count(min(n, cap))
-    out.capped = n > cap
-    return out
-
-
-def list_jobs(conn, f: Filters, page: int = 1, per_page: int = 50, with_count: bool = True):
-    """One row per near-duplicate cluster (the canonical active posting), filtered and paginated,
-    with each row's eligibility for f.profile. Counts are capped at COUNT_CAP."""
+def list_jobs(conn, f: Filters, page: int = 1, per_page: int = 50) -> tuple[list[dict], int]:
+    """(one page of rows, how many match): one row per near-duplicate cluster (the canonical active
+    posting), filtered, with each row's eligibility for f.profile."""
     where, args = _where(conn, f)
     order = {
         "salary": "j.pay_max_annual IS NULL, j.pay_max_annual DESC",
@@ -635,8 +611,7 @@ def list_jobs(conn, f: Filters, page: int = 1, per_page: int = 50, with_count: b
         args + [per_page, max(0, page - 1) * per_page])]
     from .profile import annotate
     annotate(rows, f.profile or {}, f.yoe_slack)
-    total = count_jobs(conn, f) if with_count else Count(len(rows))
-    return rows, total
+    return rows, conn.execute(f"SELECT COUNT(*) FROM jobs j WHERE {' AND '.join(where)}", args).fetchone()[0]
 
 
 def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe_slack: int = 2) -> dict | None:
@@ -667,34 +642,3 @@ def content(conn, uid: str) -> str:
                             ORDER BY k.content_hash = j.content_hash DESC, k.is_canonical DESC LIMIT 1""",
                          (uid,)).fetchone()
     return unpack(r[0]) if r else ""
-
-
-def cluster_members(conn, cluster_id: str) -> list[sqlite3.Row]:
-    return conn.execute(
-        "SELECT uid, source, source_board, url, location, active, first_seen, posted_at, closed_at "
-        "FROM jobs WHERE cluster_id=? ORDER BY COALESCE(posted_at, first_seen)", (cluster_id,)).fetchall()
-
-
-def events_for(conn, uids: list[str]) -> list[sqlite3.Row]:
-    if not uids:
-        return []
-    return conn.execute(f"SELECT uid, kind, at FROM events WHERE uid IN ({','.join('?' * len(uids))}) "
-                        "ORDER BY at", uids).fetchall()
-
-
-def companies(conn: sqlite3.Connection) -> list[str]:
-    return [r[0] for r in conn.execute(
-        "SELECT DISTINCT company FROM jobs WHERE active=1 AND is_canonical=1 ORDER BY company")]
-
-
-def sources_in_use(conn) -> list[str]:
-    return [r[0] for r in conn.execute("SELECT DISTINCT source FROM jobs WHERE active=1 ORDER BY source")]
-
-
-def stats(conn: sqlite3.Connection, ghost_hide_at: int = 3) -> dict:
-    r = conn.execute("""SELECT COUNT(*) AS total,
-                               SUM(is_canonical) AS unique_roles,
-                               SUM(CASE WHEN is_canonical=1 AND ghost_score >= ? THEN 1 ELSE 0 END) AS hidden_ghosts,
-                               MAX(last_seen) AS last_fetch
-                        FROM jobs WHERE active=1""", (ghost_hide_at,)).fetchone()
-    return dict(r)

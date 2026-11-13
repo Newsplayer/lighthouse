@@ -97,21 +97,6 @@ def html_to_text(html: str) -> str:
     return "\n".join(text).strip()
 
 
-# Exactly the tags sanitize_html emits. After removing them, a clean document has no '<' or '>' left
-# (text is escaped), so one regex pass proves a description is safe without re-parsing it.
-_SAFE_TAG = re.compile(
-    r"</?(?:" + "|".join(sorted(ALLOWED_TAGS - {"a"})) + r")>"
-    r'|<a href="(?:https?://|mailto:)[^"<>]*" target="_blank" rel="noopener noreferrer">|<a>|</a>')
-
-
-def ensure_safe(html: str) -> str:
-    """For descriptions that come from someone else's database (the shared job index): pass
-    through if already in sanitized form, otherwise sanitize again."""
-    html = html or ""
-    rest = _SAFE_TAG.sub("", html)
-    return html if "<" not in rest and ">" not in rest else sanitize_html(html)
-
-
 _TRACKING = ("utm_", "gh_src", "gh_jid", "lever-source", "source", "ref", "src", "trk", "mode")
 
 

@@ -335,7 +335,7 @@ def test_builder_reprocesses_everything_once_after_an_upgrade(tmp_path, monkeypa
 
 def test_a_sudden_mass_disappearance_waits_for_confirmation(tmp_path):
     conn = db.connect(tmp_path / "m.db")
-    db.add_board(conn, "greenhouse", "acme")
+    db.sync_config_boards(conn, [{"ats": "greenhouse", "slug": "acme"}])
     many = [posting(i, f"Analyst {i}", "Work.") for i in range(30)]
     db.upsert_board(conn, "greenhouse", "acme", many)
     glitch = db.upsert_board(conn, "greenhouse", "acme", many[:3])        # API hiccup: 3 of 30 listed

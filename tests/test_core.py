@@ -72,7 +72,7 @@ def test_cluster_multilocation_and_repost(tmp_path):
     assert r9["cluster_id"] == "greenhouse:acme:1"          # joined the original cluster
     assert r9["effective_first_seen"].startswith("2026-03-01")  # inherits the original date
     assert r9["repost_count"] == 1
-    kinds = [e["kind"] for e in db.events_for(conn, ["greenhouse:acme:1"])]
+    kinds = [r[0] for r in conn.execute("SELECT kind FROM events WHERE uid = 'greenhouse:acme:1' ORDER BY id")]
     assert kinds == ["new", "closed"]
 
 
