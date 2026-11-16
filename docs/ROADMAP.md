@@ -57,9 +57,9 @@ Work top to bottom.
 
 - **Pipeline:**
   - Discovery reads 700 companies' careers pages and finds the system behind each one.
-  - Readers cover Workday, Oracle, SuccessFactors (RSS sitemap), Phenom, iCIMS/Jibe, Eightfold,
-    Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Amazon, and any site with
-    schema.org JobPosting pages.
+  - Readers cover Workday, Oracle, SuccessFactors (RSS sitemap or job pages), Phenom, iCIMS (Jibe
+    sites and classic portals), Eightfold, Greenhouse, Lever, Ashby, SmartRecruiters, Workable,
+    Recruitee, Amazon, and any site with schema.org JobPosting pages (JSON-LD or microdata).
   - There are also 926 direct boards in `config/boards/top-companies.csv`.
   - Each posting is de-duplicated (exact fingerprint plus MinHash near-duplicates), analysed by
     free rules (pay, YOE, visa, clearance, degree, function, seniority, employment type, skills),

@@ -186,7 +186,8 @@ fetches it. The result is on the website under **Sources** and in `manifest.json
 - **Wrong board, or a site discovery can't read:** fill in `ats` and `slug` to pin the board by hand
   (slug formats are in `config/sources.toml`). Oracle: `<api host>/<site>`. SuccessFactors / Jibe:
   the careers host. Phenom: `<host>/<country>/<lang>`. Eightfold: `<host>|<domain>`. Structured-data
-  sites: the sitemap URL.
+  sites: the sitemap URL. iCIMS portals are structured-data sites:
+  `jsonld,https://careers-<name>.icims.com/sitemap.xml`.
 - **Remove a company:** set `enabled` to `no`.
 - **Statuses:**
   - `unsupported`: the site uses a system Lighthouse can't read yet (Taleo, Avature, BrassRing...;
@@ -197,6 +198,13 @@ fetches it. The result is on the website under **Sources** and in `manifest.json
 
 Careers pages are only read for links and structured data. Every page fetch respects robots.txt
 and identifies itself as `Lighthouse-index/<version> (+https://github.com/Newsplayer/lighthouse)`.
+robots.txt is read the standard way (RFC 9309): the most specific rule wins, so a site that shuts `/`
+but opens `/careers` is read on `/careers` only.
+
+On a structured-data site, a job page read once and left out (outside the countries covered, an hourly
+title, or no job data on it) is remembered with its sitemap date. It isn't read again until that date
+changes, and it's forgotten when it leaves the sitemap. Big sites list mostly roles in other countries,
+so without this every run would re-read thousands of pages.
 
 ### Add a board (or act on a "Board suggestion" issue)
 

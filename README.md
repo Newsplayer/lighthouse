@@ -93,7 +93,7 @@ A GitHub Action in this repo (the **builder**) does all the work, every 3 hours:
 Supported careers systems: Workday, Oracle Recruiting, SAP SuccessFactors, Phenom, iCIMS (Jibe
 sites), Eightfold, Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Recruitee and Amazon. Also
 any careers site whose job pages carry standard schema.org JobPosting data (the format Google for
-Jobs reads). On the website, **Sources** lists every company in the companies list: whether it's
+Jobs reads), which also covers SuccessFactors career sites and iCIMS portals. On the website, **Sources** lists every company in the companies list: whether it's
 covered, which system it uses, how many open roles it has, and, if it isn't covered, why. Clearly
 hourly titles (warehouse associate, cashier, delivery driver...) are left out.
 
