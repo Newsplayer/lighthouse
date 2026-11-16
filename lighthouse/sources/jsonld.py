@@ -1,10 +1,16 @@
 """Any careers site that publishes a sitemap of job pages carrying schema.org JobPosting data.
 
 That structured data is what Google for Jobs reads, so most large employers' own careers sites
-(TalentBrew/Radancy sites, DirectEmployers ".jobs" sites, many custom ones) carry it. This reader
-takes the job links from the sitemap and reads each page's JobPosting block: title, description,
-dates, locations, pay. Nothing else on the page is used. A page whose validThrough date has passed is
-a closed posting, even while the sitemap still lists it.
+(TalentBrew/Radancy sites, DirectEmployers ".jobs" sites, SAP SuccessFactors career sites, iCIMS
+portals, many custom ones) carry it. This reader takes the job links from the sitemap and reads each
+page's JobPosting: title, description, dates, locations, pay. Nothing else on the page is used. A page
+whose validThrough date has passed is a closed posting, even while the sitemap still lists it.
+
+The data comes as a JSON-LD block or, on SuccessFactors career sites, as schema.org microdata (itemprop
+attributes in the page's markup). iCIMS portals carry it in the frame version of each job page.
+
+A page read once and found outside the builder's countries (or without job data) is remembered with
+its sitemap date, so it isn't read again until it changes: big sites list mostly roles elsewhere.
 
     slug = "<sitemap URL>"       e.g. "https://www.careers.ford.com/en/sitemap.xml"
 
@@ -27,10 +33,12 @@ from ..models import Job, parse_dt, parse_expiry
 from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source, interval, num
 
-JOB_URL = re.compile(r"/(?:job|jobs|details|position|positions|vacancy|vacancies|opening|careers/job)s?/[^/?#]+|/job/?$", re.I)
+JOB_URL = re.compile(r"/(?:job|jobs|job_details|details|position|positions|vacancy|vacancies|opening|careers/job)s?/[^/?#]+|/job/?$",
+                     re.I)
 _LOC = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.I | re.S)
 _LASTMOD = re.compile(r"<url>\s*<loc>\s*(.*?)\s*</loc>.*?(?:<lastmod>\s*(.*?)\s*</lastmod>)?.*?</url>", re.I | re.S)
-_LD = re.compile(r"<script[^>]+application/ld\+json[^>]*>(.*?)</script>", re.I | re.S)
+# Some sites escape the "+" in the script type (ld&#x2B;json): Caterpillar, Cognizant.
+_LD = re.compile(r"<script[^>]+application/ld(?:\+|&#x2B;|&#43;)json[^>]*>(.*?)</script>", re.I | re.S)
 _LOCALE = re.compile(r"^[a-z]{2}(?:[-_][a-z]{2})?$", re.I)
 MAX_SITEMAPS = 20
 BOARD_SECONDS = 20 * 60          # a slow site can't hold the build: the rest waits for the next run
@@ -57,7 +65,7 @@ def _priority(url: str) -> int:
 
 
 def job_posting(page: str) -> dict | None:
-    """The first schema.org JobPosting object in a page's JSON-LD blocks."""
+    """The page's schema.org JobPosting: its first JSON-LD one, else one read from microdata."""
     for block in _LD.findall(page or ""):
         try:
             data = json.loads(html.unescape(block.strip()) if block.lstrip().startswith("&") else block.strip(), strict=False)
@@ -72,7 +80,71 @@ def job_posting(page: str) -> dict | None:
             if t == "JobPosting" or (isinstance(t, list) and "JobPosting" in t):
                 return d
             stack += d.get("@graph") or []
-    return None
+    return _microdata(page or "")
+
+
+_ITEMPROP = re.compile(r"<(\w+)\b([^>]*?)\bitemprop=[\"'](\w+)[\"']([^>]*)>", re.I)
+_CONTENT = re.compile(r"\bcontent=[\"']([^\"']*)[\"']", re.I)
+_PLACE_PARTS = ("addressLocality", "addressRegion", "addressCountry", "streetAddress")
+
+
+def _inner(page: str, tag: str, start: int) -> str:
+    """The markup inside the element whose start tag ends at `start`, nested same-name tags included."""
+    depth, pat = 1, re.compile(rf"<(/?){tag}\b[^>]*>", re.I)
+    for m in pat.finditer(page, start):
+        depth += -1 if m.group(1) else 1
+        if not depth:
+            return page[start:m.start()]
+    return page[start:start + 200_000]
+
+
+def _date(value: str) -> str:
+    """SuccessFactors writes 'Fri Oct 30 02:00:00 UTC 2026'."""
+    from datetime import datetime, timezone
+    try:
+        return datetime.strptime(value.replace(" UTC ", " "), "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc).isoformat()
+    except ValueError:
+        return value
+
+
+def _microdata(page: str) -> dict | None:
+    """A JobPosting written as schema.org microdata, shaped like the JSON-LD one. A posting that names no
+    place is left out: without one it can't be kept to the builder's countries (Wipro's pages)."""
+    if "schema.org/JobPosting" not in page:
+        return None
+    out: dict = {"@type": "JobPosting"}
+    places: list[dict] = []
+    for m in _ITEMPROP.finditer(page):
+        tag, prop = m.group(1).lower(), m.group(3)
+        content = _CONTENT.search(m.group(2) + m.group(4))
+        if prop in ("address", "jobLocation"):
+            if not places or any(places[-1].values()):
+                places.append({})
+        elif prop in _PLACE_PARTS and content:
+            if not places:
+                places.append({})
+            places[-1][prop] = html.unescape(content.group(1)).strip()
+        elif prop in ("datePosted", "validThrough") and content:
+            out.setdefault(prop, _date(content.group(1).strip()))
+        elif prop in ("hiringOrganization", "employmentType") and content:
+            out.setdefault(prop, html.unescape(content.group(1)).strip())
+        elif prop == "title" and "title" not in out:
+            out["title"] = re.sub(r"<[^>]+>", "", content.group(1) if content else _inner(page, tag, m.end()))
+        elif prop == "description" and tag != "meta":
+            text = _inner(page, tag, m.end())
+            if len(text) > len(out.get("description", "")):     # Wipro: a short blurb first, then the posting
+                out["description"] = text
+    addrs = []
+    for p in places:
+        if p.get("addressLocality") or p.get("addressRegion") or p.get("addressCountry"):
+            addrs.append({k: p[k] for k in _PLACE_PARTS[:3] if p.get(k)})
+        elif p.get("streetAddress"):
+            addrs.append({"addressLocality": p["streetAddress"]})     # 'Dublin 2, IE', 'Mexico City, MX, 6600'
+    if not out.get("title") or not addrs:
+        return None
+    out["title"] = html.unescape(out["title"]).strip()
+    out["jobLocation"] = [{"@type": "Place", "address": a} for a in addrs]
+    return out
 
 
 def _text(v) -> str:
@@ -155,6 +227,8 @@ class JsonLdSource(Source):
                 if JOB_URL.search(urlsplit(u).path):
                     out[u] = m.group(2) or ""
         urls = english_only(list(out))
+        if len(urls) > 20 and len({out[u] for u in urls}) == 1:
+            out = dict.fromkeys(out, "")    # every page stamped with the same date (the day the sitemap was made)
         return [(u, out[u]) for u in urls]
 
     def peek(self, slug):
@@ -196,12 +270,16 @@ class JsonLdSource(Source):
             for (uid, ext, url, marker), page in zip(fetchable, pool.map(read, fetchable)):
                 jp = job_posting(page) if page else None
                 if not jp:
+                    if isinstance(page, str):
+                        self.skipped[uid] = marker   # read, but no job data on it (a listing page): not again
                     if uid in known:
                         self.dropped.add(uid)   # not read this time (or no data today): keep what we have
                     continue
                 j = self.from_posting(slug, board_host, ext, url, marker, jp)
                 if j and self.wanted(j):
                     jobs.append(j)
+                else:
+                    self.skipped[uid] = marker       # elsewhere, or an hourly title: not read again until it changes
         if not jobs and not self.dropped and len(todo) <= len(fetchable):
             raise BoardNotFound("job pages carry no JobPosting data")
         return jobs
@@ -210,6 +288,8 @@ class JsonLdSource(Source):
         try:
             if not self._allowed(url):
                 return None
+            if (urlsplit(url).hostname or "").endswith(".icims.com") and "in_iframe=" not in url:
+                url += ("&" if "?" in url else "?") + "in_iframe=1"     # the full page is a frame around this one
             r = self.client.get(url, headers={"Accept": "text/html"}, deadline=30, max_bytes=5_000_000)
             return r.text if r.status_code == 200 else None
         except Exception:

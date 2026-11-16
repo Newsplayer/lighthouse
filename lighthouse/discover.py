@@ -31,7 +31,6 @@ from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 from .models import utcnow
 
@@ -256,12 +255,55 @@ def platforms_in(text: str) -> list[str]:
     return out
 
 
+class RobotRules:
+    """One robots.txt, read the way RFC 9309 says: the group naming our product token (else "*"), and
+    within it the longest matching rule wins, Allow on a tie. Python's own parser takes the first matching
+    rule instead, so "Disallow: /" followed by "Allow: /careers" (Eightfold's sites: Microsoft, Qualcomm,
+    PayPal) shut out pages the site lets every crawler read."""
+
+    def __init__(self, text: str, agent: str = ""):
+        token = agent.split("/")[0].strip().lower()
+        groups: list[tuple[list[str], list[tuple[bool, str]]]] = []
+        self.sitemaps: list[str] = []
+        in_agents = False
+        for line in (text or "").splitlines():
+            key, _, value = line.split("#", 1)[0].partition(":")
+            key, value = key.strip().lower(), value.strip()
+            if key == "sitemap" and value:
+                self.sitemaps.append(value)
+            elif key == "user-agent":
+                if not in_agents:
+                    groups.append(([], []))
+                groups[-1][0].append(value.lower())
+                in_agents = True
+            elif key in ("allow", "disallow") and groups:
+                in_agents = False
+                if value:      # an empty Disallow allows everything: no rule
+                    groups[-1][1].append((key == "allow", value))
+        mine = [r for agents, rules in groups for r in rules if any(a != "*" and a in token for a in agents)]
+        self.rules = mine or [r for agents, rules in groups for r in rules if "*" in agents]
+
+    @staticmethod
+    def _pattern(path: str) -> re.Pattern:
+        end = path.endswith("$")
+        return re.compile(re.escape(path.rstrip("$")).replace(r"\*", ".*") + ("$" if end else ""))
+
+    def allowed(self, url: str) -> bool:
+        parts = urlsplit(url)
+        path = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+        best, verdict = -1, True
+        for allow, rule in self.rules:
+            if self._pattern(rule).match(path) and (len(rule) > best or (len(rule) == best and allow)):
+                best, verdict = len(rule), allow
+        return verdict
+
+
 class Robots:
     """robots.txt per host, fetched once through the shared client (so the per-host limit applies)."""
 
     def __init__(self, client, agent: str):
         self.client, self.agent = client, agent
-        self._cache: dict[str, RobotFileParser | None] = {}
+        self._cache: dict[str, RobotRules | None] = {}
         self._lock = threading.Lock()
         self.sitemaps: dict[str, list[str]] = {}
 
@@ -276,18 +318,16 @@ class Robots:
                 r = self.client.get(host + "/robots.txt", timeout=10, allow_redirects=True, deadline=20,
                                     max_bytes=2_000_000)
                 if r.status_code == 200 and "text/html" not in r.headers.get("content-type", ""):
-                    rp = RobotFileParser()
-                    rp.parse(r.text.splitlines())
-                    self.sitemaps[host] = rp.site_maps() or []
+                    rp = RobotRules(r.text, self.agent)
+                    self.sitemaps[host] = rp.sitemaps
                 elif r.status_code in (401, 403):
-                    rp = RobotFileParser()
-                    rp.disallow_all = True
+                    rp = RobotRules("User-agent: *\nDisallow: /")
             except Exception:
                 rp = None   # unreachable robots.txt: treated as no rules
             with self._lock:
                 self._cache[host] = rp
         rp = self._cache.get(host)
-        return True if rp is None else rp.can_fetch(self.agent, url)
+        return True if rp is None else rp.allowed(url)
 
 
 def load_companies(config_dir: Path | str) -> list[dict]:

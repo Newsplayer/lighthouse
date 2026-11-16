@@ -4,10 +4,10 @@ import json
 
 from conftest import FakeClient, FakeResp
 
-from lighthouse import discover
+from lighthouse import db, discover
 from lighthouse.sources import SOURCES, detect
 from lighthouse.sources import eightfold, oracle, phenom
-from lighthouse.sources.jsonld import english_only, job_posting
+from lighthouse.sources.jsonld import JOB_URL, english_only, job_posting
 
 
 def test_oracle_list_and_detail():
@@ -146,6 +146,69 @@ def test_jsonld_sitemap_reader_reads_only_new_or_changed_pages():
     assert english_only(["https://a.com/en/jobs/1", "https://a.com/de-de/jobs/1", "https://a.com/jobs/2"]) == \
         ["https://a.com/en/jobs/1", "https://a.com/jobs/2"]
     assert job_posting('<script type="application/ld+json">{"@graph":[{"@type":"JobPosting","title":"X"}]}</script>')["title"] == "X"
+    # Caterpillar and Cognizant escape the "+" in the script type; Cognizant's pages sit under /job_details/
+    assert job_posting('<script type="application/ld&#x2B;json">{"@type":"JobPosting","title":"Y"}</script>')["title"] == "Y"
+    assert JOB_URL.search("/global/en/profile/job_details/00068101")
+    # a sitemap that stamps every page with the day it was made says nothing about which pages changed
+    same = "".join(f"<url><loc>https://www.example.com/jobs/{i}/a/</loc><lastmod>2026-11-16</lastmod></url>" for i in range(25))
+    c = FakeClient({"sitemap.xml": FakeResp({}, text=f"<urlset>{same}</urlset>")})
+    assert {m for _, m in SOURCES["jsonld"](client=c).job_urls("https://www.example.com/sitemap.xml")} == {""}
+
+
+def test_jsonld_reader_reads_successfactors_microdata_and_icims_frames():
+    page = ('<div itemscope itemtype="http://schema.org/JobPosting"><h1><span itemprop="title">Data &amp; Analytics Lead</span></h1>'
+            '<meta itemprop="datePosted" content="Fri Oct 30 02:00:00 UTC 2026">'
+            '<meta itemprop="hiringOrganization" content="Acme">'
+            '<div itemprop="jobLocation" itemscope><div itemprop="address" itemscope>'
+            '<meta itemprop="addressLocality" content="Austin"><meta itemprop="addressRegion" content="TX">'
+            '<meta itemprop="addressCountry" content="US"></div></div>'
+            '<div itemprop="jobLocation" itemscope><meta itemprop="streetAddress" content="Toronto, ON, CA"></div>'
+            '<span itemprop="description">Join us.</span>'
+            '<div itemprop="description"><div><p>Build <b>reports</b>.</p></div><p>SQL</p></div><footer>Cookies</footer></div>')
+    sm = '<urlset><url><loc>https://careers.acme.com/job/Austin-Data-Lead-TX/1234567/</loc></url></urlset>'
+    c = FakeClient({"sitemap.xml": FakeResp({}, text=sm), "/robots.txt": FakeResp({}, 404, text=""),
+                    "/job/Austin": FakeResp({}, text=page)})
+    [j] = SOURCES["jsonld"](client=c).fetch("https://careers.acme.com/sitemap.xml")
+    assert (j.title, j.company, j.locations) == ("Data & Analytics Lead", "Acme", ["Austin, TX, US", "Toronto, ON, CA"])
+    assert j.posted_at.isoformat().startswith("2026-10-30") and "reports" in j.content_html and "SQL" in j.content_html
+    assert "Join us" not in j.content_html and "Cookies" not in j.content_html
+    assert job_posting(page.replace('itemprop="jobLocation"', "x").replace("streetAddress", "x").replace("addressLocality", "x")
+                       .replace("addressRegion", "x").replace("addressCountry", "x")) is None     # no place: can't be kept to our countries
+
+    # iCIMS: the job data is only in the frame version of each page
+    sm = '<urlset><url><loc>https://careers-acme.icims.com/jobs/4321/data-analyst/job</loc></url></urlset>'
+    c = FakeClient({"sitemap.xml": FakeResp({}, text=sm), "/robots.txt": FakeResp({}, 404, text=""),
+                    "job?in_iframe=1": FakeResp({}, text=_ld("Data Analyst"))})
+    [j] = SOURCES["jsonld"](client=c).fetch("https://careers-acme.icims.com/sitemap.xml")
+    assert j.title == "Data Analyst" and j.url == "https://careers-acme.icims.com/jobs/4321/data-analyst/job"
+
+
+def test_jsonld_pages_left_out_are_read_once_until_they_change(tmp_path):
+    slug = "https://www.example.com/sitemap.xml"
+    paris = {"jobLocation": [{"@type": "Place", "address": {"addressLocality": "Paris", "addressCountry": "France"}}]}
+    conn = db.connect(tmp_path / "b.db")
+    db.sync_config_boards(conn, [{"ats": "jsonld", "slug": slug}])
+
+    def run(dates):
+        urls = "".join(f"<url><loc>https://www.example.com/jobs/r-{i}/x/</loc><lastmod>{d}</lastmod></url>" for i, d in dates.items())
+        c = FakeClient({"sitemap.xml": FakeResp({}, text=f"<urlset>{urls}</urlset>"), "/robots.txt": FakeResp({}, 404, text=""),
+                        "/jobs/r-1/": FakeResp({}, text=_ld("Analyst")), "/jobs/r-2/": FakeResp({}, text=_ld("Analyst", paris)),
+                        "/jobs/r-3/": FakeResp({}, text="<html>All jobs</html>")})
+        src = SOURCES["jsonld"](client=c)
+        src.countries = frozenset({"US"})
+        jobs = src.fetch(slug, known=db.known_postings(conn, "jsonld", slug))
+        db.upsert_board(conn, "jsonld", slug, jobs, keep_alive=src.dropped)
+        db.remember_skipped(conn, "jsonld", slug, src.skipped, src.dropped)
+        return sorted(u.split("/")[4] for u in c.calls if "/jobs/" in u)
+
+    day1 = {1: "2026-11-01", 2: "2026-11-01", 3: "2026-11-01"}
+    assert run(day1) == ["r-1", "r-2", "r-3"]
+    assert run(day1) == []                                                    # abroad and listing pages aren't read again
+    assert run({**day1, 2: "2026-11-02"}) == ["r-2"]                          # until they change
+    assert run({**day1, 2: "2026-11-02"}) == []
+    run({1: "2026-11-01"})                                                    # gone from the sitemap: forgotten
+    assert conn.execute("SELECT COUNT(*) FROM skipped").fetchone()[0] == 0
+    assert [r[0] for r in conn.execute("SELECT title FROM jobs WHERE active = 1")] == ["Analyst"]
 
 
 def test_discovery_finds_oracle_on_a_vanity_domain_and_checks_it():

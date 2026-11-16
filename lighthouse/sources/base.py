@@ -116,6 +116,7 @@ class Source:
         self.prev_body_hash: str | None = None   # last run's response hash (single-request boards)
         self.body_hash: str | None = None
         self.dropped: set[str] = set()           # uids skipped by title/country filters this run
+        self.skipped: dict[str, str] = {}        # pages read and left out: uid -> marker (db.remember_skipped)
         self.gate: RunGate | None = None         # the run's time limit and blocked groups (fetch.py)
         self.slug: str = ""
 

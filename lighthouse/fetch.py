@@ -147,6 +147,9 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
                     touched |= counts.pop("touched")
                     counts.pop("changed")
                     db.board_result(conn, b["ats"], b["slug"], count=len(kept), body_hash=src.body_hash)
+                    skipped = getattr(src, "skipped", {})
+                    if skipped or b["ats"] == "jsonld":
+                        db.remember_skipped(conn, b["ats"], b["slug"], skipped, src.dropped)
                     log.info("%s/%s: %s", b["ats"], b["slug"], counts)
                     results.append({"source": b["ats"], "board": b["slug"], **counts})
     for group, why in gate.blocked.items():
