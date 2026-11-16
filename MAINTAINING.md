@@ -204,7 +204,9 @@ but opens `/careers` is read on `/careers` only.
 On a structured-data site, a job page read once and left out (outside the countries covered, an hourly
 title, or no job data on it) is remembered with its sitemap date. It isn't read again until that date
 changes, and it's forgotten when it leaves the sitemap. Big sites list mostly roles in other countries,
-so without this every run would re-read thousands of pages.
+so without this every run would re-read thousands of pages. When a page answers with a bot check or a block
+(403, 429, or the 202 that AWS bot protection sends), no more pages are read from that site in this
+run; what was read is kept and the rest waits for the next run.
 
 ### Add a board (or act on a "Board suggestion" issue)
 

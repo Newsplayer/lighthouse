@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 
 from ..models import Job, parse_dt, parse_expiry
 from ..sanitize import sanitize_html
-from .base import BoardNotFound, Source, interval, num
+from .base import BLOCK_STATUS, Blocked, BoardNotFound, Source, interval, num
 
 JOB_URL = re.compile(r"/(?:job|jobs|job_details|details|position|positions|vacancy|vacancies|opening|careers/job)s?/[^/?#]+|/job/?$",
                      re.I)
@@ -196,6 +196,7 @@ class JsonLdSource(Source):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._robots = None
+        self.pushed_back = ""    # a page answered with a bot check or block: no more pages this run
 
     def _allowed(self, url: str) -> bool:
         if self._robots is None:
@@ -264,7 +265,8 @@ class JsonLdSource(Source):
         stop_at = time.monotonic() + BOARD_SECONDS
 
         def read(t):
-            return self._page(t[2]) if time.monotonic() < stop_at and not self.out_of_time() else False
+            return self._page(t[2]) if time.monotonic() < stop_at and not self.out_of_time() and not self.pushed_back \
+                else False
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             for (uid, ext, url, marker), page in zip(fetchable, pool.map(read, fetchable)):
@@ -281,6 +283,8 @@ class JsonLdSource(Source):
                 else:
                     self.skipped[uid] = marker       # elsewhere, or an hourly title: not read again until it changes
         if not jobs and not self.dropped and len(todo) <= len(fetchable):
+            if self.pushed_back:
+                raise Blocked(f"careers site: job pages answered {self.pushed_back}")
             raise BoardNotFound("job pages carry no JobPosting data")
         return jobs
 
@@ -291,6 +295,8 @@ class JsonLdSource(Source):
             if (urlsplit(url).hostname or "").endswith(".icims.com") and "in_iframe=" not in url:
                 url += ("&" if "?" in url else "?") + "in_iframe=1"     # the full page is a frame around this one
             r = self.client.get(url, headers={"Accept": "text/html"}, deadline=30, max_bytes=5_000_000)
+            if r.status_code in BLOCK_STATUS or r.status_code == 202:   # 202: an AWS WAF bot check (WTW, Etsy)
+                self.pushed_back = f"HTTP {r.status_code}"
             return r.text if r.status_code == 200 else None
         except Exception:
             return None

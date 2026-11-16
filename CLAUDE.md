@@ -93,7 +93,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (126 pass) and `ruff check .` before every commit
+- **Tests:** run `python -m pytest -q` (127 pass) and `ruff check .` before every commit
   (`pip install -r requirements-dev.txt`). `tests.yml` runs both on every pull request and push to
   `main`.
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).

@@ -2,10 +2,12 @@
 (captured from each system's public endpoints in November 2026)."""
 import json
 
+import pytest
 from conftest import FakeClient, FakeResp
 
 from lighthouse import db, discover
 from lighthouse.sources import SOURCES, detect
+from lighthouse.sources.base import Blocked
 from lighthouse.sources import eightfold, oracle, phenom
 from lighthouse.sources.jsonld import JOB_URL, english_only, job_posting
 
@@ -181,6 +183,19 @@ def test_jsonld_reader_reads_successfactors_microdata_and_icims_frames():
                     "job?in_iframe=1": FakeResp({}, text=_ld("Data Analyst"))})
     [j] = SOURCES["jsonld"](client=c).fetch("https://careers-acme.icims.com/sitemap.xml")
     assert j.title == "Data Analyst" and j.url == "https://careers-acme.icims.com/jobs/4321/data-analyst/job"
+
+
+def test_jsonld_reader_stops_when_the_site_pushes_back():
+    # WTW and Etsy answer 202 with an AWS bot check after a few pages: no more pages this run
+    sm = "<urlset>" + "".join(f"<url><loc>https://careers.acme.com/jobs/r-{i}/a</loc></url>" for i in range(3)) + "</urlset>"
+    routes = {"sitemap.xml": FakeResp({}, text=sm), "/robots.txt": FakeResp({}, 404, text=""),
+              "/jobs/": FakeResp({}, 202, text="<html>challenge</html>")}
+    slug = "https://careers.acme.com/sitemap.xml"
+    with pytest.raises(Blocked, match="202"):       # pushed back, not "no job data": never switched off for it
+        SOURCES["jsonld"](client=FakeClient(routes)).fetch(slug)
+    src = SOURCES["jsonld"](client=FakeClient(routes))
+    known = {f"jsonld:{slug}:jobs/r-0/a": ("x", True)}
+    assert src.fetch(slug, known=known) == [] and src.dropped == set(known) and not src.skipped   # kept as they are
 
 
 def test_jsonld_pages_left_out_are_read_once_until_they_change(tmp_path):
