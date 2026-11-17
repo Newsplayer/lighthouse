@@ -10,8 +10,8 @@ No other branches are kept.
 
 **Update (2026-11-11):** P0-2 (closing dates), the P2-2 ordering and per-system fill rate, P2-3 (build
 health) and P2-5 (board name check) are done, and builds run every 3 hours (P2-1, first step). Next in
-order: the eval set (P0-3), hourly runs (P2-1: the gap fill's answers must be saved apart from the
-database first), and more careers systems (P2-4). Those need real sites or hand labels, so they start
+order: the eval set (P0-3), hourly runs (P2-1: done 2026-11-17, every build bounded to the hour and
+the gap fill in its own workflow), and more careers systems (P2-4). Those need real sites or hand labels, so they start
 with a network probe.
 
 **Update (2026-11-12):** the local app is retired (P1-3, D9). Lighthouse is now two things: a public
@@ -454,11 +454,30 @@ means. Keep every change incremental and measured (§2 baselines).
      - Cost: twice the single requests to the five one-request systems; the site's change file is
        replaced up to 8 times a day instead of 4, so a tab left open all day downloads it twice as
        often (each download is the same size).
-     - **Why not hourly yet:** the gap fill runs for an hour after each build and saves the database
-       when it ends. A build that starts before then begins from the database without those answers,
-       and they are lost. Hourly builds need the fill's answers saved apart from the database first.
-   - **Builder:** run hourly (`cron: "17 * * * *"`); `concurrency` already keeps runs from
-     overlapping. Each run redeploys the site.
+   - **✓ Hourly builds (2026-11-17).** Two builds had timed out at 100 minutes and lost their work: the
+     40-minute fetch limit only stopped new boards, so Workday listings behind a data center that had
+     slowed us down kept paging for 80 more minutes.
+     - Every build now ends within the hour. Limits count from the start of the build: companies are
+       looked up for at most 10 minutes, no board starts after 35, and every request stops at 45.
+       Boards stopped part way keep their postings and go first next run.
+     - Workday boards have 16 workers of their own. Sharing the 48, the stalest boards (Workday's)
+       took every worker and no other board was reached. A Workday listing whose data center pushed
+       back now stops too.
+     - The gap fill runs in its own workflow (`fill.yml`) alongside builds and hands its answers to
+       the next build in a small file, so it never holds a build up or writes over a newer database.
+     - Measured on the last production database (probe `probe/run-site`), against run 43:
+
+       | | Run 43 | This change |
+       |---|---|---|
+       | Build step | 58 min (two later runs: cut off at 100) | 47.4 min, bounded |
+       | Boards read / unchanged / failed | 403 / 130 / 56 | 462 / 75 / 23 |
+       | Workday boards left for the next run (pushed back) | 271 | 312 |
+
+     - Cost: one-request boards get a request an hour instead of every 3 hours (listings that take
+       many requests keep their pace). The site's change file is replaced up to 24 times a day, so a
+       tab left open all day downloads it up to 3 times as often (each download the same size).
+     - Next: Workday's busiest data centers push back within about 7 minutes every run, and ~300
+       Workday boards wait each time. Measure a lower per-data-center rate (`SHARED_LIMITS`).
    - **Cheap check first, every run:**
      - Single-request boards (Greenhouse, Lever, Ashby...) already skip unchanged responses by
        hash.

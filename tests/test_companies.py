@@ -50,6 +50,10 @@ def test_discovery_reports_unsupported_systems_and_respects_robots():
     r = discover.Discoverer(site, "test").resolve({"company": "Big", "domain": "big.com",
                                                    "careers_url": "https://careers.big.com"})
     assert r.status == "unsupported" and r.detail == "uses taleo"
+    site.calls.clear()
+    late = discover.run([{"company": "Big", "domain": "big.com", "careers_url": "https://careers.big.com"}], site,
+                        "test", stop_at=0)                     # past discovery's time limit: looked up next run
+    assert late == [] and site.calls == []
     blocked = Site({"https://jobs.shy.com/": "<a href='https://jobs.lever.co/shy'>x</a>"},
                    robots={"jobs.shy.com": "User-agent: *\nDisallow: /"})
     r = discover.Discoverer(blocked, "test").resolve({"company": "Shy", "domain": "", "careers_url": "https://jobs.shy.com/"})

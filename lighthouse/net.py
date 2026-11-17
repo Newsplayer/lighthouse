@@ -8,6 +8,8 @@
   up gradually as requests succeed.
 - Retries with backoff on 429/5xx.
 - A whole response is bounded in time and size, so one slow or endless answer can't hold a worker.
+- A run's hard time limit (Client.stop_at): no request starts after it, not even one already waiting
+  for its turn behind a slowed-down host. fetch.py puts the boards still running back for next run.
 """
 
 from __future__ import annotations
@@ -35,6 +37,11 @@ MAX_INTERVAL = 4.0          # slowest pace after repeated 429s: one request per 
 RATE_LIMIT_TRIES = 6
 
 
+class PutBack(Exception):
+    """No more requests for this board this run: the run's hard time limit passed, or the board's group
+    pushed back. fetch.py puts the board back: its postings stay as they are, and it goes first next run."""
+
+
 class _HostThrottle:
     """Minimum interval between request starts per host (or per shared group), across threads.
     Adaptive: slow_down() on a 429 doubles the interval and pauses the group; ok() eases it back."""
@@ -54,12 +61,14 @@ class _HostThrottle:
                 return (f"{dc}.{suffix}" if dc else suffix), 1.0 / rps
         return host, self.min_interval
 
-    def wait(self, host: str) -> None:
+    def wait(self, host: str, stop_at: float | None = None) -> None:
         key, base = self.key(host)
         with self._lock:
             interval = self._interval.get(key, base)
             now = time.monotonic()
             start = max(now, self._next.get(key, 0.0))
+            if stop_at is not None and start > stop_at:
+                raise PutBack(f"{host}: the run's time is up")
             if interval <= 0 and start <= now:
                 return
             self._next[key] = start + max(interval, 0)
@@ -111,6 +120,7 @@ class Client:
         self.max_bytes = max_bytes
         self.retries = retries
         self.throttle = _HostThrottle(1.0 / per_host_rps if per_host_rps > 0 else 0)
+        self.stop_at: float | None = None   # time.monotonic(): no request starts after this (fetch.run sets it)
         self._local = threading.local()
 
     def _session(self) -> requests.Session:
@@ -131,7 +141,7 @@ class Client:
             raise requests.exceptions.InvalidSchema(f"only https addresses are fetched: {url[:200]}")
         kw.setdefault("timeout", self.timeout)
         for attempt in range(RATE_LIMIT_TRIES):
-            self.throttle.wait(host)
+            self.throttle.wait(host, self.stop_at)
             r = self._send(method, url, host, dict(kw))
             if r.status_code != 429:
                 self.throttle.ok(host)

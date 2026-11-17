@@ -25,6 +25,7 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from html import unescape
@@ -583,16 +584,24 @@ _CONFIRM = {"oracle", "successfactors", "phenom", "jibe", "eightfold", "amazon",
 
 
 def run(companies: list[dict], client, agent: str, workers: int = 16, only: str | None = None,
-        on_result=None) -> list[Result]:
+        on_result=None, stop_at: float | None = None) -> list[Result]:
+    """Resolve each company. stop_at (time.monotonic()): companies not started by then are left out of
+    the result (they stay due and are looked up next run)."""
     d = Discoverer(client, agent)
     todo = [c for c in companies if not only or only.lower() in c["company"].lower()]
     out: list[Result] = []
+
+    def resolve(c):
+        return None if stop_at is not None and time.monotonic() > stop_at else d.resolve(c)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(d.resolve, c): c for c in todo}
+        futs = {pool.submit(resolve, c): c for c in todo}
         for fut in as_completed(futs):
             c = futs[fut]
             try:
                 r = fut.result()
+                if r is None:
+                    continue
             except Exception as exc:   # one bad site never stops the run
                 r = Result(company=c["company"], group=c.get("group", ""), careers_url=c.get("careers_url", ""),
                            status="error", detail=f"{type(exc).__name__}: {exc}"[:300], checked_at=utcnow())

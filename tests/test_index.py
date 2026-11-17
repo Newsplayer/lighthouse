@@ -128,6 +128,26 @@ def test_fetch_reads_every_listed_board(tmp_path, monkeypatch):
     assert sorted(fetched) == ["acme", "beta"]
 
 
+def test_slow_workday_boards_never_hold_up_the_other_boards(tmp_path, monkeypatch):
+    import threading
+    cfgp = tmp_path / "s.toml"
+    cfgp.write_text('[[boards]]\nats = "workday"\nslug = "acme.wd5/Ext"\n\n'          # first in line
+                    '[[boards]]\nats = "greenhouse"\nslug = "acme"\n\n[[boards]]\nats = "greenhouse"\nslug = "beta"\n')
+    others_read, waited = threading.Event(), []
+    stub = type("S", (), {"wanted": lambda s, j: True, "dropped": set(), "body_hash": "x"})
+
+    def fake(board, known, client, *a, **k):
+        if board["ats"] == "workday":                     # a big listing on a data center that slowed us down
+            waited.append(others_read.wait(5))
+            return [], stub()
+        if board["slug"] == "beta":
+            others_read.set()
+        return [job(9, board=board["slug"])], stub()
+    monkeypatch.setattr(fetch, "_fetch_board", fake)
+    fetch.run(cfgp, tmp_path / "b.db", overrides={"fetch_workers": 1})
+    assert waited == [True]                               # the others were read while it was still going
+
+
 def test_builder_can_restart_from_the_published_database(tmp_path):
     b = Builder(tmp_path)
     same = "<p>Run the regional warehouse network and its carriers. " + " ".join(f"duty{k}" for k in range(80)) + "</p>"

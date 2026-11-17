@@ -27,7 +27,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
   - Every user feature must work with nothing set up.
   - **The builder fills filter fields with a free, open model on the build machine** (no key, no
     account): llama.cpp + Qwen3.5 2B via `llm_fill.py`, and job categories from similar titles via
-    `categorize.py` (model2vec), in the workflow's *fill* job after publishing. Both are fetched by
+    `categorize.py` (model2vec), in the *Gap fill* workflow (`fill.yml`), alongside builds. Both are fetched by
     `scripts/get_llm.sh` (pinned versions; measure a new model with `scripts/eval_fill.py` first).
     - Only the sentences around an unsettled field are shown, and an answer is kept only when its
       quote is really in the text.
@@ -74,7 +74,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Builder gap fill: open model on the build machine / its server / job categories from similar titles | `lighthouse/llm_fill.py` / `lighthouse/local_llm.py` / `lighthouse/categorize.py` |
 | Getting the models (pinned) / measuring them on real data | `scripts/get_llm.sh` / `scripts/eval_fill.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
-| Workflows: builder, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
+| Workflows: builder (hourly), gap fill, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `fill.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
 | Page-only deploy (a push to `site/` goes live on the last build's data, no build) | `.github/workflows/website.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 
@@ -93,7 +93,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (127 pass) and `ruff check .` before every commit
+- **Tests:** run `python -m pytest -q` (130 pass) and `ruff check .` before every commit
   (`pip install -r requirements-dev.txt`). `tests.yml` runs both on every pull request and push to
   `main`.
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).

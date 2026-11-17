@@ -269,13 +269,23 @@ def test_builder_settings_fit_the_hour(tmp_path, monkeypatch):
         seen.update(overrides or {})
         return []
     monkeypatch.setattr(fetch, "run", fake_run)
-    monkeypatch.setattr(snapshot, "discover_boards", lambda *a, **k: [])
+    clock, looked_up = [1000.0], []
+
+    def discover(*a, minutes=None, **k):   # looking companies up takes 12 minutes of the build
+        looked_up.append(minutes)
+        clock[0] += 12 * 60
+        return []
+    monkeypatch.setattr(snapshot, "discover_boards", discover)
+    monkeypatch.setattr(snapshot.time, "monotonic", lambda: clock[0])
     cfgp = tmp_path / "s.toml"
     cfgp.write_text("[settings]\n")
     snapshot.build(tmp_path / "dist", countries=["us", " ca "], config_path=cfgp, db_path=tmp_path / "b.db", llm=False)
-    assert seen["fetch_minutes"] == snapshot.FETCH_MINUTES and seen["fetch_workers"] >= 48
+    assert looked_up == [snapshot.DISCOVER_MINUTES]
+    assert seen["fetch_minutes"] == snapshot.FETCH_MINUTES - 12 and seen["fetch_workers"] >= 48   # counted from the start
     assert seen["countries"] == ("US", "CA")
     assert seen["workday_refresh_hours"] == snapshot.WORKDAY_REFRESH_HOURS
     assert seen["paged_refresh_hours"] == snapshot.PAGED_REFRESH_HOURS
-    snapshot.build(tmp_path / "dist", config_path=cfgp, db_path=tmp_path / "b.db", llm=False, fetch_minutes=5)
-    assert seen["fetch_minutes"] == 5
+    snapshot.build(tmp_path / "dist", config_path=cfgp, db_path=tmp_path / "b.db", llm=False, fetch_minutes=15)
+    assert seen["fetch_minutes"] == 5                                     # never less than 5 minutes of fetching
+    snapshot.build(tmp_path / "dist", config_path=cfgp, db_path=tmp_path / "b.db", llm=False, fetch_minutes=0)
+    assert seen["fetch_minutes"] == 0                                     # 0: no limit

@@ -1,18 +1,19 @@
 # Builds the job database, publishes it on this repo's "job-index" release, and deploys the website.
 # This is the only thing that writes job data.
-# Each run (about an hour): find job boards for config/companies.csv (careers pages, re-checked when
-# due), fetch boards for 40 minutes (stalest first; what isn't reached goes first next run), clean,
-# de-duplicate and analyse, then publish the public database (jobs.db.xz), the same roles as a
-# spreadsheet (jobs.csv.gz), and the website.
-# Setup and upkeep: MAINTAINING.md.
+# Each run (under an hour, so it can run every hour): merge the newest answers from the gap fill
+# (fill.yml), find job boards for config/companies.csv (careers pages, re-checked when due; at most 10
+# minutes), fetch boards until 35 minutes into the build (stalest first; every request stops 10
+# minutes later, and what isn't reached goes first next run), clean, de-duplicate and analyse, then
+# publish the public database (jobs.db.xz), the same roles as a spreadsheet (jobs.csv.gz), and the
+# website. Setup and upkeep: MAINTAINING.md.
 name: Job index
 
 on:
   schedule:
-    # Every 3 hours (UTC). Boards that answer in one request are read every run; listings that take many
-    # requests keep their old pace (four times a day; Workday twice): fetch.not_due. The gap fill below
-    # takes up to two hours after a build starts, so a shorter interval would start before it has saved.
-    - cron: "17 */3 * * *"
+    # Every hour. Boards that answer in one request are read every run (one request each); listings that
+    # take many requests keep their own pace (every 5 hours; Workday every 11): fetch.not_due. The gap
+    # fill runs in its own workflow (fill.yml), so it never holds a build up.
+    - cron: "17 * * * *"
   workflow_dispatch:                # "Run workflow" button on the Actions tab
     inputs:
       full:
@@ -41,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       site: ${{ steps.upload.outcome }}
-    timeout-minutes: 100             # a build takes about an hour; this only catches a stuck one
+    timeout-minutes: 80              # a build stops itself within an hour; this only catches a stuck one
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -75,11 +76,25 @@ jobs:
             echo "Seeded from the published database"
           else
             rm -f data/builder.db
-            echo "First build: finding careers pages and fetching for 40 minutes; later runs fill in the rest"
+            echo "First build: finding careers pages and fetching for half an hour; later runs fill in the rest"
           fi
 
-      # Rules only here: the open model reads afterwards (the fill job below), so it never delays new
-      # postings. What it fills goes out with the next build.
+      # The newest answers from the gap fill (fill.yml), which runs alongside builds and hands them over
+      # in a small file. Merging is safe to repeat; a failure here never stops the build.
+      - name: Restore the gap fill's answers
+        id: answers
+        uses: actions/cache/restore@v4
+        with:
+          path: data/answers.json.gz
+          key: lighthouse-fill-${{ github.run_id }}     # never there: the newest lighthouse-fill-* is used
+          restore-keys: lighthouse-fill-
+
+      - name: Merge the gap fill's answers
+        if: steps.answers.outputs.cache-matched-key != ''
+        continue-on-error: true
+        run: python -m lighthouse index merge data/answers.json.gz
+
+      # Rules only here: the open model reads in fill.yml, so it never delays new postings.
       - name: Build
         run: >
           python -m lighthouse index build --out dist --no-llm
@@ -161,67 +176,6 @@ jobs:
         with:
           path: data/builder.db
           key: lighthouse-builder-${{ github.run_id }}
-
-  # The free gap fill, after the index and the site are out (it runs alongside the deploy): a free, open
-  # model on this machine reads the newest postings the rules couldn't settle, for LIGHTHOUSE_LLM_MINUTES
-  # (variable, default 60), and titles no rule places get a category from similar titles. No key, no
-  # account. The builder database is saved again with the answers, and the next build publishes them.
-  # If anything here fails, nothing is lost: the next build starts from the build job's database.
-  fill:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 110
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install
-        run: pip install -r requirements.txt -r requirements-builder.txt
-
-      # llama.cpp's server, the open model and the title model: fetched once by scripts/get_llm.sh
-      # (about 10 minutes) and kept in the cache, keyed by that script's pinned versions.
-      - name: Restore the open model
-        id: llm
-        uses: actions/cache/restore@v4
-        with:
-          path: llm
-          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
-
-      - name: Get the open model (first run, or after scripts/get_llm.sh changed)
-        if: steps.llm.outputs.cache-hit != 'true'
-        run: bash scripts/get_llm.sh
-
-      - name: Keep the open model in the cache
-        if: steps.llm.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: llm
-          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
-
-      - name: Restore builder database
-        uses: actions/cache/restore@v4
-        with:
-          path: data/builder.db
-          key: lighthouse-builder-${{ github.run_id }}
-          fail-on-cache-miss: true
-
-      - name: Read what the rules couldn't
-        env:
-          LIGHTHOUSE_LLM_SERVER: llm/bin/llama-server
-          LIGHTHOUSE_LLM_MODEL: llm/model.gguf
-          LIGHTHOUSE_EMBED_MODEL: llm/embed
-        run: python -m lighthouse index fill --minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES || 60 }}"
-
-      # Newer than the build job's entry, so the next build starts from this one.
-      - name: Save builder database
-        uses: actions/cache/save@v4
-        with:
-          path: data/builder.db
-          key: lighthouse-builder-${{ github.run_id }}-filled
 
   # Settings -> Pages -> Source: GitHub Actions (once). Each build replaces the whole site.
   deploy-site:
