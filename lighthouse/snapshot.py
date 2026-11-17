@@ -1,20 +1,13 @@
-"""The builder: what the Job index GitHub Action runs, and the public files it publishes.
+"""The build (what the Job index Action runs) and the public files: jobs.db.xz, jobs.csv.gz and
+manifest.json on the `job-index` release. README.md describes them for their users.
 
-Each build finds every listed company's job board (discover.py), fetches every board, de-duplicates
-and analyses the postings (fetch.py), and writes three files for the `job-index` release:
+The public database is written by whitelist (write_public_db), and a test checks it. Anything added
+to it must be job data: never descriptions in full, and nothing about the people using the site.
+Other people's queries read its tables and the `postings` view, so a renamed or dropped column breaks
+them; say so in the PR and update the README.
 
-    jobs.db.xz       the public database: a plain SQLite file anyone can open (DB Browser for SQLite,
-                     Datasette, sqlite3, pandas). Every posting with its filter fields and history, an
-                     excerpt of each open role, the boards and the companies list. The `postings` view
-                     is one row per open role with a column per filter.
-    jobs.csv.gz      that view as a spreadsheet (without the excerpts)
-    manifest.json    what was built, and how the build went
-
-The website (site.py) is written from the same builder database. Full descriptions stay in the
-builder: the public files carry excerpts, and each posting links to the employer's own page.
-
-The public database is written by whitelist (job, board, rule-extraction, history and coverage rows
-only). It is also what a new builder starts from when the Action's cache is lost (seed_builder).
+The same file is what a new builder starts from when the Actions cache is lost (seed_builder), so a
+column the builder needs back has to be in it.
 """
 
 from __future__ import annotations
@@ -54,7 +47,7 @@ DISCOVER_MINUTES = 10              # a full re-check (--full) gets three times t
 FETCH_MINUTES = 35
 FETCH_WORKERS = 48                 # boards in parallel: most wait on their host's rate limit, not on CPU
 WORKDAY_REFRESH_HOURS = 11         # each Workday board twice a day (see Settings.workday_refresh_hours)
-PAGED_REFRESH_HOURS = 5            # other many-request listings four times a day, as before builds ran every 3 hours
+PAGED_REFRESH_HOURS = 5            # other many-request listings: hourly builds mustn't mean hourly requests to them
 
 
 def _now() -> str:
@@ -156,7 +149,7 @@ def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
 
 def save_answers(conn, path: Path | str) -> int:
     """The gap fill's answers, for the next build to merge (merge_answers): every model reading kept, and
-    each job category guessed from similar titles. The fill job saves this small file, never the builder
+    each job category guessed from similar titles. The Gap fill workflow saves this small file, never the builder
     database, so it runs alongside builds without writing over a newer one. Returns rows written."""
     from .categorize import BY
     n = 0

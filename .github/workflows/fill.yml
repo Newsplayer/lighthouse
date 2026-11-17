@@ -1,11 +1,11 @@
-# The free gap fill: a free, open model on this machine reads the newest postings the rules couldn't
-# settle, for LIGHTHOUSE_LLM_MINUTES (variable, default 60), and titles no rule places get a category
-# from similar titles. No key, no account.
+# The gap fill. A free, open model on this machine reads the newest postings whose fields the rules
+# couldn't settle (for LIGHTHOUSE_LLM_MINUTES, default 60), and titles no rule places get a category
+# from similar titles. No key or account.
 #
-# It runs after each Job index build and alongside the next ones, so it never holds a build up. It
-# starts from the newest builder database and hands its answers to the next build in a small file
-# (cache "lighthouse-fill-<run>"; job-index.yml merges the newest one before it builds). It never saves
-# the builder database, so it can't write over a newer build's. If anything here fails, nothing is lost.
+# It starts after each successful Job index run and runs alongside the next builds. It must never save
+# the builder database: a newer build will have saved one meanwhile. Its answers go to the next build
+# in a small cached file instead (job-index.yml merges the newest). A failed run loses only its own
+# answers, and the next run reads those postings again.
 name: Gap fill
 
 on:

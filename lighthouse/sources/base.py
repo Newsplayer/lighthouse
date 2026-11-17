@@ -1,7 +1,17 @@
-"""Shared plumbing for ATS adapters.
+"""What every careers-system reader shares. A new system is one subclass of Source plus one line in
+sources/__init__.py. The rest of the builder trusts a reader on these points, so get them right:
 
-An adapter only has to say how to list a board and how to turn one raw posting into a Job.
-Adding a new ATS = one small subclass + one line in sources/__init__.py.
+- Every posting the board still lists is either returned or put in self.dropped. A posting in
+  neither is treated as gone and closed.
+- single_response = True only when one response holds the whole board. A posting missing from such a
+  board closes at once; paged listings wait for two misses, since a shifting order can skip one.
+- Make every request through self.client: it carries the per-host rate limits, the user agent and the
+  run's time limit.
+- Raise BoardNotFound when the board itself is gone; two runs in a row switch it off. Raise Blocked when
+  the site pushes back; that never counts against the board.
+- Call self.keep() before any per-posting request, so postings the build leaves out cost nothing.
+- Fetch a whole-board response with _get_json(board=True): an unchanged board is then skipped by its
+  hash, and it's read every run rather than every few hours (fetch.not_due).
 """
 
 from __future__ import annotations

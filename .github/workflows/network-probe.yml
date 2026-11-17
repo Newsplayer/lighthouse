@@ -1,5 +1,5 @@
-# Run a script from GitHub's network: the only place careers sites can be reached from while
-# developing (Claude Code's sandbox and many laptops can't reach them directly). Publishes nothing.
+# Runs a script from GitHub's network, which can reach careers sites when your machine or a sandbox
+# can't. Publishes nothing.
 #
 #   1. Put a script at probe/run.py on a branch named probe/<topic> (never on main).
 #   2. Push: this runs it. Or: gh workflow run network-probe.yml --ref probe/<topic>
@@ -37,7 +37,7 @@ jobs:
           fail-on-cache-miss: true
       - name: Run probe/run.py
         if: hashFiles('probe/run.py') != '' && hashFiles('probe/run-build') == ''
-        run: python probe/run.py
+        run: PYTHONPATH=. python probe/run.py     # so it can import lighthouse
       - name: Test build (nothing is published)
         if: hashFiles('probe/run-build') != ''
         run: |
