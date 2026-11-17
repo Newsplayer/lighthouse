@@ -20,7 +20,7 @@ from . import config as config_mod
 from . import db, dedupe, extract, ghost, workers
 from .config import DEFAULT_CONFIG
 from .models import age_hours, utcnow
-from .net import OutOfTime, default_client
+from .net import PutBack, default_client
 from .sources import SOURCES, BoardNotFound
 from .sources.base import RunGate, Unchanged, looks_blocked
 
@@ -31,6 +31,10 @@ BOARD_RETRY_PAUSES = (60, 180)   # a rate-limited board is tried again after the
 # Workday listing behind a data center that slowed us down ran 80 minutes past the limit). Boards
 # still running then are put back: their postings stay as they are, and they go first next run.
 STOP_AFTER_LIMIT_MINUTES = 10
+# Workday boards get workers of their own. They are the slowest (one request per 20 postings, every data
+# center's sites sharing its limit) and often the stalest, so they come first; sharing the 48 workers,
+# they took every one of them and no other board was reached (probe, 2026-11-17).
+WORKDAY_WORKERS = 16
 
 
 def _rate_limited(exc: Exception) -> bool:
@@ -64,7 +68,7 @@ def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=N
             return src.fetch(board["slug"], known=known), src
         except Unchanged:
             return None, src
-        except OutOfTime:
+        except PutBack:
             return DEFERRED, None
         except Exception as exc:
             # A bot check, 403 or a run of edge errors counts against the board's group. After a few,
@@ -133,9 +137,11 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
     gate = RunGate(started + s.fetch_minutes * 60 if s.fetch_minutes else None)
     stop_at = gate.deadline + STOP_AFTER_LIMIT_MINUTES * 60 if gate.deadline else None
     deferred = []
-    with _hard_stop(client, stop_at), ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool:
-        futures = {pool.submit(_fetch_board, b, db.known_postings(conn, b["ats"], b["slug"]), client,
-                               s.max_detail_calls_per_board, hourly, countries, detail_stop, gate): b for b in boards}
+    with _hard_stop(client, stop_at), ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool, \
+            ThreadPoolExecutor(max_workers=WORKDAY_WORKERS) as workday_pool:
+        futures = {(workday_pool if b["ats"] == "workday" else pool).submit(
+                       _fetch_board, b, db.known_postings(conn, b["ats"], b["slug"]), client,
+                       s.max_detail_calls_per_board, hourly, countries, detail_stop, gate): b for b in boards}
         for fut in as_completed(futures):
             b = futures[fut]
             try:

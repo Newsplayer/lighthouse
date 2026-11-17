@@ -37,8 +37,9 @@ MAX_INTERVAL = 4.0          # slowest pace after repeated 429s: one request per 
 RATE_LIMIT_TRIES = 6
 
 
-class OutOfTime(Exception):
-    """The run's hard time limit passed: no more requests this run."""
+class PutBack(Exception):
+    """No more requests for this board this run: the run's hard time limit passed, or the board's group
+    pushed back. fetch.py puts the board back: its postings stay as they are, and it goes first next run."""
 
 
 class _HostThrottle:
@@ -67,7 +68,7 @@ class _HostThrottle:
             now = time.monotonic()
             start = max(now, self._next.get(key, 0.0))
             if stop_at is not None and start > stop_at:
-                raise OutOfTime(f"{host}: the run's time is up")
+                raise PutBack(f"{host}: the run's time is up")
             if interval <= 0 and start <= now:
                 return
             self._next[key] = start + max(interval, 0)

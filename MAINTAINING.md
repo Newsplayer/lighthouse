@@ -282,7 +282,8 @@ any left over are looked up when they're next due.
    postings are skipped by hash.
    - **Within the hour.** Looking companies up stops starting new ones 10 minutes into the build.
      48 boards run in parallel, stalest first (whatever wasn't reached last time), and among those the
-     biggest first. 35 minutes into the build (`--fetch-minutes`, or the `LIGHTHOUSE_FETCH_MINUTES`
+     biggest first. Workday boards have 16 workers of their own: they're the slowest, and sharing the
+     48 they took every worker, so no other board was reached. 35 minutes into the build (`--fetch-minutes`, or the `LIGHTHOUSE_FETCH_MINUTES`
      variable; counted from the start of the build) no new board or description call is started, and
      10 minutes later every request stops, even one waiting its turn behind a site that slowed us down.
      Boards not reached, or stopped part way, keep their postings and lead the next run. So a build
@@ -299,7 +300,8 @@ any left over are looked up when they're next due.
    - **Pushing back is respected.** A bot-check page, 403, 429 after backoff or a run of CDN edge
      errors counts against the board's group: one Workday data center (wd1, wd5...), one shared API
      host (Greenhouse, Lever...), or the board's own site. After three, the group is left alone for the
-     rest of the run: its other boards wait, their postings stay open, and they go first next run.
+     rest of the run: its other boards wait (a Workday listing already being read stops too), their
+     postings stay open, and they go first next run.
      Nothing is retried around a block, and the user agent always says what the builder is. Then the usual steps run: de-duplication, field extraction (pay,
    years asked, visa, clearance, citizenship, degree, job function, seniority, employment type, skills,
    benefits, travel, languages) and ghost scoring.

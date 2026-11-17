@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 from .. import geo
 from ..models import Job, parse_dt
+from ..net import PutBack
 from ..sanitize import sanitize_html
 from .base import BoardNotFound, Source, json_body, workplace
 
@@ -169,6 +170,9 @@ class WorkdaySource(Source):
         return host, f"{host}/wday/cxs/{tenant}/{site}", site
 
     def _page(self, api: str, facets: dict, offset: int) -> dict:
+        if self.gate and self.gate.is_blocked(self.group(self.slug)):
+            # this data center pushed back: the rest of the listing waits for the next run
+            raise PutBack(f"Workday: {self.group(self.slug)} pushed back")
         r = self.client.post(f"{api}/jobs", json={"appliedFacets": facets, "limit": PAGE, "offset": offset,
                                                   "searchText": ""},
                              headers={"Accept": "application/json"})

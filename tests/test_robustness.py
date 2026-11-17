@@ -113,7 +113,7 @@ def test_no_request_starts_after_the_runs_hard_limit(monkeypatch):
     from lighthouse import fetch
     t = net._HostThrottle(10)                                          # one request per 10 s to a host
     t.wait("a.example.com", stop_at=net.time.monotonic() + 5)          # this one goes now
-    with pytest.raises(net.OutOfTime):                                 # the next one's turn comes after the limit
+    with pytest.raises(net.PutBack):                                   # the next one's turn comes after the limit
         t.wait("a.example.com", stop_at=net.time.monotonic() + 5)
 
     class Listing:                                                     # a long listing, still paging at the limit
@@ -129,6 +129,19 @@ def test_no_request_starts_after_the_runs_hard_limit(monkeypatch):
         # put back for next run (its postings stay as they are), not counted as a failure
         assert fetch._fetch_board({"ats": "listing", "slug": "x"}, {}, c, 5) == (fetch.DEFERRED, None)
     assert c.stop_at is None                                           # the shared client is free again after
+
+    # a Workday listing still paging when its data center pushed back stops too, and waits for next run
+    from lighthouse.sources.base import RunGate
+    gate = RunGate()
+    gate.blocked["workday:wd5"] = "Workday: HTTP 429"
+    sent = []
+    wd = net.Client(per_host_rps=0)
+    monkeypatch.setattr(wd, "_send", lambda *a: sent.append(a))
+    src = SOURCES["workday"](client=wd)
+    src.gate, src.slug = gate, "acme.wd5/Ext"
+    with pytest.raises(net.PutBack):
+        src.fetch("acme.wd5/Ext")
+    assert sent == []
 
 
 def test_rate_limited_board_is_tried_again(monkeypatch):
