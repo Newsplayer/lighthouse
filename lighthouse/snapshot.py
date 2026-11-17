@@ -50,7 +50,7 @@ FETCH_DETAIL_MINUTES = 120         # boards started later than this skip descrip
 # build: looking up companies stops starting new ones after DISCOVER_MINUTES, no board starts after
 # FETCH_MINUTES, every request stops 10 minutes later (fetch.STOP_AFTER_LIMIT_MINUTES), and
 # clustering, the rules and the files take the rest. What isn't reached goes first next run.
-DISCOVER_MINUTES = 10
+DISCOVER_MINUTES = 10              # a full re-check (--full) gets three times this: 700 companies take about 30
 FETCH_MINUTES = 35
 FETCH_WORKERS = 48                 # boards in parallel: most wait on their host's rate limit, not on CPU
 WORKDAY_REFRESH_HOURS = 11         # each Workday board twice a day (see Settings.workday_refresh_hours)
@@ -95,7 +95,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     boards = list(cfg.boards)
     if discover_companies:
         boards += discover_boards(conn, config_path.parent, client, full=full, listed=cfg.boards,
-                                  minutes=None if full else DISCOVER_MINUTES)
+                                  minutes=DISCOVER_MINUTES * (3 if full else 1))
     boards = merge_same_boards(conn, boards)
     retired = apply_board_list(conn, boards, retry_switched_off=full)
     conn.close()
@@ -164,7 +164,7 @@ def save_answers(conn, path: Path | str) -> int:
         for h, data, model in conn.execute("SELECT content_hash, data, model FROM llm_extractions"):
             f.write(json.dumps({"llm": [h, data, model]}, ensure_ascii=False) + "\n")
             n += 1
-        for h, data in conn.execute("SELECT content_hash, data FROM extractions WHERE data LIKE ?", (f'%"by": "{BY}"%',)):
+        for h, data in conn.execute("SELECT content_hash, data FROM extractions WHERE data LIKE ?", (f'%"{BY}"%',)):
             guess = json.loads(data).get("job_function") or {}
             if guess.get("by") == BY:
                 f.write(json.dumps({"category": [h, guess]}, ensure_ascii=False) + "\n")

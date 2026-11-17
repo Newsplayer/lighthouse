@@ -265,7 +265,9 @@ Commit and push as usual. A push to `main` that changes `lighthouse/` or `config
 ### Look every company up again
 
 **Actions → Job index → Run workflow →** tick **full**. Every listed company's careers page is read
-again (normally only those due), and boards that were switched off are retried.
+again (normally only those due), and boards that were switched off are retried. Looking up stops
+starting new companies after 30 minutes (about the time all 700 take), so that build fetches less;
+any left over are looked up when they're next due.
 
 ---
 
