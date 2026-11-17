@@ -58,6 +58,21 @@ def test_discovery_reports_unsupported_systems_and_respects_robots():
     assert pinned.status == "pinned"
 
 
+def test_robots_rules_longest_match_wins():
+    # Eightfold's sites (Microsoft, Qualcomm, PayPal): shut by default, open where the careers pages are
+    rules = discover.RobotRules("User-agent: *\nDisallow: /\nAllow: /careers\nAllow: /api/pcsx\nAllow: /$\n"
+                                "Disallow: /careers/*.pdf$\n\nSitemap: https://x.com/sitemap.xml", "Lighthouse-index/1.0 (+x)")
+    ok = ["https://x.com/careers", "https://x.com/careers/job/123?domain=x.com", "https://x.com/api/pcsx/search", "https://x.com/"]
+    assert all(rules.allowed(u) for u in ok) and rules.sitemaps == ["https://x.com/sitemap.xml"]
+    assert not rules.allowed("https://x.com/other") and not rules.allowed("https://x.com/careers/a.pdf")
+    tie = discover.RobotRules("User-agent: *\nDisallow: /a\nAllow: /a\nDisallow:")
+    assert tie.allowed("https://x.com/a/1")
+    # a group for our crawler replaces the "*" one
+    ours = discover.RobotRules("User-agent: *\nDisallow: /\n\nUser-agent: lighthouse-index\nDisallow: /private",
+                               "Lighthouse-index/1.0")
+    assert ours.allowed("https://x.com/jobs") and not ours.allowed("https://x.com/private/1")
+
+
 def test_discovered_boards_join_the_build_and_are_rechecked_only_when_due(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "config"
     cfg_dir.mkdir()

@@ -57,9 +57,9 @@ Work top to bottom.
 
 - **Pipeline:**
   - Discovery reads 700 companies' careers pages and finds the system behind each one.
-  - Readers cover Workday, Oracle, SuccessFactors (RSS sitemap), Phenom, iCIMS/Jibe, Eightfold,
-    Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Amazon, and any site with
-    schema.org JobPosting pages.
+  - Readers cover Workday, Oracle, SuccessFactors (RSS sitemap or job pages), Phenom, iCIMS (Jibe
+    sites and classic portals), Eightfold, Greenhouse, Lever, Ashby, SmartRecruiters, Workable,
+    Recruitee, Amazon, and any site with schema.org JobPosting pages (JSON-LD or microdata).
   - There are also 926 direct boards in `config/boards/top-companies.csv`.
   - Each posting is de-duplicated (exact fingerprint plus MinHash near-duplicates), analysed by
     free rules (pay, YOE, visa, clearance, degree, function, seniority, employment type, skills),
@@ -496,28 +496,49 @@ means. Keep every change incremental and measured (§2 baselines).
      the sources file, which is fetched only when Sources is opened, so no visit downloads more.
    - One GitHub issue, "Job boards that need a look", lists boards that haven't answered for two days
      or were switched off. The build updates it in place and closes it when all answer again.
-4. **More careers systems.** These are the unsupported counts from the test build. For each one,
-   probe with `network-probe.yml` first, and add a reader only if a public JSON/XML/JSON-LD feed
-   exists.
+4. **More careers systems.** These are the companies still on systems Lighthouse can't read
+   (re-checked 2026-11-16). For each one, probe with `network-probe.yml` first, and add a reader
+   only if a public JSON/XML/JSON-LD feed exists.
 
    | System | Companies |
    |---|---|
-   | SuccessFactors without the RSS sitemap (`career?company=` sites) | 26 |
-   | Paradox | 12 |
-   | Eightfold PCSX tenants (403 today: Microsoft, Starbucks, HP...) | 12 |
-   | Classic iCIMS portals (try their JSON-LD job pages + sitemap) | 11 |
-   | Avature | 10 |
-   | Taleo | 9 |
-   | ADP | 5 |
+   | SuccessFactors with no place on its job pages (Deloitte, Wipro) | 12 |
+   | Avature (Goldman Sachs, Bloomberg; its feed gives 20 jobs) | 9 |
+   | Paradox | 7 |
+   | Eightfold PCSX tenants with no sitemap (Microsoft, Starbucks, PayPal) | 7 |
+   | Taleo (its listing has titles and places, no descriptions) | 7 |
+   | iCIMS | 5 |
    | BrassRing | 5 |
+   | ADP | 4 |
 
    - Also: 147 companies show "no careers system recognised", 42 are blocked by robots.txt, and
      26 errored. Spot-check 20 of each and pin boards by hand where discovery missed them.
    - **2026-11-10:** 54 of the 320 uncovered companies already had a hand-checked board in
      `config/boards/` (36 of them on and being read all along: Stripe, SpaceX, Cloudflare...).
      They now count as covered and the other 18 boards are switched on: 380 → 434 of 700.
-   - Notable uncovered: Apple, Microsoft, Walmart, UnitedHealth Group, Goldman Sachs, Tesla,
-     Netflix, Deloitte, McKinsey, Bloomberg.
+   - **2026-11-16:** the careers-site reader also reads SuccessFactors job pages (microdata),
+     classic iCIMS portals, JSON-LD whose script type escapes the `+`, and sites whose robots.txt
+     shuts `/` but opens `/careers` (Eightfold sites: Qualcomm, Netflix, Lam Research, Estee Lauder,
+     Fluor). 14 boards discovery missed are pinned by hand. Measured on a copy of the last build's
+     database, two runs back to back:
+     - Companies covered: 435 → 484 of 700 (35 found by discovery, 14 pinned). Re-checking the 249
+       uncovered companies took 11 min and 3,313 requests.
+     - Open roles: 385,900 → 412,871 from 56 new boards. First run: 22,580 new, 21,643 requests,
+       20.5 min. Second run: 4,391 more (boards over the 1,000-page budget carry on), 10,136 requests.
+     - On the second run, 33 boards whose pages hadn't changed cost one request each (the sitemap).
+       About 3,200 pages left out (abroad, hourly, no job data) are remembered instead of re-read.
+     - Biggest: Dollar General 8,172, UnitedHealth 1,873, Tractor Supply 1,836, EMCOR 1,470,
+       Hilton 1,417, EY 1,347, Meta 1,103, ABM 1,058 (the big sitemaps are still filling in).
+     - Sites that push back: WTW and Etsy answer an AWS bot check after a few pages, Eightfold sites
+       block most page reads at 4 a second (all answer cleanly at 1 a second), and ADP, Cognizant,
+       Caterpillar, Nutanix and Box slow us to about one page per 15 s. The reader now stops reading
+       a site's pages for the run at the first bot check or block and keeps what it has, so these
+       fill in over several runs. A lower page rate for careers sites would read more per run; it's
+       the politeness limit, so it's left for the owner.
+     - Still uncovered: 108 companies with no careers system recognised (Apple, McKinsey), 30
+       blocked by robots.txt (Tesla, TCS), 17 that didn't open from GitHub's network. Valero and
+       Parker-Hannifin's pinned Workday boards answer "site not found" (issue #8).
+   - Notable uncovered: Apple, Microsoft, Goldman Sachs, Tesla, Deloitte, McKinsey, Bloomberg.
 5. **✓ Discovery sanity check (2026-11-11).** `python -m lighthouse discover --report` lists the
    boards in `config/` whose id doesn't look like their company's name or website, for a person to
    check. No network. Today: 26 of 934. Most are renamed companies or parent brands (Exa was Metaphor,

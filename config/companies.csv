@@ -7,7 +7,7 @@
 company,group,domain,careers_url,ats,slug,enabled
 Walmart,fortune500,walmart.com,https://careers.walmart.com,,,yes
 Amazon,fortune500,amazon.com,https://www.amazon.jobs,,,yes
-UnitedHealth Group,fortune500,unitedhealthgroup.com,https://careers.unitedhealthgroup.com,,,yes
+UnitedHealth Group,fortune500,unitedhealthgroup.com,https://careers.unitedhealthgroup.com,jsonld,https://careers.unitedhealthgroup.com/sitemap.xml,yes
 Apple,fortune500,apple.com,https://jobs.apple.com,,,yes
 CVS Health,fortune500,cvshealth.com,https://jobs.cvshealth.com,,,yes
 Berkshire Hathaway,fortune500,berkshirehathaway.com,,,,yes
@@ -26,7 +26,7 @@ General Motors,fortune500,gm.com,https://search-careers.gm.com,,,yes
 Ford Motor,fortune500,ford.com,https://corporate.ford.com/careers.html,,,yes
 Elevance Health,fortune500,elevancehealth.com,https://careers.elevancehealth.com,,,yes
 Citigroup,fortune500,citi.com,https://jobs.citi.com,,,yes
-Meta Platforms,fortune500,meta.com,https://www.metacareers.com/jobs,,,yes
+Meta Platforms,fortune500,meta.com,https://www.metacareers.com/jobs,jsonld,https://www.metacareers.com/jobsearch/sitemap.xml,yes
 Centene,fortune500,centene.com,https://jobs.centene.com,,,yes
 Home Depot,fortune500,homedepot.com,https://careers.homedepot.com,,,yes
 Fannie Mae,fortune500,fanniemae.com,https://www.fanniemae.com/careers,,,yes
@@ -125,7 +125,7 @@ D.R. Horton,fortune500,drhorton.com,https://www.drhorton.com/careers,,,yes
 Nucor,fortune500,nucor.com,https://nucor.jobs,,,yes
 U.S. Bancorp,fortune500,usbank.com,https://careers.usbank.com,,,yes
 PNC Financial Services,fortune500,pnc.com,https://careers.pnc.com,,,yes
-Dollar General,fortune500,dollargeneral.com,https://careers.dollargeneral.com,,,yes
+Dollar General,fortune500,dollargeneral.com,https://careers.dollargeneral.com,oracle,ibxwjb.fa.ocs.oraclecloud.com/CX_1,yes
 CBRE Group,fortune500,cbre.com,https://careers.cbre.com,,,yes
 Kraft Heinz,fortune500,kraftheinzcompany.com,https://careers.kraftheinz.com,,,yes
 Duke Energy,fortune500,duke-energy.com,https://www.duke-energy.com/our-company/careers,,,yes
@@ -140,7 +140,7 @@ US Foods Holding,fortune500,usfoods.com,https://www.usfoods.com/careers.html,,,y
 Halliburton,fortune500,halliburton.com,https://careers.halliburton.com,,,yes
 Union Pacific,fortune500,up.com,https://www.up.jobs,,,yes
 Micron Technology,fortune500,micron.com,https://careers.micron.com,,,yes
-Cummins,fortune500,cummins.com,https://careers.cummins.com,,,yes
+Cummins,fortune500,cummins.com,https://careers.cummins.com,oracle,fa-espx-saasfaprod1.fa.ocs.oraclecloud.com/CX_1,yes
 Gilead Sciences,fortune500,gilead.com,https://www.gilead.com/careers,,,yes
 Danaher,fortune500,danaher.com,https://jobs.danaher.com,,,yes
 Dollar Tree,fortune500,dollartree.com,https://careers.dollartree.com,,,yes
@@ -234,7 +234,7 @@ Consolidated Edison,fortune500,coned.com,https://www.coned.com/en/careers,,,yes
 CSX,fortune500,csx.com,https://www.csx.com/index.cfm/working-at-csx/,,,yes
 LKQ,fortune500,lkqcorp.com,https://www.lkqcorp.com/careers/,,,yes
 FirstEnergy,fortune500,firstenergycorp.com,https://www.firstenergycorp.com/careers.html,,,yes
-Steel Dynamics,fortune500,steeldynamics.com,https://www.steeldynamics.com/careers/,,,yes
+Steel Dynamics,fortune500,steeldynamics.com,https://www.steeldynamics.com/careers/,jsonld,https://careers-steeldynamics.icims.com/sitemap.xml,yes
 Lithia Motors,fortune500,lithia.com,https://careers.lithia.com,,,yes
 MGM Resorts International,fortune500,mgmresorts.com,https://careers.mgmresorts.com,,,yes
 Sempra,fortune500,sempra.com,https://www.sempra.com/careers,,,yes
@@ -251,7 +251,7 @@ Corning,fortune500,corning.com,https://www.corning.com/worldwide/en/careers.html
 Expedia Group,fortune500,expediagroup.com,https://careers.expediagroup.com,,,yes
 AutoZone,fortune500,autozone.com,https://careers.autozone.com,,,yes
 W.W. Grainger,fortune500,grainger.com,https://jobs.grainger.com,,,yes
-Quanta Services,fortune500,quantaservices.com,https://www.quantaservices.com/careers,,,yes
+Quanta Services,fortune500,quantaservices.com,https://www.quantaservices.com/careers,jsonld,https://careers-quanta.icims.com/sitemap.xml,yes
 Crown Holdings,fortune500,crowncork.com,https://www.crowncork.com/careers,,,yes
 ODP Corporation,fortune500,theodpcorp.com,https://careers.odpcorp.com,,,yes
 Baxter International,fortune500,baxter.com,https://jobs.baxter.com,,,yes
@@ -307,7 +307,7 @@ News Corp,fortune500,newscorp.com,https://newscorp.com/careers/,,,yes
 Brighthouse Financial,fortune500,brighthousefinancial.com,https://www.brighthousefinancial.com/about-us/careers/,,,yes
 Voya Financial,fortune500,voya.com,https://careers.voya.com,,,yes
 Air Products & Chemicals,fortune500,airproducts.com,https://careers.airproducts.com,,,yes
-Hilton Worldwide Holdings,fortune500,hilton.com,https://jobs.hilton.com,,,yes
+Hilton Worldwide Holdings,fortune500,hilton.com,https://jobs.hilton.com,oracle,efet.fa.us2.oraclecloud.com/CX_1,yes
 GameStop,fortune500,gamestop.com,https://careers.gamestop.com,,,yes
 Williams,fortune500,williams.com,https://www.williams.com/careers/,,,yes
 Campbell's,fortune500,campbellsoupcompany.com,https://careers.campbellsoupcompany.com,,,yes
@@ -315,7 +315,7 @@ Thrivent Financial,fortune500,thrivent.com,https://www.thrivent.com/about-us/car
 Westlake,fortune500,westlake.com,https://www.westlake.com/careers,,,yes
 J.B. Hunt Transport Services,fortune500,jbhunt.com,https://careers.jbhunt.com,,,yes
 Edward Jones,fortune500,edwardjones.com,https://careers.edwardjones.com,,,yes
-NOV,fortune500,nov.com,https://www.nov.com/careers,,,yes
+NOV,fortune500,nov.com,https://www.nov.com/careers,oracle,egay.fa.us6.oraclecloud.com/CX_2001,yes
 Eversource Energy,fortune500,eversource.com,https://www.eversource.com/content/residential/about/careers,,,yes
 Dick's Sporting Goods,fortune500,dickssportinggoods.com,https://careers.dickssportinggoods.com,,,yes
 Genworth Financial,fortune500,genworth.com,https://www.genworth.com/careers,,,yes
@@ -331,7 +331,7 @@ Huntington Ingalls Industries,fortune500,hii.com,https://careers.hii.com,,,yes
 Jefferies Financial Group,fortune500,jefferies.com,https://www.jefferies.com/careers/,,,yes
 Dana,fortune500,dana.com,https://www.dana.com/careers/,,,yes
 Expeditors International,fortune500,expeditors.com,https://www.expeditors.com/careers,,,yes
-EMCOR Group,fortune500,emcorgroup.com,https://www.emcorgroup.com/careers,,,yes
+EMCOR Group,fortune500,emcorgroup.com,https://www.emcorgroup.com/careers,jsonld,https://careers-emcorgroup.icims.com/sitemap.xml,yes
 Darden Restaurants,fortune500,darden.com,https://www.darden.com/careers,,,yes
 SpartanNash,fortune500,spartannash.com,https://www.spartannash.com/careers/,,,yes
 Assurant,fortune500,assurant.com,https://jobs.assurant.com,,,yes
@@ -349,7 +349,7 @@ Hershey,fortune500,thehersheycompany.com,https://careers.thehersheycompany.com,,
 PPL,fortune500,pplweb.com,https://www.pplweb.com/careers/,,,yes
 Builders FirstSource,fortune500,bldr.com,https://www.bldr.com/careers,,,yes
 Oshkosh,fortune500,oshkoshcorp.com,https://www.oshkoshcorp.com/careers,,,yes
-W.R. Berkley,fortune500,berkley.com,https://www.berkley.com/careers,,,yes
+W.R. Berkley,fortune500,berkley.com,https://www.berkley.com/careers,jsonld,https://careers-berkley.icims.com/sitemap.xml,yes
 WEC Energy Group,fortune500,wecenergygroup.com,https://www.wecenergygroup.com/careers/,,,yes
 JetBlue Airways,fortune500,jetblue.com,https://careers.jetblue.com,,,yes
 UGI,fortune500,ugicorp.com,https://www.ugicorp.com/careers,,,yes
@@ -370,7 +370,7 @@ Motorola Solutions,fortune500,motorolasolutions.com,https://www.motorolasolution
 American Axle & Manufacturing,fortune500,aam.com,https://www.aam.com/careers,,,yes
 Newmont,fortune500,newmont.com,https://www.newmont.com/careers/,,,yes
 Spirit AeroSystems Holdings,fortune500,spiritaero.com,https://www.spiritaero.com/careers/,,,yes
-Western & Southern Financial Group,fortune500,westernsouthern.com,https://www.westernsouthern.com/careers,,,yes
+Western & Southern Financial Group,fortune500,westernsouthern.com,https://www.westernsouthern.com/careers,jsonld,https://careers-westernsouthern.icims.com/sitemap.xml,yes
 Fortive,fortune500,fortive.com,https://careers.fortive.com,,,yes
 Graybar Electric,fortune500,graybar.com,https://www.graybar.com/careers,,,yes
 NVR,fortune500,nvrinc.com,https://www.nvrinc.com/careers,,,yes
@@ -406,7 +406,7 @@ Dillard's,fortune500,dillards.com,https://careers.dillards.com,,,yes
 Cintas,fortune500,cintas.com,https://careers.cintas.com,,,yes
 Advanced Micro Devices,fortune500,amd.com,https://careers.amd.com,,,yes
 M&T Bank,fortune500,mtb.com,https://jobs.mtb.com,,,yes
-ABM Industries,fortune500,abm.com,https://careers.abm.com,,,yes
+ABM Industries,fortune500,abm.com,https://careers.abm.com,oracle,eiqg.fa.us2.oraclecloud.com/CX_1001,yes
 QXO,fortune500,qxo.com,https://www.qxo.com/careers,,,yes
 NCR Voyix,fortune500,ncrvoyix.com,https://www.ncrvoyix.com/company/careers,,,yes
 iHeartMedia,fortune500,iheartmedia.com,https://www.iheartmedia.com/careers,,,yes
@@ -563,7 +563,7 @@ Lucid Motors,tech,lucidmotors.com,https://lucidmotors.com/careers,,,yes
 Anduril Industries,tech,anduril.com,https://www.anduril.com/careers/,,,yes
 Waymo,tech,waymo.com,https://careers.withwaymo.com,,,yes
 Instacart,tech,instacart.com,https://instacart.careers,,,yes
-Etsy,tech,etsy.com,https://careers.etsy.com,,,yes
+Etsy,tech,etsy.com,https://careers.etsy.com,jsonld,https://careers.etsy.com/sitemap.xml,yes
 Zillow Group,tech,zillow.com,https://www.zillow.com/careers/,,,yes
 Yelp,tech,yelp.com,https://www.yelp.careers,,,yes
 DocuSign,tech,docusign.com,https://careers.docusign.com,,,yes
@@ -629,7 +629,7 @@ Prudential Global Investment,finance,pgim.com,https://www.pgim.com/careers,,,yes
 Allianz of America,finance,allianzlife.com,https://www.allianzlife.com/about/careers,,,yes
 Chubb,finance,chubb.com,https://careers.chubb.com,,,yes
 Aon,finance,aon.com,https://jobs.aon.com,,,yes
-Willis Towers Watson,finance,wtwco.com,https://careers.wtwco.com,,,yes
+Willis Towers Watson,finance,wtwco.com,https://careers.wtwco.com,jsonld,https://careers.wtwco.com/sitemap.xml,yes
 Deloitte,consulting,deloitte.com,https://apply.deloitte.com,,,yes
 PwC,consulting,pwc.com,https://www.pwc.com/us/en/careers.html,,,yes
 EY,consulting,ey.com,https://careers.ey.com,,,yes

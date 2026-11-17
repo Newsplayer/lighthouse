@@ -167,12 +167,13 @@ def test_a_database_from_before_the_local_app_was_retired_is_cleaned_once(tmp_pa
         ALTER TABLE jobs ADD COLUMN elig INTEGER;
         CREATE INDEX idx_jobs_mark ON jobs(mark) WHERE mark IS NOT NULL;
         CREATE INDEX idx_jobs_list ON jobs(active, is_canonical, effective_first_seen, ghost_score, elig);
+        DROP TABLE skipped;
         PRAGMA user_version = 8;
     """)
     conn.close()
     conn = db.connect(path)
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
-    assert not names & {"marks", "export_sig", "sponsor_match", "idx_jobs_mark", "idx_jobs_list"}
+    assert not names & {"marks", "export_sig", "sponsor_match", "idx_jobs_mark", "idx_jobs_list"} and "skipped" in names
     assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     assert db.list_jobs(conn, db.Filters())[1] == 2                          # the postings are untouched
     conn.close()

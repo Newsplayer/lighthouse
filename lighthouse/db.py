@@ -110,8 +110,13 @@ CREATE TABLE companies (                 -- coverage of config/companies.csv
     detail TEXT, platforms TEXT, openings INTEGER, checked_at TEXT
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+""" + """
+CREATE TABLE IF NOT EXISTS skipped (     -- job pages read once and left out (elsewhere, hourly, no job data)
+    uid TEXT PRIMARY KEY, board TEXT NOT NULL, marker TEXT NOT NULL   -- board = "<ats>:<slug>"
+);
+CREATE INDEX IF NOT EXISTS idx_skipped_board ON skipped(board);
 """
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 # Left behind in a database from before the local app was retired (schema 8): dropped once.
 _RETIRED_TABLES = ("marks", "fit", "api_usage", "claude_batches", "claude_extractions", "sponsor_lca", "sponsor_uscis",
                    "sponsor_files", "sponsor_match", "tombstones", "export_sig", "index_zdicts", "jobs_fts")
@@ -128,12 +133,17 @@ def migrate(conn: sqlite3.Connection) -> None:
     with conn:
         if version == 0 and not has_table(conn, "jobs"):
             conn.executescript(SCHEMA)
-        elif version == 8:
+            version = SCHEMA_VERSION
+        if version == 8:
             for name in _RETIRED_INDEXES:
                 conn.execute(f"DROP INDEX IF EXISTS {name}")
             for name in _RETIRED_TABLES:
                 conn.execute(f"DROP TABLE IF EXISTS {name}")
-        else:
+            version = 9
+        if version == 9:
+            conn.executescript(SCHEMA[SCHEMA.index("CREATE TABLE IF NOT EXISTS skipped"):])
+            version = 10
+        if version != SCHEMA_VERSION:
             raise RuntimeError(f"this database is from an older Lighthouse (schema {version}): delete it and "
                                "start again, or seed a new one from the published jobs.db.xz")
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -264,11 +274,28 @@ def board_unchanged(conn, ats: str, slug: str) -> set[str]:
 # ---------------------------------------------------------------- ingest
 
 def known_postings(conn, source: str, board: str) -> dict[str, tuple[str, bool]]:
-    """uid -> (detail_marker, has_content). Lets sources skip detail calls for unchanged postings."""
-    return {r[0]: (r[1] or "", bool(r[2])) for r in conn.execute(
+    """uid -> (detail_marker, has_content). Lets sources skip detail calls for unchanged postings. Pages
+    read and left out (skipped) count as read and unchanged until their marker changes; that row is the
+    newer one when a stored posting was left out later (it moved abroad)."""
+    known = {r[0]: (r[1] or "", bool(r[2])) for r in conn.execute(
         "SELECT j.uid, j.detail_marker, c.uid IS NOT NULL "
         "FROM jobs j LEFT JOIN job_content c ON c.uid = j.uid WHERE j.source=? AND j.source_board=?",
         (source, board))}
+    known.update({r[0]: (r[1], True) for r in conn.execute("SELECT uid, marker FROM skipped WHERE board = ?",
+                                                           (f"{source}:{board}",))})
+    return known
+
+
+def remember_skipped(conn, source: str, board: str, skipped: dict[str, str], still_listed: set[str]) -> None:
+    """Record the pages a reader read and left out this run (uid -> marker), and forget the ones its
+    listing no longer has (still_listed: what it kept as it was, the reader's `dropped`)."""
+    key = f"{source}:{board}"
+    with conn:
+        old = [r[0] for r in conn.execute("SELECT uid FROM skipped WHERE board = ?", (key,))]
+        gone = [(u,) for u in old if u not in skipped and u not in still_listed]
+        conn.executemany("DELETE FROM skipped WHERE uid = ?", gone)
+        conn.executemany("INSERT OR REPLACE INTO skipped (uid, board, marker) VALUES (?, ?, ?)",
+                         [(u, key, m) for u, m in skipped.items()])
 
 
 def _row_sig(j: Job, chash: str, marker: str) -> str:
