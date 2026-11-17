@@ -265,6 +265,38 @@ def test_a_description_the_model_found_nothing_in_is_not_read_again(tmp_path):
     assert public_db(b, tmp_path).execute("SELECT filled_by_ai FROM postings").fetchone()[0] is None   # no fills shown
 
 
+def test_a_fill_running_alongside_builds_hands_its_answers_over_in_a_file(tmp_path):
+    pytest.importorskip("numpy")
+    import sqlite3
+
+    from lighthouse import categorize
+    cfg, _ = cfg_file(tmp_path)
+    build = db.connect(tmp_path / "b.db")
+    db.sync_config_boards(build, cfg.boards)
+    db.upsert_board(build, "greenhouse", "acme", [
+        posting(1, "Data Analyst", "Candidates must be authorized to work in the U.S. now and in the future "
+                                   "without the need for employer support. 3+ years of experience."),
+        *[posting(k, f"Senior Software Engineer Code Platform {k}", "Build it.") for k in range(10, 20)],
+        posting(50, "Senior Code Platform Wizard", "Build it well.")])                 # no rule places this title
+    fetch.postprocess(build, cfg)
+    build.commit()
+    with sqlite3.connect(tmp_path / "fill.db") as copy:              # the fill job starts from the build's database
+        build.backup(copy)
+    fill = db.connect(tmp_path / "fill.db")
+    categorize.run(fill, embed=_bag_of_words)
+    llm_fill.run(fill, cfg, minutes=1, server=FakeModel(model_says))
+    answers = tmp_path / "answers.json.gz"
+    assert snapshot.save_answers(fill, answers) == 2                 # one model reading, one category guess
+
+    # meanwhile the next build rewrote those postings' rule answers (after the model read them)
+    build.execute("UPDATE extractions SET at = ?", (llm_fill._stamp(),))
+    build.commit()
+    assert snapshot.merge_answers(build, answers) == {"readings": 1, "merged": 1, "categories": 1}
+    row = lambda eid: build.execute("SELECT visa, job_function FROM jobs WHERE external_id = ?", (str(eid),)).fetchone()
+    assert row(1)["visa"] == "no" and row(50)["job_function"] == "Software Engineering"
+    assert snapshot.merge_answers(build, answers) == {"readings": 0, "merged": 0, "categories": 0}   # safe to repeat
+
+
 # ---------------------------------------------------------------- job categories from similar titles
 
 def _bag_of_words(texts):

@@ -1,0 +1,96 @@
+# The free gap fill: a free, open model on this machine reads the newest postings the rules couldn't
+# settle, for LIGHTHOUSE_LLM_MINUTES (variable, default 60), and titles no rule places get a category
+# from similar titles. No key, no account.
+#
+# It runs after each Job index build and alongside the next ones, so it never holds a build up. It
+# starts from the newest builder database and hands its answers to the next build in a small file
+# (cache "lighthouse-fill-<run>"; job-index.yml merges the newest one before it builds). It never saves
+# the builder database, so it can't write over a newer build's. If anything here fails, nothing is lost.
+name: Gap fill
+
+on:
+  workflow_run:
+    workflows: ["Job index"]
+    types: [completed]
+  workflow_dispatch:                # "Run workflow" button on the Actions tab
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gap-fill
+  cancel-in-progress: false         # one at a time; a newer request replaces one still waiting
+
+jobs:
+  fill:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-builder.txt
+
+      # llama.cpp's server, the open model and the title model: fetched once by scripts/get_llm.sh
+      # (about 10 minutes) and kept in the cache, keyed by that script's pinned versions.
+      - name: Restore the open model
+        id: llm
+        uses: actions/cache/restore@v4
+        with:
+          path: llm
+          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
+
+      - name: Get the open model (first run, or after scripts/get_llm.sh changed)
+        if: steps.llm.outputs.cache-hit != 'true'
+        run: bash scripts/get_llm.sh
+
+      - name: Keep the open model in the cache
+        if: steps.llm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: llm
+          key: lighthouse-llm-${{ hashFiles('scripts/get_llm.sh') }}
+
+      # The newest build's database: what to read. This copy is never saved back.
+      - name: Restore builder database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/builder.db
+          key: lighthouse-builder-fill-${{ github.run_id }}     # never there: the newest lighthouse-builder-* is used
+          restore-keys: lighthouse-builder-
+          fail-on-cache-miss: true
+
+      # The last fill's answers, in case no build has merged them yet: they aren't asked again, and the
+      # file this run hands over carries them too.
+      - name: Restore the last fill's answers
+        id: answers
+        uses: actions/cache/restore@v4
+        with:
+          path: data/answers.json.gz
+          key: lighthouse-fill-${{ github.run_id }}     # never there: the newest lighthouse-fill-* is used
+          restore-keys: lighthouse-fill-
+
+      - name: Merge the last fill's answers
+        if: steps.answers.outputs.cache-matched-key != ''
+        run: python -m lighthouse index merge data/answers.json.gz
+
+      - name: Read what the rules couldn't
+        env:
+          LIGHTHOUSE_LLM_SERVER: llm/bin/llama-server
+          LIGHTHOUSE_LLM_MODEL: llm/model.gguf
+          LIGHTHOUSE_EMBED_MODEL: llm/embed
+        run: python -m lighthouse index fill data/answers.json.gz --minutes "${{ vars.LIGHTHOUSE_LLM_MINUTES || 60 }}"
+
+      # Every answer this copy holds (the build's, the last fill's and this run's), so a file no build
+      # merged before the next fill finished is never lost: the next file carries its answers too.
+      - name: Hand the answers to the next build
+        uses: actions/cache/save@v4
+        with:
+          path: data/answers.json.gz
+          key: lighthouse-fill-${{ github.run_id }}

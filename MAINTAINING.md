@@ -56,9 +56,10 @@ The free rules read every filter field. When a posting clearly talks about one o
 read the answer (sponsorship in unusual wording, years written oddly, a pay band we can't parse), a free,
 open model reads that posting on the build machine itself. There's no key, account or cost.
 
-- **What runs:** llama.cpp's server with Qwen3.5 2B (Apache-2.0), on the runner's CPU, in the *fill*
-  job after the database and the site are published, so it never delays new postings. What it fills goes
-  out with the next build. It's asked only about the unsettled fields, and shown only the sentences
+- **What runs:** llama.cpp's server with Qwen3.5 2B (Apache-2.0), on the runner's CPU, in its own
+  workflow (*Gap fill*, `fill.yml`). It starts after each build and runs alongside the next ones, so it
+  never delays new postings. It hands its answers to the next build in a small file in the Actions cache
+  (`lighthouse-fill-*`); the build merges them and publishes them. It's asked only about the unsettled fields, and shown only the sentences
   around them (about a tenth of the posting).
   An answer is kept only when the model quotes the words it read and the quote is really in the text;
   numbers must appear in their quote. It fills empty fields only, never overrides a rule answer, and
@@ -66,13 +67,13 @@ open model reads that posting on the build machine itself. There's no key, accou
 - **Job categories:** a title no rule recognises takes the category of the most similar titles the
   rules did place, from a small embedding model (model2vec). If those titles don't clearly agree, the
   category stays unknown. These are marked `"by": "titles"`.
-- **How long:** 60 minutes per build, newest postings first. That's 700–1,500 postings an hour,
+- **How long:** 60 minutes per run, newest postings first. That's 700–1,500 postings an hour,
   depending on the machine GitHub assigns, so about 2,800–6,000 a day, against the 2,500 or so new
   ones a day that need it. To change it, add a repository variable `LIGHTHOUSE_LLM_MINUTES`.
-- **Setup:** none. The first *fill* job runs `scripts/get_llm.sh`, which builds llama.cpp and downloads
-  the two models (1.3 GB; about 10 minutes). They're kept in the Actions cache, so later runs start at
-  once. If the *fill* job fails, nothing is lost: the next build starts from the build job's database,
-  and the rule answers stand.
+- **Setup:** none. The first *Gap fill* run runs `scripts/get_llm.sh`, which builds llama.cpp and
+  downloads the two models (1.3 GB; about 10 minutes). They're kept in the Actions cache, so later runs
+  start at once. If a *Gap fill* run fails, nothing is lost: it never saves the builder database, and the
+  rule answers stand. It can also be started by hand (**Actions → Gap fill → Run workflow**).
 - **Changing the model:** edit the pins in `scripts/get_llm.sh` (the cache key follows the file).
   First compare models with `scripts/eval_fill.py` through the network probe (see "Trying something
   against real careers sites" below).
@@ -86,15 +87,15 @@ issue listing the boards that stopped answering.
 
 ### 7. Run the first build
 
-**Actions → Job index → Run workflow → Run workflow.** The first run fetches for 40 minutes and
-publishes what it has (about an hour in all). Boards it didn't reach go first in the next run, and big
+**Actions → Job index → Run workflow → Run workflow.** The first run fetches for about half an hour
+and publishes what it has (under an hour in all). Boards it didn't reach go first in the next run, and big
 Workday sites fill in their descriptions over the next few days. When it's green:
 - **Releases → Job index** (tag `job-index`) has `jobs.db.xz`, `jobs.csv.gz` and `manifest.json`. Every
   build replaces them, so their download links never change.
 - The run's **summary page** shows how many roles and postings, what was published and how big, the
   boards that failed, and the share of descriptions read for each careers system.
 
-After that it runs every 3 hours by itself, plus whenever a push to `main` changes `config/`,
+After that it runs every hour by itself, plus whenever a push to `main` changes `config/`,
 `lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
 nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
 
@@ -225,7 +226,7 @@ run; what was read is kept and the rest waits for the next run.
 2. Add a row to `config/boards/top-companies.csv` (or a new CSV in `config/boards/`):
    `greenhouse,acme,Acme Corp,yes,,curated`
 3. Commit and push. The push starts a build; the board's roles are on the website when it finishes
-   (about an hour).
+   (under an hour).
 
 ### Remove or pause a board
 
@@ -277,11 +278,14 @@ again (normally only those due), and boards that were switched off are retried.
 2. **Discover** boards for the companies list (only those due a re-check), **apply the board lists**
    (the CSVs are the truth on the builder), then **fetch** all enabled boards. Unchanged boards and
    postings are skipped by hash.
-   - **Within the hour.** 48 boards run in parallel, stalest first (whatever wasn't reached last
-     time), and among those the biggest first. After 40 minutes (`--fetch-minutes`, or the
-     `LIGHTHOUSE_FETCH_MINUTES` variable) no new board or description call is started; boards not
-     reached keep their postings and lead the next run.
-   - **How often.** Builds run every 3 hours. A board that answers in one request (Greenhouse, Lever,
+   - **Within the hour.** Looking companies up stops starting new ones 10 minutes into the build.
+     48 boards run in parallel, stalest first (whatever wasn't reached last time), and among those the
+     biggest first. 35 minutes into the build (`--fetch-minutes`, or the `LIGHTHOUSE_FETCH_MINUTES`
+     variable; counted from the start of the build) no new board or description call is started, and
+     10 minutes later every request stops, even one waiting its turn behind a site that slowed us down.
+     Boards not reached, or stopped part way, keep their postings and lead the next run. So a build
+     ends within the hour, whatever the sites do.
+   - **How often.** Builds run every hour. A board that answers in one request (Greenhouse, Lever,
      Ashby, Workable, Recruitee) is read every build. A listing that takes many requests is read
      four times a day, and Workday twice a day (11 hours apart); each Workday data center gets
      3 requests a second.
@@ -305,13 +309,14 @@ again (normally only those due), and boards that were switched off are retried.
      fetch agrees, they're closed then. A posting closed more than `closed_retention_days` (45) ago is
      deleted once no other listing in its cluster is open, or after a year regardless. A careers-site
      page that gives its own closing date closes when that date passes.
-   - **Open-model gap fill** (step 5b; the *fill* job, after publishing). First, titles the rules
-     couldn't place get a category from the most similar placed titles. Then the rules' list of gaps
-     (per description, the fields it talks about that they couldn't settle) goes to the open model,
-     newest open, de-duplicated, non-ghost postings first, for 60 minutes. Grounded answers are merged
-     into the extraction for the empty fields only, marked `"by": "model"`, and the builder database is
-     saved again; the next build publishes them. If the job fails, the rule answers stand. Descriptions
-     already read are recovered from the published database when seeding.
+   - **Open-model gap fill** (step 5b; the *Gap fill* workflow, alongside builds). First, titles the
+     rules couldn't place get a category from the most similar placed titles. Then the rules' list of
+     gaps (per description, the fields it talks about that they couldn't settle) goes to the open
+     model, newest open, de-duplicated, non-ghost postings first, for 60 minutes. Its answers go to the
+     next build in a small file (`python -m lighthouse index merge`), which merges grounded answers into
+     the extraction for the empty fields only, marked `"by": "model"`, and publishes them. If a run
+     fails, the rule answers stand. Descriptions already read are recovered from the published
+     database when seeding.
 3. **Write the public files** (`snapshot.export`), new every build:
    - **`jobs.db.xz`:** a plain SQLite database: every listing with its fields and history (`jobs`,
      `events`), an excerpt of each open role (`excerpts`), where each field was read from
@@ -344,10 +349,10 @@ again (normally only those due), and boards that were switched off are retried.
 
 | Limit | Value | When it matters |
 |---|---|---|
-| Job run time | about an hour (40-minute fetch limit); `timeout-minutes: 100` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
+| Job run time | under an hour (no board starts after 35 minutes, every request stops at 45); `timeout-minutes: 80` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
 | GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
-| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved twice a build; old entries are evicted automatically. The build compacts the file when 15% of it is free space |
+| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved once a build (hourly); the gap fill's answers are a small file. Old entries are evicted automatically. The build compacts the file when 15% of it is free space |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
 
@@ -357,12 +362,12 @@ again (normally only those due), and boards that were switched off are retried.
 |---|---|
 | *Publish* fails with 403 | Step 4: Workflow permissions → Read and write |
 | The build fails at once with "this database is from an older Lighthouse" | the cached builder database predates the current tables: delete the `lighthouse-builder-*` entries under **Actions → Caches** and run the workflow; it seeds from the published database |
-| Build is slow or times out | lower `LIGHTHOUSE_FETCH_MINUTES` (default 40), set `LIGHTHOUSE_COUNTRIES`, or switch big boards off |
+| Build is slow or times out | lower `LIGHTHOUSE_FETCH_MINUTES` (default 35, from the start of the build), set `LIGHTHOUSE_COUNTRIES`, or switch big boards off |
 | Many Workday boards fail with "Pushed back" | Workday's bot protection answered with block pages; that data center was left alone for the run and goes first next time. If it lasts for days, lower `SHARED_LIMITS` in `net.py` or raise `WORKDAY_REFRESH_HOURS` in `snapshot.py`. Don't work around it |
-| The log says "time limit (40 min) reached: N boards not started" | normal on a first build or after a block; they go first next run |
+| The log says "time limit (… min) reached: N boards not started or stopped part way" | normal on a first build or after a block; they go first next run |
 | Many boards fail with HTTP 429 | lower `per_host_requests_per_second` in `config/sources.toml` |
-| Manifest's `llm` entry stays at 0 descriptions | the *fill* job failed: its *Get the open model* step says why (a download or the llama.cpp build). It's retried next build |
-| `llm.waiting` keeps growing | more new postings than the reading time covers; raise `LIGHTHOUSE_LLM_MINUTES` (the *fill* job gets longer; publishing doesn't) |
+| Manifest's `llm` entry stays at 0 descriptions | the *Gap fill* run failed: its *Get the open model* step says why (a download or the llama.cpp build). It's retried after the next build |
+| `llm.waiting` keeps growing | more new postings than the reading time covers; raise `LIGHTHOUSE_LLM_MINUTES` (each *Gap fill* run gets longer; builds don't) |
 | *deploy-site* fails with "Timeout reached" | GitHub was slow copying the files; it waits up to 30 minutes now, and the next build deploys anyway |
 | A board's postings all stayed open although its site emptied | expected for one build (mass-closure hold); the next build closes them |
 | *deploy-site* is skipped | the *Write the website* or *Upload the website* step failed (its log says why); the database was published anyway |

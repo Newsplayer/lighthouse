@@ -12,6 +12,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,13 +20,17 @@ from . import config as config_mod
 from . import db, dedupe, extract, ghost, workers
 from .config import DEFAULT_CONFIG
 from .models import age_hours, utcnow
-from .net import default_client
+from .net import OutOfTime, default_client
 from .sources import SOURCES, BoardNotFound
 from .sources.base import RunGate, Unchanged, looks_blocked
 
 log = logging.getLogger("lighthouse.fetch")
 
 BOARD_RETRY_PAUSES = (60, 180)   # a rate-limited board is tried again after these pauses (seconds)
+# No board starts after fetch_minutes; this much later every request stops, even mid-listing (a big
+# Workday listing behind a data center that slowed us down ran 80 minutes past the limit). Boards
+# still running then are put back: their postings stay as they are, and they go first next run.
+STOP_AFTER_LIMIT_MINUTES = 10
 
 
 def _rate_limited(exc: Exception) -> bool:
@@ -59,6 +64,8 @@ def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=N
             return src.fetch(board["slug"], known=known), src
         except Unchanged:
             return None, src
+        except OutOfTime:
+            return DEFERRED, None
         except Exception as exc:
             # A bot check, 403 or a run of edge errors counts against the board's group. After a few,
             # the group is left alone for the rest of the run. Nothing is retried around a block.
@@ -92,6 +99,16 @@ def not_due(board: dict, s) -> bool:
     return hours > 0 and not board.get("last_error") and age_hours(board.get("last_ok")) < hours
 
 
+@contextmanager
+def _hard_stop(client, at: float | None):
+    """No request starts after `at` while the block runs; the process-wide client is free again after."""
+    client.stop_at = at
+    try:
+        yield
+    finally:
+        client.stop_at = None
+
+
 def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAULT_DB,
         only: list[tuple[str, str]] | None = None, overrides: dict | None = None) -> list[dict]:
     """Fetch all enabled boards (or just `only`), then post-process what changed. Returns per-board results."""
@@ -114,8 +131,9 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
     started = time.monotonic()
     detail_stop = started + s.detail_minutes * 60 if s.detail_minutes else None
     gate = RunGate(started + s.fetch_minutes * 60 if s.fetch_minutes else None)
+    stop_at = gate.deadline + STOP_AFTER_LIMIT_MINUTES * 60 if gate.deadline else None
     deferred = []
-    with ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool:
+    with _hard_stop(client, stop_at), ThreadPoolExecutor(max_workers=max(1, s.fetch_workers)) as pool:
         futures = {pool.submit(_fetch_board, b, db.known_postings(conn, b["ats"], b["slug"]), client,
                                s.max_detail_calls_per_board, hourly, countries, detail_stop, gate): b for b in boards}
         for fut in as_completed(futures):
@@ -131,7 +149,7 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
                                       not_found=isinstance(exc, BoardNotFound), disable_after=s.disable_after_failures)
                 results.append({"source": b["ats"], "board": b["slug"], "error": why, "switched_off": off})
             else:
-                if jobs == DEFERRED:   # not started: first in line next run; its postings stay as they are
+                if jobs == DEFERRED:   # not started or stopped at the hard limit: first next run, postings kept
                     deferred.append(b)
                     results.append({"source": b["ats"], "board": b["slug"], "deferred": True})
                 elif jobs is None:  # byte-identical to last run
@@ -157,7 +175,8 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
         log.warning("%s pushed back (%s); %d more of its boards wait for the next run", group, why, n)
     late = sum(1 for b in deferred if not gate.is_blocked(board_group(b)))
     if late:
-        log.info("time limit (%g min) reached: %d boards not started, first in line next run", s.fetch_minutes, late)
+        log.info("time limit (%g min) reached: %d boards not started or stopped part way, first in line next run",
+                 s.fetch_minutes, late)
     log.info("fetched for %.1f min", (time.monotonic() - started) / 60)
     touched |= db.close_expired(conn)   # pages not re-read this run whose closing date has passed
     # After an upgrade (new rules, filter fields or schema), every company is reprocessed once, not just the

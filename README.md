@@ -74,7 +74,7 @@ ORDER BY first_seen_on DESC LIMIT 50;
 
 ## Where the jobs come from
 
-A GitHub Action in this repo (the **builder**) does all the work, every 3 hours:
+A GitHub Action in this repo (the **builder**) does all the work, every hour:
 
 1. Finds each listed company's job board from its careers page (re-checked every 3–14 days).
 2. Reads every board, politely: only the public feeds the careers sites themselves load, within
@@ -144,7 +144,7 @@ applied and hidden lists stay in your browser. The published files hold job data
 | Unchanged boards | The whole response is hashed; byte-identical to last run → nothing is parsed or written |
 | Unchanged postings | Each raw description is hashed; only new or edited ones are cleaned, stored and re-analysed. Rows whose fields didn't change aren't rewritten |
 | Countries | Postings located only outside the US, Canada and Mexico are skipped before any description call. Locations are read without any API, using a built-in list of 77k city names (GeoNames, CC BY 4.0) |
-| Many boards | 48 boards at a time with a rate limit per site; nothing new starts after 40 minutes, and boards not reached go first next build |
+| Many boards | 48 boards at a time with a rate limit per site; nothing new starts 35 minutes into a build and every request stops 10 minutes later, so each build ends within the hour; boards not reached go first next build |
 | Big boards | Descriptions are fetched only for new postings, a capped number per build, newest first |
 | Sites that push back | A bot check, 403 or run of edge errors leaves that site (or Workday data center, or shared API host) alone for the rest of the build, never worked around; it goes first next build |
 | Duplicates | One MinHash signature per description, compared within a company; identical groups are compared once |

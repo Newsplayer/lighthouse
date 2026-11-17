@@ -2,7 +2,9 @@
     python -m lighthouse index build --out dist [--countries US,CA,MX] [--no-llm]
                                             # find boards, fetch, analyse, write the public files
     python -m lighthouse index seed jobs.db.xz   # start the builder from the published database (cache lost)
-    python -m lighthouse index fill [--minutes N]    # the open-model gap fill alone
+    python -m lighthouse index fill [answers.json.gz] [--minutes N]   # the open-model gap fill alone; its
+                                            # answers to a file, for the next build (the fill workflow)
+    python -m lighthouse index merge answers.json.gz   # merge a gap fill's answers into the builder database
     python -m lighthouse index summary [dist/manifest.json] [--boards]  # how the build went (Markdown)
     python -m lighthouse site [--out site_out]       # write the website from the builder database
     python -m lighthouse discover [--only NAME] [--out FILE]
@@ -37,6 +39,16 @@ def _index(args) -> None:
         conn = db.connect(path)
         try:
             print(json.dumps(snapshot.fill_gaps(conn, config.load(), _num(args.minutes)), indent=2))
+            if args.file:
+                print(f"Saved {snapshot.save_answers(conn, args.file)} answers to {args.file}.")
+        finally:
+            conn.close()
+    elif args.action == "merge":
+        if not args.file:
+            raise SystemExit("usage: python -m lighthouse index merge answers.json.gz [--db data/builder.db]")
+        conn = db.connect(path)
+        try:
+            print(json.dumps(snapshot.merge_answers(conn, args.file)))
         finally:
             conn.close()
     elif args.action == "summary":
@@ -77,8 +89,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="lighthouse")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("index", help="build the public job database")
-    p.add_argument("action", choices=["build", "seed", "fill", "summary"])
-    p.add_argument("file", nargs="?", help="seed: the published jobs.db.xz; summary: a manifest.json")
+    p.add_argument("action", choices=["build", "seed", "fill", "merge", "summary"])
+    p.add_argument("file", nargs="?", help="seed: the published jobs.db.xz; summary: a manifest.json; "
+                                           "fill: where to save its answers; merge: a fill's answers")
     p.add_argument("--out", default="dist", help="build: output folder")
     p.add_argument("--db", default=None, help="builder database (default data/builder.db)")
     p.add_argument("--countries", default="", help="build: comma-separated country codes to keep (default: all)")
@@ -88,7 +101,8 @@ def main() -> None:
     p.add_argument("--no-llm", action="store_true", help="build: rules only (no open-model gap fill, no category guesses)")
     p.add_argument("--llm-minutes", default=None, help="build: minutes the open model reads unsettled postings")
     p.add_argument("--fetch-minutes", default=None,
-                   help="build: start no new board or description call after this many minutes (default 40)")
+                   help="build: start no new board or description call this many minutes after the build "
+                        "starts (default 35; 0 = no limit)")
     p.add_argument("--minutes", default=None, help="fill: minutes the open model reads (default from config)")
     p.add_argument("--boards", action="store_true", help="summary: only the boards that need a look")
     p = sub.add_parser("site", help="write the website (static files for GitHub Pages) from the builder database")

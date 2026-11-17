@@ -109,6 +109,28 @@ def test_workday_sites_share_one_adaptive_budget_per_data_center(monkeypatch):
     assert pauses == [3.0, 3.0]                                        # Retry-After honoured
 
 
+def test_no_request_starts_after_the_runs_hard_limit(monkeypatch):
+    from lighthouse import fetch
+    t = net._HostThrottle(10)                                          # one request per 10 s to a host
+    t.wait("a.example.com", stop_at=net.time.monotonic() + 5)          # this one goes now
+    with pytest.raises(net.OutOfTime):                                 # the next one's turn comes after the limit
+        t.wait("a.example.com", stop_at=net.time.monotonic() + 5)
+
+    class Listing:                                                     # a long listing, still paging at the limit
+        def __init__(self, client=None, **kw):
+            self.client, self.dropped = client, set()
+
+        def fetch(self, slug, known=None):
+            return self.client.get("https://slow.example.com/jobs?page=40")
+    monkeypatch.setitem(fetch.SOURCES, "listing", Listing)
+    c = net.Client(per_host_rps=0)
+    monkeypatch.setattr(c, "_send", lambda *a: pytest.fail("a request was sent after the limit"))
+    with fetch._hard_stop(c, net.time.monotonic() - 1):
+        # put back for next run (its postings stay as they are), not counted as a failure
+        assert fetch._fetch_board({"ats": "listing", "slug": "x"}, {}, c, 5) == (fetch.DEFERRED, None)
+    assert c.stop_at is None                                           # the shared client is free again after
+
+
 def test_rate_limited_board_is_tried_again(monkeypatch):
     from lighthouse import fetch
 

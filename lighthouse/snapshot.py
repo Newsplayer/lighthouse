@@ -46,9 +46,12 @@ BUILDER_DB = db.DEFAULT_DB         # the Action's working database (kept in its 
 REDISCOVER_OK_DAYS = 14            # re-check a company whose board works this often
 REDISCOVER_BAD_DAYS = 3            # ... and one whose board couldn't be found this often
 FETCH_DETAIL_MINUTES = 120         # boards started later than this skip description calls this run
-# The whole build fits in an hour: nothing new is fetched after FETCH_MINUTES (boards not reached go
-# first next run), then clustering, the rules and the files take the rest.
-FETCH_MINUTES = 40
+# The whole build fits well inside an hour, so it can run every hour. Counted from the start of the
+# build: looking up companies stops starting new ones after DISCOVER_MINUTES, no board starts after
+# FETCH_MINUTES, every request stops 10 minutes later (fetch.STOP_AFTER_LIMIT_MINUTES), and
+# clustering, the rules and the files take the rest. What isn't reached goes first next run.
+DISCOVER_MINUTES = 10
+FETCH_MINUTES = 35
 FETCH_WORKERS = 48                 # boards in parallel: most wait on their host's rate limit, not on CPU
 WORKDAY_REFRESH_HOURS = 11         # each Workday board twice a day (see Settings.workday_refresh_hours)
 PAGED_REFRESH_HOURS = 5            # other many-request listings four times a day, as before builds ran every 3 hours
@@ -91,14 +94,18 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     client = net.default_client(s.request_timeout_seconds, s.per_host_requests_per_second)
     boards = list(cfg.boards)
     if discover_companies:
-        boards += discover_boards(conn, config_path.parent, client, full=full, listed=cfg.boards)
+        boards += discover_boards(conn, config_path.parent, client, full=full, listed=cfg.boards,
+                                  minutes=None if full else DISCOVER_MINUTES)
     boards = merge_same_boards(conn, boards)
     retired = apply_board_list(conn, boards, retry_switched_off=full)
     conn.close()
     # Nothing new is started after fetch_minutes, so even a first build of the whole list (hundreds of
     # thousands of postings) finishes and publishes; later runs pick up where it stopped.
+    fetch_minutes = FETCH_MINUTES if fetch_minutes is None else fetch_minutes
+    if fetch_minutes:   # what discovery took comes out of it (at least 5 minutes of fetching)
+        fetch_minutes = max(5.0, fetch_minutes - (time.monotonic() - t0) / 60)
     overrides = {"detail_minutes": FETCH_DETAIL_MINUTES, "countries": tuple(countries),
-                 "fetch_minutes": FETCH_MINUTES if fetch_minutes is None else fetch_minutes,
+                 "fetch_minutes": fetch_minutes,
                  "fetch_workers": max(s.fetch_workers, FETCH_WORKERS),
                  "workday_refresh_hours": s.workday_refresh_hours or WORKDAY_REFRESH_HOURS,
                  "paged_refresh_hours": s.paged_refresh_hours or PAGED_REFRESH_HOURS,
@@ -147,6 +154,59 @@ def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
     return out
 
 
+def save_answers(conn, path: Path | str) -> int:
+    """The gap fill's answers, for the next build to merge (merge_answers): every model reading kept, and
+    each job category guessed from similar titles. The fill job saves this small file, never the builder
+    database, so it runs alongside builds without writing over a newer one. Returns rows written."""
+    from .categorize import BY
+    n = 0
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        for h, data, model in conn.execute("SELECT content_hash, data, model FROM llm_extractions"):
+            f.write(json.dumps({"llm": [h, data, model]}, ensure_ascii=False) + "\n")
+            n += 1
+        for h, data in conn.execute("SELECT content_hash, data FROM extractions WHERE data LIKE ?", (f'%"by": "{BY}"%',)):
+            guess = json.loads(data).get("job_function") or {}
+            if guess.get("by") == BY:
+                f.write(json.dumps({"category": [h, guess]}, ensure_ascii=False) + "\n")
+                n += 1
+    return n
+
+
+def merge_answers(conn, path: Path | str) -> dict:
+    """Merge a gap fill's answers (save_answers) into the builder database. A reading that's new or changed
+    is stamped now, so it's merged even where a build rewrote that posting's rule answers after the model
+    read it (the fill runs alongside builds). Category guesses go only to postings the rules still can't
+    place. Safe to repeat: unchanged readings and placed postings are left alone."""
+    from . import extract, llm_fill
+    stamp, readings, guesses = llm_fill._stamp(), 0, []
+    with gzip.open(path, "rt", encoding="utf-8") as f, conn:
+        for line in f:
+            row = json.loads(line)
+            if "llm" in row:
+                readings += conn.execute(
+                    "INSERT INTO llm_extractions(content_hash, data, model, at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(content_hash) DO UPDATE SET data = excluded.data, model = excluded.model, "
+                    "at = excluded.at WHERE llm_extractions.data <> excluded.data", (*row["llm"], stamp)).rowcount
+            elif "category" in row:
+                guesses.append(row["category"])
+    merged = llm_fill.apply(conn)
+    placed, keys = 0, set()
+    with conn:
+        for h, guess in guesses:
+            e = conn.execute("SELECT data FROM extractions WHERE content_hash = ?", (h,)).fetchone()
+            data = json.loads(e[0] or "{}") if e else None
+            if data is None or (data.get("job_function") or {}).get("value"):
+                continue
+            data["job_function"] = guess
+            conn.execute("UPDATE extractions SET data = ?, at = ? WHERE content_hash = ?",
+                         (json.dumps(data, ensure_ascii=False), llm_fill._stamp(), h))
+            keys |= {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE content_hash = ?", (h,))}
+            placed += 1
+    if keys:
+        extract.derive(conn, sorted(keys))
+    return {"readings": readings, "merged": merged, "categories": placed}
+
+
 _SIDE_BOARD = re.compile(r"campus|intern|early|student|graduate|redeploy|restricted|contractor|alumni|referral", re.I)
 
 
@@ -160,7 +220,7 @@ def listed_board(company: str, by_company: dict) -> dict | None:
 
 
 def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_n: int = 24,
-                    listed: list[dict] | None = None) -> list[dict]:
+                    listed: list[dict] | None = None, minutes: float | None = None) -> list[dict]:
     """Resolve config/companies.csv to boards, re-checking only what's due. Results are kept in the
     builder's `companies` table (and shipped as the coverage report). Returns board-list entries.
 
@@ -195,8 +255,11 @@ def discover_boards(conn, config_dir: Path, client, full: bool = False, workers_
                or (old["status"] != "ok" and age > REDISCOVER_BAD_DAYS))
         if due:
             todo.append(c)
-    found = discover.run(todo, discover.discovery_client(), net.BUILDER_AGENT, workers=workers_n) if todo else []
-    log.info("discovery: %d companies checked, %s", len(found), discover.summary(found)["status"] if found else {})
+    stop = time.monotonic() + minutes * 60 if minutes else None
+    found = discover.run(todo, discover.discovery_client(), net.BUILDER_AGENT, workers=workers_n,
+                         stop_at=stop) if todo else []
+    log.info("discovery: %d companies checked, %s%s", len(found), discover.summary(found)["status"] if found else {},
+             f"; {len(todo) - len(found)} left for the next run (time limit)" if len(found) < len(todo) else "")
     with conn:
         for r in keep + found:
             conn.execute(
