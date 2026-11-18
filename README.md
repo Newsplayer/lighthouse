@@ -19,8 +19,8 @@ A few things that aren't obvious from the page:
   the signs listed.
 - Your answers and your saved, applied and hidden lists live only in this browser. Clearing the site's
   data deletes them; "Save my data to a file" moves them to another browser.
-- The list is rebuilt every hour. An open page checks every 15 minutes and adds new roles without a
-  reload.
+- The list is rebuilt about every 50 minutes. An open page checks every 15 minutes and adds new
+  roles without a reload.
 - The page shows an excerpt of each posting. The full text, and the apply button, are on the
   employer's site.
 
@@ -88,10 +88,10 @@ ORDER BY first_seen_on DESC LIMIT 50;
 
 ## Where the jobs come from
 
-A GitHub Action in this repo (the builder) runs every hour. It reads the companies in
-`config/companies.csv` (about 700, by careers page) and the boards in
-`config/boards/top-companies.csv` (931, 516 of them switched on), cleans and de-duplicates the postings, and publishes the files above and the
-website.
+A GitHub Action in this repo (the builder) runs one build after another, each under an hour. It reads
+the companies in `config/companies.csv` (about 700, by careers page) and the boards in
+`config/boards/top-companies.csv` (931, 516 of them switched on), cleans and de-duplicates the
+postings, and publishes the files above and the website.
 
 It reads Workday, Oracle Recruiting, SAP SuccessFactors, Phenom, iCIMS, Eightfold, Greenhouse, Lever,
 Ashby, Workable, SmartRecruiters, Recruitee and Amazon, plus any careers site whose job pages carry

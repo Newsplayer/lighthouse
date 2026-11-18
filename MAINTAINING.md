@@ -5,7 +5,7 @@ the website, or download the public database.
 
 ```
 config/companies.csv ─► careers pages ─┐
-config/boards/*.csv ───► job boards ───┴► Job index (hourly) ─┬► release "job-index": jobs.db.xz, jobs.csv.gz
+config/boards/*.csv ───► job boards ───┴► Job index (~50 min) ┬► release "job-index": jobs.db.xz, jobs.csv.gz
                                                               ├► the website (GitHub Pages)
                                           Gap fill ◄──────────┘  (after each build; its answers go
                                                                    to the next build)
@@ -93,9 +93,16 @@ Workday sites fill in their descriptions over the next few days. When it's green
 - The run's **summary page** shows how many roles and postings, what was published and how big, the
   boards that failed, and the share of descriptions read for each careers system.
 
-After that it runs every hour by itself, plus whenever a push to `main` changes `config/`,
-`lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
-nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
+After that it keeps itself going: each build starts the next when it ends, so a new one begins about
+every 50 minutes (at least 30 minutes apart, or an hour after a failed build). A push to `main` that
+changes `config/`, `lighthouse/` or `requirements.txt` also starts one. The hourly schedule is only a
+backup, because GitHub often fires schedules late or not at all; it restarts the chain if it stopped.
+It runs on `main` only: started on another branch it does nothing, because it would publish that
+branch's data to everyone (test builds: the network probe below).
+
+**To stop the builds:** **Actions → Job index → ⋯ → Disable workflow** (and **Enable workflow** to start
+again; the next scheduled slot or a *Run workflow* click restarts the chain). Cancelling a running
+build also stops the chain, until the schedule fires again.
 
 ### 8. The website (GitHub Pages)
 
@@ -287,10 +294,10 @@ any left over are looked up when they're next due.
      even one waiting its turn behind a site that slowed us down.
      Boards not reached, or stopped part way, keep their postings and lead the next run. So a build
      ends within the hour, whatever the sites do.
-   - **How often.** Builds run every hour. A board that answers in one request (Greenhouse, Lever,
-     Ashby, Workable, Recruitee) is read every build. A listing that takes many requests is read
-     four times a day, and Workday twice a day (11 hours apart); each Workday data center gets
-     3 requests a second.
+   - **How often.** Builds run back to back, about every 50 minutes. A board that answers in one
+     request (Greenhouse, Lever, Ashby, Workable, Recruitee) is read every build. A listing that takes
+     many requests is read every 5 hours, and Workday every 11 (`fetch.not_due`); each Workday data
+     center gets 3 requests a second.
    - **Workday listings are read whole.** A Workday site serves at most 2,000 results per listing
      (past that it repeats earlier pages). A bigger listing is read in parts, using the site's own
      filters (state, job category, full or part time...), and a part that is still over 2,000 is split
@@ -353,10 +360,10 @@ any left over are looked up when they're next due.
 
 | Limit | Value | When it matters |
 |---|---|---|
-| Job run time | under an hour (no board starts after 35 minutes, every request stops at 45); `timeout-minutes: 80` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
+| Job run time | under an hour (no board starts after 35 minutes, every request stops at 45); `timeout-minutes: 80` only stops a stuck run. A timed-out run doesn't start the next one: the schedule restarts the chain | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
 | GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
-| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved once a build (hourly); the gap fill's answers are a small file. Old entries are evicted automatically. The build compacts the file when 15% of it is free space |
+| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved once a build (about every 50 minutes); the gap fill's answers are a small file. Old entries are evicted automatically. The build compacts the file when 15% of it is free space |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
 

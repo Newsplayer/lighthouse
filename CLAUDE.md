@@ -74,7 +74,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 | Builder gap fill: open model on the build machine / its server / job categories from similar titles | `lighthouse/llm_fill.py` / `lighthouse/local_llm.py` / `lighthouse/categorize.py` |
 | Getting the models (pinned) / measuring them on real data | `scripts/get_llm.sh` / `scripts/eval_fill.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
-| Workflows: builder (hourly), gap fill, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `fill.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
+| Workflows: builder (each build starts the next), gap fill, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `fill.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
 | Page-only deploy (a push to `site/` goes live on the last build's data, no build) | `.github/workflows/website.yml` |
 | Maintainer guide | `MAINTAINING.md` |
 

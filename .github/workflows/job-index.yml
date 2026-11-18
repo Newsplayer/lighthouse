@@ -2,13 +2,16 @@
 # publishes jobs.db.xz, jobs.csv.gz and manifest.json on the "job-index" release, and deploys the
 # website. A run stops itself in under an hour (snapshot.FETCH_MINUTES); boards it doesn't reach keep
 # their postings and go first next run, so a cut-short run loses nothing.
+# Each run starts the next one when it ends (the "next" job below), so builds follow each other about
+# every 50 minutes. To stop them: Actions -> Job index -> "..." -> Disable workflow.
 # Setup, and what to do when it fails: MAINTAINING.md.
 name: Job index
 
 on:
   schedule:
-    # Hourly, at :17 because GitHub delays scheduled runs at the top of the hour. Not every board is
-    # read every run: fetch.not_due sets how often (Workday twice a day).
+    # A backup: each run starts the next itself, and GitHub fires schedules late or not at all (none of
+    # the first four hourly slots ran). This restarts the chain if it stopped. Not every board is read
+    # every run: fetch.not_due sets how often (Workday twice a day).
     - cron: "17 * * * *"
   workflow_dispatch:                # "Run workflow" button on the Actions tab
     inputs:
@@ -198,3 +201,26 @@ jobs:
         uses: actions/deploy-pages@v4
         with:
           timeout: 1800000
+
+  # Start the next build. GitHub starts scheduled runs late or not at all when it's busy: the 3-hourly
+  # schedule gave 2-3 builds a day, and the hourly one none in its first four hours. Builds start at
+  # least 30 minutes apart, or an hour after a failed build, so a build that fails every time can't
+  # loop quickly. A cancelled build doesn't start another: that's how a person stops the chain.
+  next:
+    needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      actions: write                # start a workflow run
+    steps:
+      - name: Start the next build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          started=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .run_started_at)
+          gap=$([ "${{ needs.build.result }}" = success ] && echo 1800 || echo 3600)
+          wait=$(( $(date -d "$started" +%s) + gap - $(date +%s) ))
+          if [ "$wait" -gt 0 ]; then echo "Waiting ${wait}s, so builds start at least $((gap / 60)) minutes apart"; sleep "$wait"; fi
+          gh workflow run job-index.yml --repo "${{ github.repository }}" --ref main
+          echo "Started the next build."
