@@ -1,18 +1,17 @@
-# Builds the job database, publishes it on this repo's "job-index" release, and deploys the website.
-# This is the only thing that writes job data.
-# Each run (under an hour, so it can run every hour): merge the newest answers from the gap fill
-# (fill.yml), find job boards for config/companies.csv (careers pages, re-checked when due; at most 10
-# minutes), fetch boards until 35 minutes into the build (stalest first; every request stops 10
-# minutes later, and what isn't reached goes first next run), clean, de-duplicate and analyse, then
-# publish the public database (jobs.db.xz), the same roles as a spreadsheet (jobs.csv.gz), and the
-# website. Setup and upkeep: MAINTAINING.md.
+# The builder, and the only thing that writes job data. Each run reads the job boards that are due,
+# publishes jobs.db.xz, jobs.csv.gz and manifest.json on the "job-index" release, and deploys the
+# website. A run stops itself in under an hour (snapshot.FETCH_MINUTES); boards it doesn't reach keep
+# their postings and go first next run, so a cut-short run loses nothing.
+# Each run starts the next one when it ends (the "next" job below), so builds follow each other about
+# every 50 minutes. To stop them: Actions -> Job index -> "..." -> Disable workflow.
+# Setup, and what to do when it fails: MAINTAINING.md.
 name: Job index
 
 on:
   schedule:
-    # Every hour. Boards that answer in one request are read every run (one request each); listings that
-    # take many requests keep their own pace (every 5 hours; Workday every 11): fetch.not_due. The gap
-    # fill runs in its own workflow (fill.yml), so it never holds a build up.
+    # A backup: each run starts the next itself, and GitHub fires schedules late or not at all (none of
+    # the first four hourly slots ran). This restarts the chain if it stopped. Not every board is read
+    # every run: fetch.not_due sets how often (Workday twice a day).
     - cron: "17 * * * *"
   workflow_dispatch:                # "Run workflow" button on the Actions tab
     inputs:
@@ -22,8 +21,8 @@ on:
         default: false
   push:
     branches: [main]
-    # Board or company lists edited, or the code that reads and writes job data changed: rebuild now,
-    # so the change is live in about an hour instead of at the next scheduled run.
+    # A change to the lists or the builder queues a build right away. A change to site/ alone doesn't:
+    # website.yml puts it live on the last build's data.
     paths: ["config/**", "lighthouse/**", "requirements.txt"]
 
 permissions:
@@ -32,12 +31,14 @@ permissions:
 
 concurrency:
   group: job-index
-  cancel-in-progress: false         # never two builds at once; a push waits for the scheduled run
+  # One build at a time. GitHub keeps only the newest waiting run: starting one by hand while a build
+  # runs replaces any run already waiting.
+  cancel-in-progress: false
 
 jobs:
   build:
-    # Only main publishes. A run started on another branch would put that branch's data on the
-    # release everyone downloads (test builds: network-probe.yml with probe/run-build).
+    # Only main publishes: a run on another branch would put that branch's data on the release everyone
+    # downloads. Test builds go through network-probe.yml (probe/run-build).
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
@@ -94,7 +95,7 @@ jobs:
         continue-on-error: true
         run: python -m lighthouse index merge data/answers.json.gz
 
-      # Rules only here: the open model reads in fill.yml, so it never delays new postings.
+      # --no-llm: the open model runs in fill.yml instead, so it never delays publishing.
       - name: Build
         run: >
           python -m lighthouse index build --out dist --no-llm
@@ -109,12 +110,12 @@ jobs:
           # The same three names every build, so their download links never change.
           gh release upload job-index dist/jobs.db.xz dist/manifest.json --clobber
           [ -e dist/jobs.csv.gz ] && gh release upload job-index dist/jobs.csv.gz --clobber
-          # Files from before the database had one name (base-*.db.xz, delta-*.db.xz) go.
+          # Anything else on the release is left over from older builds.
           gh api "repos/${{ github.repository }}/releases/tags/job-index" --jq '.assets[] | "\(.id) \(.name)"' |
           while read -r id name; do
             case " jobs.db.xz manifest.json jobs.csv.gz " in *" $name "*) ;; *) gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$id" && echo "removed $name" ;; esac
           done
-          # How the build went: on the run's summary page and in the log.
+          # Shown on the run's summary page.
           python -m lighthouse index summary dist/manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
 
       # One issue lists the boards that haven't answered for two days or were switched off. It is
@@ -200,3 +201,26 @@ jobs:
         uses: actions/deploy-pages@v4
         with:
           timeout: 1800000
+
+  # Start the next build. GitHub starts scheduled runs late or not at all when it's busy: the 3-hourly
+  # schedule gave 2-3 builds a day, and the hourly one none in its first four hours. Builds start at
+  # least 30 minutes apart, or an hour after a failed build, so a build that fails every time can't
+  # loop quickly. A cancelled build doesn't start another: that's how a person stops the chain.
+  next:
+    needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      actions: write                # start a workflow run
+    steps:
+      - name: Start the next build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          started=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .run_started_at)
+          gap=$([ "${{ needs.build.result }}" = success ] && echo 1800 || echo 3600)
+          wait=$(( $(date -d "$started" +%s) + gap - $(date +%s) ))
+          if [ "$wait" -gt 0 ]; then echo "Waiting ${wait}s, so builds start at least $((gap / 60)) minutes apart"; sleep "$wait"; fi
+          gh workflow run job-index.yml --repo "${{ github.repository }}" --ref main
+          echo "Started the next build."

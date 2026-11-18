@@ -1,7 +1,7 @@
 """Near-duplicate clustering and repost history (stdlib only).
 
 Two postings at the same company are the same role when
-  - company + title + location match exactly (the v0.1 fingerprint), or
+  - company + title + location match exactly, or
   - their titles mostly agree AND their descriptions are near-identical
     (MinHash estimate of word-5-gram Jaccard >= SIM_THRESHOLD).
 

@@ -6,6 +6,8 @@
 - Descriptions live apart from the jobs table (job_content, zlib-compressed), so scans read small rows.
 - The list queries at the end (Filters, list_jobs) are the reference the website's filters are tested
   against (tests/test_site.py runs site/logic.js against them).
+- The production database lives in the Actions cache and is carried from build to build. A change to
+  SCHEMA needs SCHEMA_VERSION bumped and a step in migrate(), or the next build stops.
 """
 
 from __future__ import annotations

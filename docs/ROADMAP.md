@@ -478,6 +478,10 @@ means. Keep every change incremental and measured (§2 baselines).
        tab left open all day downloads it up to 3 times as often (each download the same size).
      - Next: Workday's busiest data centers push back within about 7 minutes every run, and ~300
        Workday boards wait each time. Measure a lower per-data-center rate (`SHARED_LIMITS`).
+     - **Each build starts the next (2026-11-18).** GitHub fired none of the first four hourly
+       schedule slots (and only 2–3 of 8 a day on the 3-hourly schedule before), so the data went
+       hours without a build. Builds now follow each other about every 50 minutes; the schedule only
+       restarts the chain.
    - **Cheap check first, every run:**
      - Single-request boards (Greenhouse, Lever, Ashby...) already skip unchanged responses by
        hash.

@@ -4,8 +4,8 @@ Handles the shapes ATSs actually emit: "San Francisco, CA", "US, CA, Santa Clara
 "Remote - US", "New York City, NY; Seattle, WA", "London, UK", "Toronto, Ontario, Canada",
 "Bengaluru, India". Returns an empty set when it can't tell; callers treat that as "keep".
 
-Used for the Countries filter and, when you pick countries on the Profile page, to skip
-storing and processing postings located only elsewhere (the biggest saving on global employers).
+Used for the Countries filter, and by the build to skip postings located only outside its countries
+(LIGHTHOUSE_COUNTRIES; the biggest saving on global employers).
 """
 
 from __future__ import annotations

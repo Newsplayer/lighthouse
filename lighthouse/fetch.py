@@ -71,8 +71,9 @@ def _fetch_board(board: dict, known: dict, client, max_detail: int, skip_title=N
         except PutBack:
             return DEFERRED, None
         except Exception as exc:
-            # A bot check, 403 or a run of edge errors counts against the board's group. After a few,
-            # the group is left alone for the rest of the run. Nothing is retried around a block.
+            # A bot check, 403 or a run of edge errors counts against the board's group. After three
+            # (RunGate.strikes), the group is left alone for the rest of the run. Nothing is retried
+            # around a block.
             if gate and looks_blocked(exc):
                 gate.strike(group, f"{board['ats']}/{board['slug']}: {exc}"[:300])
             if pause is None or not _rate_limited(exc) or (gate and gate.is_blocked(group)):

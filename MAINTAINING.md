@@ -5,16 +5,14 @@ the website, or download the public database.
 
 ```
 config/companies.csv ─► careers pages ─┐
-config/boards/*.csv ───► job boards ───┴► GitHub Action (every 3 h) ─► release "job-index": jobs.db.xz, jobs.csv.gz
-                                           finds boards, fetches,     ─► the website (GitHub Pages)
-your commits ──────────► (lists, code)     cleans, analyses
+config/boards/*.csv ───► job boards ───┴► Job index (~50 min) ┬► release "job-index": jobs.db.xz, jobs.csv.gz
+                                                              ├► the website (GitHub Pages)
+                                          Gap fill ◄──────────┘  (after each build; its answers go
+                                                                   to the next build)
 ```
 
-- **Who can change what:**
-  - Only the Action writes job data.
-  - Only people with write access to the repo (you) change the board lists and code.
-  - Everyone else can read it, and suggest companies through issues.
-- **Cost:** $0. Public repos get free, unlimited Actions minutes, and release downloads and Pages are free.
+Only the Actions write job data; everyone else reads it and suggests companies through issues. It
+costs nothing on a public repo: Actions minutes, release downloads and Pages are free there.
 
 ---
 
@@ -58,9 +56,9 @@ open model reads that posting on the build machine itself. There's no key, accou
 
 - **What runs:** llama.cpp's server with Qwen3.5 2B (Apache-2.0), on the runner's CPU, in its own
   workflow (*Gap fill*, `fill.yml`). It starts after each build and runs alongside the next ones, so it
-  never delays new postings. It hands its answers to the next build in a small file in the Actions cache
-  (`lighthouse-fill-*`); the build merges them and publishes them. It's asked only about the unsettled fields, and shown only the sentences
-  around them (about a tenth of the posting).
+  never delays new postings. Its answers go to the next build in a small file in the Actions cache
+  (`lighthouse-fill-*`), which the build merges and publishes. It's asked only about the unsettled
+  fields, and shown only the sentences around them (about a tenth of the posting).
   An answer is kept only when the model quotes the words it read and the quote is really in the text;
   numbers must appear in their quote. It fills empty fields only, never overrides a rule answer, and
   reads each description at most once. Filled fields are marked `"by": "model"`.
@@ -95,9 +93,16 @@ Workday sites fill in their descriptions over the next few days. When it's green
 - The run's **summary page** shows how many roles and postings, what was published and how big, the
   boards that failed, and the share of descriptions read for each careers system.
 
-After that it runs every hour by itself, plus whenever a push to `main` changes `config/`,
-`lighthouse/` or `requirements.txt`. It runs on `main` only: started on another branch it does
-nothing, because it would publish that branch's data to everyone (test builds: the network probe below).
+After that it keeps itself going: each build starts the next when it ends, so a new one begins about
+every 50 minutes (at least 30 minutes apart, or an hour after a failed build). A push to `main` that
+changes `config/`, `lighthouse/` or `requirements.txt` also starts one. The hourly schedule is only a
+backup, because GitHub often fires schedules late or not at all; it restarts the chain if it stopped.
+It runs on `main` only: started on another branch it does nothing, because it would publish that
+branch's data to everyone (test builds: the network probe below).
+
+**To stop the builds:** **Actions → Job index → ⋯ → Disable workflow** (and **Enable workflow** to start
+again; the next scheduled slot or a *Run workflow* click restarts the chain). Cancelling a running
+build also stops the chain, until the schedule fires again.
 
 ### 8. The website (GitHub Pages)
 
@@ -140,12 +145,12 @@ for a day. A branch with work that isn't on `main` is never touched. Each run li
 
 ## Trying something against real careers sites
 
-Most development sandboxes (including Claude Code's) can't reach careers sites. Push a script as
-`probe/run.py` on a branch named `probe/<topic>`. The **Network probe** workflow runs it from
-GitHub's network; read its output in the run's log. Add an empty `probe/run-build` file to run a
-full test build instead, or an empty `probe/run-site` file to get the last build's database first
-(read only) so `probe/run.py` can, for example, write and time the website on real data. Nothing is
-published either way. Delete the branch when done.
+Most development sandboxes can't reach careers sites. Push a script as `probe/run.py` on a branch
+named `probe/<topic>`; the **Network probe** workflow runs it from GitHub's network, and its output is
+in the run's log. Add an empty `probe/run-build` file to run a full test build instead, or an empty
+`probe/run-site` file to get a copy of the last build's database first (so `probe/run.py` can try
+something on real data). Nothing is published, the copy is never saved back, and an idle probe branch
+is deleted after a day.
 
 ## Day to day
 
@@ -205,9 +210,9 @@ but opens `/careers` is read on `/careers` only.
 On a structured-data site, a job page read once and left out (outside the countries covered, an hourly
 title, or no job data on it) is remembered with its sitemap date. It isn't read again until that date
 changes, and it's forgotten when it leaves the sitemap. Big sites list mostly roles in other countries,
-so without this every run would re-read thousands of pages. When a page answers with a bot check or a block
-(403, 429, or the 202 that AWS bot protection sends), no more pages are read from that site in this
-run; what was read is kept and the rest waits for the next run.
+so without this every run would re-read thousands of pages. When a page answers with a bot check or
+a block (403, 429, or the 202 that AWS bot protection sends), no more pages are read from that site in
+this run; what was read is kept and the rest waits for the next run.
 
 ### Add a board (or act on a "Board suggestion" issue)
 
@@ -283,15 +288,16 @@ any left over are looked up when they're next due.
    - **Within the hour.** Looking companies up stops starting new ones 10 minutes into the build.
      48 boards run in parallel, stalest first (whatever wasn't reached last time), and among those the
      biggest first. Workday boards have 16 workers of their own: they're the slowest, and sharing the
-     48 they took every worker, so no other board was reached. 35 minutes into the build (`--fetch-minutes`, or the `LIGHTHOUSE_FETCH_MINUTES`
-     variable; counted from the start of the build) no new board or description call is started, and
-     10 minutes later every request stops, even one waiting its turn behind a site that slowed us down.
+     48 they took every worker, so no other board was reached. 35 minutes into the build
+     (`--fetch-minutes`, or the `LIGHTHOUSE_FETCH_MINUTES` variable; counted from the start of the
+     build) no new board or description call is started, and 10 minutes later every request stops,
+     even one waiting its turn behind a site that slowed us down.
      Boards not reached, or stopped part way, keep their postings and lead the next run. So a build
      ends within the hour, whatever the sites do.
-   - **How often.** Builds run every hour. A board that answers in one request (Greenhouse, Lever,
-     Ashby, Workable, Recruitee) is read every build. A listing that takes many requests is read
-     four times a day, and Workday twice a day (11 hours apart); each Workday data center gets
-     3 requests a second.
+   - **How often.** Builds run back to back, about every 50 minutes. A board that answers in one
+     request (Greenhouse, Lever, Ashby, Workable, Recruitee) is read every build. A listing that takes
+     many requests is read every 5 hours, and Workday every 11 (`fetch.not_due`); each Workday data
+     center gets 3 requests a second.
    - **Workday listings are read whole.** A Workday site serves at most 2,000 results per listing
      (past that it repeats earlier pages). A bigger listing is read in parts, using the site's own
      filters (state, job category, full or part time...), and a part that is still over 2,000 is split
@@ -301,10 +307,11 @@ any left over are looked up when they're next due.
      errors counts against the board's group: one Workday data center (wd1, wd5...), one shared API
      host (Greenhouse, Lever...), or the board's own site. After three, the group is left alone for the
      rest of the run: its other boards wait (a Workday listing already being read stops too), their
-     postings stay open, and they go first next run.
-     Nothing is retried around a block, and the user agent always says what the builder is. Then the usual steps run: de-duplication, field extraction (pay,
-   years asked, visa, clearance, citizenship, degree, job function, seniority, employment type, skills,
-   benefits, travel, languages) and ghost scoring.
+     postings stay open, and they go first next run. Nothing is retried around a block, and the user
+     agent always says what the builder is.
+   - **Then** come de-duplication, field extraction (pay, years asked, visa, clearance, citizenship,
+     degree, job function, seniority, employment type, skills, benefits, travel, languages) and ghost
+     scoring.
    - **Closing and deleting.** A posting its board no longer lists is closed: at once on boards that
      answer in one response (Greenhouse, Lever, Ashby, Workable, Recruitee, sitemaps), and on paged
      listings (Workday, Oracle, SmartRecruiters...) once it's missing two runs in a row, since a shifting
@@ -353,10 +360,10 @@ any left over are looked up when they're next due.
 
 | Limit | Value | When it matters |
 |---|---|---|
-| Job run time | under an hour (no board starts after 35 minutes, every request stops at 45); `timeout-minutes: 80` only stops a stuck run | a run after a rules change re-reads every description: ~15 minutes more |
+| Job run time | under an hour (no board starts after 35 minutes, every request stops at 45); `timeout-minutes: 80` only stops a stuck run. A timed-out run doesn't start the next one: the schedule restarts the chain | a run after a rules change re-reads every description: ~15 minutes more |
 | Release file size | 2 GiB | far off |
 | GitHub Pages site | 1 GB; a deploy must finish in 10 minutes; ~100 GB/month traffic (soft) | 185 MB at 227k roles; a first visit is ~5 MB, so ~20k first visits a month |
-| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved once a build (hourly); the gap fill's answers are a small file. Old entries are evicted automatically. The build compacts the file when 15% of it is free space |
+| Actions cache | 10 GB per repo | builder DB is ~3 GB on disk, ~1 GB in the cache, saved once a build (about every 50 minutes); the gap fill's answers are a small file. Old entries are evicted automatically. The build compacts the file when 15% of it is free space |
 | Inactivity | scheduled workflows pause after 60 days without repo activity (commits) | GitHub emails you; click **Enable workflow** on the Actions tab, or push any commit |
 | Failure emails | sent to whoever last edited the `cron:` line | that's you |
 

@@ -1,8 +1,8 @@
 """The website: static files for GitHub Pages, written by the builder after each build.
 
-Users download nothing and install nothing. The page (site/index.html + app.js) loads these files
-and does all searching and filtering in the browser. Nothing is ever sent anywhere: the page talks
-only to its own GitHub Pages origin, and a user's profile and saved jobs live in their browser.
+The page (site/index.html + app.js) loads these files and does all searching and filtering in the
+browser. It talks only to its own GitHub Pages origin, and a user's answers and saved jobs live in
+their browser.
 
     data/latest.json               what's current (fetched with a cache-busting query, ~1 KB)
     data/jobs-<base>.json          one entry per role (de-duplicated, in scope), as columns; weekly.

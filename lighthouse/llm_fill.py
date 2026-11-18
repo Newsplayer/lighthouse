@@ -1,4 +1,4 @@
-"""Builder only (the job-index GitHub Action): a free, open model reads what the rules couldn't settle.
+"""Builder only (the Gap fill workflow, fill.yml): a free, open model reads what the rules couldn't settle.
 
 Every new description goes through the rules first (extract.rules). If the posting clearly talks about a
 filter field but no rule could read an answer from it (extract.unresolved: it mentions "sponsorship" in
@@ -7,8 +7,8 @@ asked about those fields only, and is shown only the sentences around them (abou
 The job category is not asked: categorize.py guesses it from similar titles, which is faster and better.
 
 The model runs on the build machine itself (llama.cpp's server, CPU only), so there is no key, account or
-cost. It's given a fixed number of minutes per build, newest postings first; the rest wait for the next
-build. Each description is read at most once (kept by its hash, across reposts).
+cost. It's given a fixed number of minutes per run, newest postings first; the rest wait for the next
+run. Each description is read at most once (kept by its hash, across reposts).
 
 Answers are kept only when they're grounded: the model must quote the words it read, the quote must be in
 the text it was shown, and numbers (pay, years) must appear in their quote. A rule answer is never

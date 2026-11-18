@@ -30,8 +30,9 @@ BUILDER_AGENT = f"Lighthouse-index/{__version__} (+https://github.com/Newsplayer
 
 
 # Host suffixes whose sites share one rate limit per data center (the label before the suffix:
-# acme.wd5.myworkdayjobs.com -> wd5), and the requests per second each data center gets. Workday's
-# bot protection started answering with block pages after about an hour at ~3.5/s per data center.
+# acme.wd5.myworkdayjobs.com -> wd5), and the requests per second each data center gets. At ~3.5/s
+# Workday's bot protection answered with block pages after about an hour; by 2026-11-17, wd1 and wd5
+# answered 429 within about 7 minutes at 3/s, every run. Whether a lower rate reads more is untested.
 SHARED_LIMITS = (("myworkdayjobs.com", 3.0), ("myworkdaysite.com", 3.0))
 MAX_INTERVAL = 4.0          # slowest pace after repeated 429s: one request per 4 s
 RATE_LIMIT_TRIES = 6

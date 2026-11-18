@@ -2,8 +2,8 @@
 citizenship, degree, visa-sponsorship language, pipeline wording, benefits, travel, required languages.
 
 Tiers, all cached by description hash so identical text is never processed twice:
-  rules    — free regexes, run on every new description during fetch
-  gap fill — job-index Action only (llm_fill.py): when the posting clearly talks about a field but the
+  rules:    free regexes, run on every new description during fetch
+  gap fill: the Gap fill workflow only (llm_fill.py): when the posting clearly talks about a field but the
              rules can't settle it (unresolved()), a free open model on the build machine reads it once
              and fills that gap; categorize.py places titles the rules can't. Rule answers are never
              overwritten; filled fields carry "by": "model" or "titles" ("claude" in data from 2026-11).
@@ -453,7 +453,7 @@ def _derive_rows(conn, rows) -> None:
     from . import classify, geo
     with conn:
         for r in rows:
-            # data_at changes whenever the extraction is rewritten (new rules, a Claude gap fill)
+            # data_at changes whenever the extraction is rewritten (new rules, a gap-fill answer)
             # Everything the derived columns depend on, as a short hash (the text itself was 94 MB of the
             # builder database: a role's whole list of places, repeated on its row).
             key = hashlib.blake2b(
@@ -482,7 +482,7 @@ def _derive_rows(conn, rows) -> None:
                 ysrc = "title" if yoe is not None else None
             locs = strings(r["cluster_locations"]) or ([r["location"]] if r["location"] else [])
             stated = yoe if ysrc == "stated" else None
-            pick = lambda v, allowed: v if v in allowed else None   # a Claude value must be one we know
+            pick = lambda v, allowed: v if v in allowed else None   # a model's answer must be a value we know
             travel = pick(val("travel"), classify.TRAVEL)
             langs = [x for x in (val("languages") or []) if isinstance(x, str)]
             conn.execute(
