@@ -369,7 +369,8 @@ POSTINGS_TABLE = """CREATE TABLE postings (
 )"""
 
 # Fills postings from the public jobs and extractions (and the builder's excerpts, attached as src).
-# clean() trims and collapses whitespace and turns "" into NULL; a role with no title is left out.
+# clean() trims and collapses whitespace and turns "" into NULL; a role with no title is left out. Rows go
+# by company and title: newest first made jobs.csv.gz 37% bigger (a company's rows side by side compress).
 POSTINGS_FILL = """INSERT INTO postings SELECT
     j.uid, clean(j.title), clean(j.company), clean(j.location),
     (SELECT group_concat(clean(value), ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))),
@@ -392,7 +393,7 @@ POSTINGS_FILL = """INSERT INTO postings SELECT
     j.url, j.source, j.source_board, x.text
 FROM jobs j LEFT JOIN src.site_excerpts x ON x.content_hash = j.content_hash AND x.text <> ''
 WHERE j.active = 1 AND j.is_canonical = 1 AND clean(j.title) IS NOT NULL
-ORDER BY 27 DESC, 3 COLLATE NOCASE, 2 COLLATE NOCASE"""
+ORDER BY 3 COLLATE NOCASE, 2 COLLATE NOCASE"""
 
 
 def _clean(v):
@@ -464,7 +465,7 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
     rows, active = c.execute("SELECT COUNT(*), COALESCE(SUM(active), 0) FROM jobs").fetchone()
     csv_info = None
     try:        # a convenience for people: never stops the database from publishing
-        cur = c.execute("SELECT * FROM postings ORDER BY rowid")   # newest first, as written
+        cur = c.execute("SELECT * FROM postings ORDER BY rowid")   # by company and title, as written
         keep = [i for i, d in enumerate(cur.description) if d[0] != "excerpt"]
         n = 0
         with gzip.open(out / CSV_NAME, "wt", encoding="utf-8", newline="", compresslevel=6) as f:
@@ -505,7 +506,7 @@ def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
     manifest["db"], manifest["csv"] = write_public_db(Path(db_path), out, {
         "built_at": now, "lighthouse": __version__, "countries": list(countries),
         "about": "Open job postings read from employers' own careers sites by Lighthouse. Start with the "
-                 "postings table: one row per open role, newest first; its columns are described in its definition. "
+                 "postings table: one row per open role (ORDER BY first_seen_on DESC for the newest); its columns are described in its definition. "
                  "jobs keeps every listing, closed ones too, for history. Descriptions are excerpts; url is the "
                  "employer's page."})
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")

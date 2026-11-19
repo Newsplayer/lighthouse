@@ -33,10 +33,10 @@ The links below always point to the newest build.
 | File | What it is |
 |---|---|
 | [`jobs.db.xz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.db.xz) | Everything, as one SQLite file. Unpack it (`xz -d jobs.db.xz`, or 7-Zip) and open it with any SQLite tool: DB Browser for SQLite, Datasette, `sqlite3`, pandas. |
-| [`jobs.csv.gz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.csv.gz) | Open roles only, one row per role, newest first: the `postings` table below, without the excerpts. |
+| [`jobs.csv.gz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.csv.gz) | Open roles only, one row per role: the `postings` table below, without the excerpts. |
 | [`manifest.json`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/manifest.json) | When it was built, how many roles, and how the build went. |
 
-Start with the `postings` table: one row per open role, duplicates collapsed, newest first. What
+Start with the `postings` table: one row per open role, duplicates collapsed. What
 each column means is written into the table's definition, so any SQLite tool shows it. The other tables:
 
 | Table | Holds |

@@ -330,7 +330,7 @@ any left over are looked up when they're next due.
      fails, the rule answers stand. Descriptions already read are recovered from the published
      database when seeding.
 3. **Write the public files** (`snapshot.export`), new every build:
-   - **`jobs.db.xz`:** a plain SQLite database. `postings`: one row per open role, newest first, a
+   - **`jobs.db.xz`:** a plain SQLite database. `postings`: one row per open role, sorted by company, a
      column per filter in plain words, and an excerpt. It's cleaned as it's written: whitespace
      collapsed, empty strings stored as NULL, roles without a title left out, no dates in the future.
      Also every listing with its fields and history (`jobs`, `events`), where each field was read from
