@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 
 from .models import strings, utcnow
 from .sanitize import html_to_text
 
+RULES_VERSION = "rules-v6"   # bump when rules() changes: the next build reads every description again, once
 FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
           "skills", "employment", "benefits", "travel", "languages", "job_function", "seniority")
 
@@ -277,7 +280,7 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
         if out["degree"]["value"]:
             break
 
-    from .ghost import PIPELINE_LANGUAGE
+    from .dedupe import PIPELINE_LANGUAGE
     mm = _first(PIPELINE_LANGUAGE, text, _spans(text, low, _PIPELINE_KEYS, 50, 70))
     if mm:
         out["pipeline"] = _f(mm.group(0), _line(text, mm.start(), mm.end()))
@@ -398,7 +401,6 @@ def llm_for(conn, hashes) -> dict[str, dict]:
 
 def ensure_rules(conn, company_keys) -> int:
     """Run the free extractor on any description hash that has no extraction yet."""
-    from .workers import RULES_VERSION
     n = 0
     for ck in company_keys:
         rows = conn.execute(
@@ -511,3 +513,36 @@ def get(conn, content_hash: str) -> tuple[dict, str | None]:
     for f in FIELDS:                 # the published index leaves out fields a posting doesn't mention
         data.setdefault(f, {"value": None, "evidence": None})
     return data, r["method"]
+
+
+# ---------------------------------------------------------------- the rules on every core
+# CPU-heavy per-description work runs in a process pool. compute() is pure (no database, no network),
+# so worker processes can't step on SQLite; the parent streams batches and writes the results.
+PARALLEL_MIN = 300           # below this many descriptions, a pool costs more than it saves
+BATCH = 2000
+
+
+def compute(item: tuple) -> tuple:
+    """(content_hash, html, title, location, need_sig, need_rules[, hints]) ->
+    (content_hash, minhash, rules, unresolved fields). hints: departments + what the ATS already says."""
+    from .dedupe import minhash
+    chash, html, title, location, need_sig, need_rules = item[:6]
+    hints = item[6] if len(item) > 6 else {}
+    text = html_to_text(html or "")
+    data = rules(text, title or "", location or "") if need_rules else None
+    todo = unresolved(text, data, title or "", hints.get("departments") or "", hints) if data is not None else None
+    return chash, minhash(text) if need_sig else None, data, todo
+
+
+def compute_all(items: list[tuple], workers: int | None = None):
+    """Yield compute() for items, in parallel when it's worth it. Falls back to serial on any pool error."""
+    workers = workers or max(1, min(os.cpu_count() or 2, 8))  # parent mostly waits on results
+    if len(items) >= PARALLEL_MIN and workers > 1:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                yield from pool.map(compute, items, chunksize=32)
+            return
+        except Exception:  # e.g. a sandbox that forbids subprocesses
+            pass
+    for it in items:
+        yield compute(it)

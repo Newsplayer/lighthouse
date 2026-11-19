@@ -223,7 +223,7 @@ def _card(r, dicts: dict[str, dict]) -> list:
         INTERVALS.index(r["pay_interval"]) if r["pay_interval"] in INTERVALS else 0,
         ix("currency", r["pay_currency"] or ""),
         -1 if r["yoe_min"] is None else int(r["yoe_min"]),
-        1 if r["yoe_source"] == "stated" else 0,           # as profile.check: only stated years rule anyone out
+        1 if r["yoe_source"] == "stated" else 0,           # as db.check_eligibility: only stated years rule anyone out
         VISA.get(r["visa"], 0),
         1 if r["citizenship"] else 0,
         CLEARANCES.index(r["clearance"]) if r["clearance"] in CLEARANCES else (5 if r["clearance"] else 0),

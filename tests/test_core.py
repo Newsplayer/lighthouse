@@ -2,8 +2,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from lighthouse import config, db, dedupe, extract, fetch, profile
-from lighthouse import ghost
+from lighthouse import config, db, dedupe, extract, fetch
 from lighthouse.models import Job, company_key
 from lighthouse.sanitize import html_to_text, sanitize_html
 from lighthouse.sources.greenhouse import GreenhouseSource
@@ -42,7 +41,7 @@ def test_ghost_needs_two_signals():
     def ghost_reasons(title, posted_at, max_age_days):
         row = {"effective_first_seen": posted_at.isoformat(), "first_seen": None, "repost_count": 0, "title": title,
                "content_html": "", "updated_at": None}
-        return ghost.signals(row, max_age_days, text="")
+        return dedupe.signals(row, max_age_days, text="")
     assert ghost_reasons("Senior Data Analyst", datetime.now(timezone.utc), 60) == []
     assert len(ghost_reasons("Senior Data Analyst", old, 60)) == 1
     assert len(ghost_reasons("General Application - Talent Pool", old, 60)) == 2
@@ -126,7 +125,7 @@ def test_eligibility(tmp_path):
                                                                        body="<p>" + "Analyze data daily. " * 40 + "</p>")])
     cfg = config.load(tmp_path / "none.toml")
     fetch.postprocess(conn, cfg)
-    p = {**profile.DEFAULT, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]}
+    p = {**db.DEFAULT_PROFILE, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]}
     r = db.get_job(conn, "greenhouse:acme:1", p)
     reasons = json.loads(r["elig_reasons"])
     assert r["elig"] == 0 and any("sponsor" in x for x in reasons) and any("5+ years" in x for x in reasons)

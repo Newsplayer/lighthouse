@@ -4,7 +4,7 @@ import random
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from lighthouse import classify, config, db, discover, ghost, profile, snapshot
+from lighthouse import classify, config, db, dedupe, discover, snapshot
 from lighthouse.models import Job
 from lighthouse.sanitize import sanitize_html
 
@@ -160,7 +160,7 @@ def _random_row(rng):
 
 
 def test_query_eligibility_matches_the_reason_checker():
-    """The SQL clause and profile.check() must agree on every row: one filters the list, the other
+    """The SQL clause and db.check_eligibility() must agree on every row: one filters the list, the other
     explains it."""
     rng = random.Random(7)
     conn = sqlite3.connect(":memory:")
@@ -171,18 +171,18 @@ def test_query_eligibility_matches_the_reason_checker():
     conn.executemany(f"INSERT INTO jobs ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
                      [tuple(r[c] for c in cols) for r in rows])
     for _ in range(60):
-        p = {**profile.DEFAULT, "needs_sponsorship": rng.random() < .5, "us_citizen": rng.random() < .5,
+        p = {**db.DEFAULT_PROFILE, "needs_sponsorship": rng.random() < .5, "us_citizen": rng.random() < .5,
              "clearance": rng.choice(["none", "secret", "ts"]), "years_experience": rng.choice([None, 1, 4]),
              "degree": rng.choice(["none", "bachelors", "phd"]), "min_salary": rng.choice([None, 100000]),
              "workplaces": rng.choice([["remote", "hybrid", "onsite"], ["remote"], ["hybrid", "onsite"]]),
              "locations": rng.choice([[], ["Austin"], ["remote"], ["new york", "remote"]])}
-        if not profile.is_set(p):       # nothing answered: nothing is ruled out, and there is no clause
-            assert profile.eligibility_sql(conn, p, 2) is None
+        if not db.profile_is_set(p):       # nothing answered: nothing is ruled out, and there is no clause
+            assert db.eligibility_sql(conn, p, 2) is None
             continue
-        clause, args = profile.eligibility_sql(conn, p, 2)
+        clause, args = db.eligibility_sql(conn, p, 2)
         ok = {r[0] for r in conn.execute(f"SELECT id FROM jobs j WHERE {clause}", args)}
         for i, row in enumerate(conn.execute("SELECT * FROM jobs ORDER BY id"), start=1):
-            assert (i in ok) == (not profile.check(row, p, 2)), (p, dict(row))
+            assert (i in ok) == (not db.check_eligibility(row, p, 2)), (p, dict(row))
 
 
 def job(eid, title="Data Analyst", body=None, emp=None, departments=None):
@@ -217,10 +217,10 @@ def test_ghost_reasons_store_dates_not_counts():
     row = {"effective_first_seen": "2026-08-01T00:00:00+00:00", "first_seen": None, "repost_count": 0,
            "title": "Analyst", "updated_at": "2026-01-01T00:00:00+00:00"}
     now = datetime(2026, 11, 5, tzinfo=timezone.utc)
-    stored = ghost.signals(row, 60, now, text="")
+    stored = dedupe.signals(row, 60, now, text="")
     assert stored == ["open since 2026-08-01", "not updated since 2026-01-01"]
-    assert stored == ghost.signals(row, 60, now + timedelta(days=1), text="")   # unchanged the next day
-    assert ghost.labels(json.dumps(stored), now) == ["open 96 days", "not updated in 308 days"]
+    assert stored == dedupe.signals(row, 60, now + timedelta(days=1), text="")   # unchanged the next day
+    assert dedupe.labels(json.dumps(stored), now) == ["open 96 days", "not updated in 308 days"]
 
 
 def test_an_age_is_not_years_of_experience():

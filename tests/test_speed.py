@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timezone
 
-from lighthouse import config, db, fetch, geo, profile, workers
+from lighthouse import config, db, extract, fetch, geo
 from lighthouse.extract import rules, yoe_from_title
 from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
@@ -53,7 +53,7 @@ def test_years_asked_filter_and_title_fallback(tmp_path):
     assert titles(db.Filters(yoe_hi=4, yoe_unknown=False)) == ["Data Analyst:2"]
     assert [r["yoe_min"] for r in db.list_jobs(conn, db.Filters(sort="yoe"))[0]] == [2, 5, 7, None]
     # a title-based estimate never rules anyone out
-    p = {**profile.DEFAULT, "years_experience": 1}
+    p = {**db.DEFAULT_PROFILE, "years_experience": 1}
     assert db.get_job(conn, "greenhouse:acme:3", p)["elig"] == 1
     assert db.get_job(conn, "greenhouse:acme:2", p)["elig"] == 0
 
@@ -114,14 +114,14 @@ def test_unchanged_board_and_descriptions_are_skipped(tmp_path, gh):
 
 
 def test_precompute_parallel_matches_serial(tmp_path, monkeypatch):
-    monkeypatch.setattr(workers, "PARALLEL_MIN", 2)
+    monkeypatch.setattr(extract, "PARALLEL_MIN", 2)
     a, b = db.connect(tmp_path / "a.db"), db.connect(tmp_path / "b.db")
     jobs = [job(i, body=f"<p>Needs {i % 9 + 1}+ years of experience. " + f"Topic {i} details. " * 25 + "</p>")
             for i in range(12)]
     for c in (a, b):
         db.upsert_board(c, "greenhouse", "acme", jobs)
     assert fetch.precompute(a) == 12
-    monkeypatch.setattr(workers, "PARALLEL_MIN", 10**9)
+    monkeypatch.setattr(extract, "PARALLEL_MIN", 10**9)
     assert fetch.precompute(b) == 12
     q = "SELECT j.uid, j.minhash, e.data FROM jobs j JOIN extractions e ON e.content_hash = j.content_hash ORDER BY j.uid"
     assert [tuple(r) for r in a.execute(q)] == [tuple(r) for r in b.execute(q)]

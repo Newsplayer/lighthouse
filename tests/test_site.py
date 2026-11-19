@@ -16,7 +16,7 @@ import pytest
 
 from test_index import Builder, job
 
-from lighthouse import classify, db, places, profile, site
+from lighthouse import classify, db, places, site
 
 NODE = shutil.which("node")
 LOGIC = (Path(__file__).resolve().parent.parent / "site" / "logic.js").as_uri()
@@ -204,7 +204,7 @@ def test_page_filters_match_the_python_reference(tmp_path):
     gen(b, out)
     conn = db.connect(b.path)
     uid_of = {i: u for u, i in conn.execute("SELECT uid, id FROM site_ids")}
-    prof = {**profile.DEFAULT, "years_experience": 3, "needs_sponsorship": True,   # where: the Where filter, not the profile
+    prof = {**db.DEFAULT_PROFILE, "years_experience": 3, "needs_sponsorship": True,   # where: the Where filter, not the profile
             "min_salary": 100000, "degree": "bachelors"}
     cases = [  # (reference Filters; a list = any of them, the page's filters)
         ({}, {}),
@@ -369,11 +369,11 @@ console.log(JSON.stringify({none: logic.profileFrom(logic.NO_ANSWERS),
 """, {"dir": str(out), "answers": answers, "ids": {str(i): 1 for i in rows}})
     assert got["none"] is None
     for a, res in zip(answers, got["res"]):
-        # what the answers mean for lighthouse/profile.py: unanswered = never a reason
-        p = {**profile.DEFAULT, "needs_sponsorship": a.get("sponsorship") is True, "us_citizen": a.get("citizen") is not False,
+        # what the answers mean for db.check_eligibility: unanswered = never a reason
+        p = {**db.DEFAULT_PROFILE, "needs_sponsorship": a.get("sponsorship") is True, "us_citizen": a.get("citizen") is not False,
              "degree": a.get("degree") or "phd", "clearance": a.get("clearance") or "none", "years_experience": None,
              "workplaces": ["remote", "hybrid", "onsite"], "min_salary": None}
-        assert res == [profile.check(rows[i], p) for i in sorted(rows)], a
+        assert res == [db.check_eligibility(rows[i], p) for i in sorted(rows)], a
         reasons = " ".join(" ".join(r) for r in res)
         assert ("citizenship" in reasons) == (a.get("citizen") is False) and ("degree" in reasons) == ("degree" in a)
         assert ("sponsor" in reasons) == (a.get("sponsorship") is True)
@@ -402,7 +402,7 @@ def test_page_eligibility_matches_profile_check(tmp_path):
     out = tmp_path / "site"
     gen(b, out)
     rng = random.Random(3)
-    profiles = [{**profile.DEFAULT, "years_experience": rng.choice([None, 0, 2, 5, 10]),
+    profiles = [{**db.DEFAULT_PROFILE, "years_experience": rng.choice([None, 0, 2, 5, 10]),
                  "degree": rng.choice(["none", "bachelors", "masters", "phd"]),
                  "needs_sponsorship": rng.random() < .4, "us_citizen": rng.random() < .5,
                  "clearance": rng.choice(["none", "public_trust", "secret", "ts", "ts_sci"]),
@@ -413,7 +413,7 @@ def test_page_eligibility_matches_profile_check(tmp_path):
     rows = {i: conn.execute("SELECT * FROM jobs WHERE uid = ?", (u,)).fetchone()
             for u, i in conn.execute("SELECT uid, id FROM site_ids")}
     conn.close()
-    want = [[profile.check(rows[i], p) for i in sorted(rows)] for p in profiles]
+    want = [[db.check_eligibility(rows[i], p) for i in sorted(rows)] for p in profiles]
     got = node(_store_script() + """
 const ids = Object.keys(input.ids).map(Number).sort((a, b) => a - b);
 console.log(JSON.stringify(input.profiles.map((p) => ids.map((i) => logic.eligibility(store, i, p)))));

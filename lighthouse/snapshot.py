@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, db, dedupe, extract, workers
+from . import __version__, db, dedupe, extract
 from .models import age_hours, utcnow
 
 log = logging.getLogger("lighthouse.index")
@@ -534,7 +534,7 @@ def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
     site.excerpts(conn)          # an excerpt for every open role, kept in the builder database
     # A role listed in 40 places is one role, 40 postings. "jobs" counts roles: the number every list adds up to.
     roles, postings = conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone()
-    manifest = {"lighthouse": __version__, "rules_version": workers.RULES_VERSION, "built_at": now,
+    manifest = {"lighthouse": __version__, "rules_version": extract.RULES_VERSION, "built_at": now,
                 "countries": list(countries), "jobs": roles, "postings": postings,
                 "boards": conn.execute("SELECT COUNT(*) FROM boards WHERE enabled = 1 AND last_ok IS NOT NULL").fetchone()[0],
                 # boards that stopped existing, for the maintainer to fix or drop

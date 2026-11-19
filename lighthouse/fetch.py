@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import config as config_mod
-from . import db, dedupe, extract, ghost, workers
+from . import db, dedupe, extract
 from .config import DEFAULT_CONFIG
 from .models import age_hours, utcnow
 from .net import PutBack, default_client
@@ -197,7 +197,7 @@ def run(config_path: Path | str = DEFAULT_CONFIG, db_path: Path | str = db.DEFAU
 def processed_versions() -> dict:
     """What a full postprocess brings every row up to (stored in meta after one)."""
     from .classify import DERIVE_VERSION
-    return {"rules": workers.RULES_VERSION, "derive": DERIVE_VERSION, "schema": db.SCHEMA_VERSION}
+    return {"rules": extract.RULES_VERSION, "derive": DERIVE_VERSION, "schema": db.SCHEMA_VERSION}
 
 
 def postprocess(conn, cfg=None, company_keys=None) -> None:
@@ -214,10 +214,10 @@ def postprocess(conn, cfg=None, company_keys=None) -> None:
     # Age-based signals drift by the day: rescore everything once a day, otherwise only what changed.
     today = datetime.now(timezone.utc).date().isoformat()
     if company_keys is None or db.get_meta(conn, "ghost_full_rescore") != today:
-        ghost.rescore(conn, all_keys, s.ghost_age_days)
+        dedupe.rescore(conn, all_keys, s.ghost_age_days)
         db.set_meta(conn, "ghost_full_rescore", today)
     else:
-        ghost.rescore(conn, keys, s.ghost_age_days)
+        dedupe.rescore(conn, keys, s.ghost_age_days)
     _prune(conn, s.inactive_content_retention_days)
     n = db.purge_closed(conn, s.closed_retention_days)
     if n:
@@ -258,11 +258,11 @@ def precompute(conn, company_keys=None) -> int:
             "SELECT j.uid, j.content_hash FROM jobs j JOIN job_content c ON c.uid = j.uid "
             "LEFT JOIN extractions e ON e.content_hash = j.content_hash "
             "WHERE j.active = 1 AND (e.content_hash IS NULL OR (e.method = 'rules' AND COALESCE(e.model, '') <> ?))"
-            + scope, [workers.RULES_VERSION, *args]):
+            + scope, [extract.RULES_VERSION, *args]):
         need.setdefault(chash, {"uids": [], "sig": False, "rules": False, "uid": uid})["rules"] = True
     hashes = list(need)
-    for i in range(0, len(hashes), workers.BATCH):
-        batch = hashes[i:i + workers.BATCH]
+    for i in range(0, len(hashes), extract.BATCH):
+        batch = hashes[i:i + extract.BATCH]
         items = []
         for chash in batch:
             n = need[chash]
@@ -274,7 +274,7 @@ def precompute(conn, company_keys=None) -> int:
                               {"departments": r[3] or "", "salary": bool(r[4]), "workplace": r[5]}))
         llm = extract.llm_for(conn, [h for h in batch if need[h]["rules"]])   # gap fills survive new rules
         with conn:
-            for chash, sig, data, todo in workers.run(items):
+            for chash, sig, data, todo in extract.compute_all(items):
                 if need[chash]["sig"]:
                     conn.executemany("UPDATE jobs SET minhash=?, minhash_of=? WHERE uid=?",
                                      [(sig, chash, u) for u in need[chash]["uids"]])
@@ -282,5 +282,5 @@ def precompute(conn, company_keys=None) -> int:
                     conn.execute("INSERT OR REPLACE INTO extractions(content_hash, method, data, model, at, unresolved) "
                                  "VALUES (?, 'rules', ?, ?, ?, ?)",
                                  (chash, json.dumps(extract.merge_llm(data, llm.get(chash)), ensure_ascii=False),
-                                  workers.RULES_VERSION, utcnow(), ",".join(todo or []) or None))
+                                  extract.RULES_VERSION, utcnow(), ",".join(todo or []) or None))
     return len(hashes)
