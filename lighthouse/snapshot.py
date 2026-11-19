@@ -3,7 +3,7 @@ manifest.json on the `job-index` release. README.md describes them for their use
 
 The public database is written by whitelist (write_public_db), and a test checks it. Anything added
 to it must be job data: never descriptions in full, and nothing about the people using the site.
-Other people's queries read its tables and the `postings` view, so a renamed or dropped column breaks
+Other people's queries read its tables (postings first), so a renamed or dropped column breaks
 them; say so in the PR and update the README.
 
 The same file is what a new builder starts from when the Actions cache is lost (seed_builder), so a
