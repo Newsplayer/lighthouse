@@ -438,6 +438,16 @@ def _annual(v, per):
     return v * _ANNUAL.get(per or "year", 1) if v is not None else None
 
 
+_STRONG_CURRENCIES = {"USD", "CAD", "EUR", "GBP"}
+
+
+def _unbelievable_pay(smin, smax, cur) -> bool:
+    """Yearly pay no real posting means, which a misread number produces: under 10,000, a range spanning
+    more than 20x ("$130,000 - $150,000,000"), or over 2 million in dollars, euros or pounds. MXN or
+    other currencies' millions are real pay."""
+    return smax < 10000 or bool(smin and smax > 20 * smin) or (smax > 2_000_000 and (cur or "USD") in _STRONG_CURRENCIES)
+
+
 _DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
        j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
        j.employment_type, e.data, e.method, e.at AS data_at
@@ -474,7 +484,9 @@ def _derive_rows(conn, rows) -> None:
             smin, smax = _annual(smin, per), _annual(smax, per)
             if smax is None:
                 smax = smin
-            if smax is not None and smax < 10000:  # implausible as annual pay: treat as unknown
+            if smin is not None and smax is not None and smin > smax:
+                smin, smax = smax, smin
+            if smax is not None and _unbelievable_pay(smin, smax, cur):
                 smin = smax = cur = per = None
             cit = val("citizenship")
             yoe = val("yoe_min")
