@@ -74,7 +74,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
           llm: bool = True, llm_minutes: float | None = None, fetch_minutes: float | None = None) -> dict:
     """Find boards for the listed companies, fetch every enabled board into the builder database, let a
     free open model on this machine fill the fields the rules couldn't settle (when one is set up: see
-    llm_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
+    gap_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
     public files. full: look every company up again and retry boards that were switched off."""
     from . import config as config_mod
     from . import fetch, net
@@ -113,7 +113,8 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     if retired or keys:   # postings closed (boards switched off in the list) or deleted: re-cluster those companies
         fetch.postprocess(conn, cfg, set(retired) | keys)
     if llm:   # optional steps: the rule answers are published whatever happens here
-        fill_gaps(conn, cfg, llm_minutes)
+        from . import gap_fill
+        gap_fill.fill(conn, cfg, llm_minutes)
     _company_openings(conn)
     db.set_meta(conn, "build_health", health(conn, results, started, (time.monotonic() - t0) / 60,
                                              s.ghost_hide_signals))
@@ -121,83 +122,6 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
         log.info("compacted the database")
     conn.close()
     return export(db_path, out_dir, countries=countries)
-
-
-def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
-    """The builder's free gap fill: categories for titles no rule places (categorize.py), then the open
-    model on this machine for fields the rules couldn't settle (llm_fill.py), for `minutes`. Never
-    raises: whatever fails, the rule answers stand. Returns what each step did."""
-    from . import categorize, llm_fill
-    out = {}
-    try:
-        out["categories"] = categorize.run(conn)
-    except Exception as exc:
-        log.warning("category guesses skipped: %s", exc)
-        out["categories"] = {"error": str(exc)[:200]}
-    try:
-        server = llm_fill.server_from_env(cfg)
-        if server is None:
-            out["model"] = llm_fill.run(conn, cfg)          # merges anything stored; says why nothing was read
-        else:
-            with server:
-                out["model"] = llm_fill.run(conn, cfg, minutes=minutes, server=server)
-    except Exception as exc:
-        log.warning("gap fill skipped: %s", exc)
-        out["model"] = {"error": str(exc)[:200]}
-    return out
-
-
-def save_answers(conn, path: Path | str) -> int:
-    """The gap fill's answers, for the next build to merge (merge_answers): every model reading kept, and
-    each job category guessed from similar titles. The Gap fill workflow saves this small file, never the builder
-    database, so it runs alongside builds without writing over a newer one. Returns rows written."""
-    from .categorize import BY
-    n = 0
-    with gzip.open(path, "wt", encoding="utf-8") as f:
-        for h, data, model in conn.execute("SELECT content_hash, data, model FROM llm_extractions"):
-            f.write(json.dumps({"llm": [h, data, model]}, ensure_ascii=False) + "\n")
-            n += 1
-        for h, data in conn.execute("SELECT content_hash, data FROM extractions WHERE data LIKE ?", (f'%"{BY}"%',)):
-            guess = json.loads(data).get("job_function") or {}
-            if guess.get("by") == BY:
-                f.write(json.dumps({"category": [h, guess]}, ensure_ascii=False) + "\n")
-                n += 1
-    return n
-
-
-def merge_answers(conn, path: Path | str) -> dict:
-    """Merge a gap fill's answers (save_answers) into the builder database. A reading that's new or changed
-    is stamped now, so it's merged even where a build rewrote that posting's rule answers after the model
-    read it (the fill runs alongside builds). Category guesses go only to postings the rules still can't
-    place. Safe to repeat: unchanged readings and placed postings are left alone."""
-    from . import extract, llm_fill
-    stamp, readings, guesses = llm_fill._stamp(), 0, []
-    with gzip.open(path, "rt", encoding="utf-8") as f, conn:
-        for line in f:
-            row = json.loads(line)
-            if "llm" in row:
-                readings += conn.execute(
-                    "INSERT INTO llm_extractions(content_hash, data, model, at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(content_hash) DO UPDATE SET data = excluded.data, model = excluded.model, "
-                    "at = excluded.at WHERE llm_extractions.data <> excluded.data", (*row["llm"], stamp)).rowcount
-            elif "category" in row:
-                guesses.append(row["category"])
-    merged = llm_fill.apply(conn)
-    placed, keys = 0, set()
-    with conn:
-        for h, guess in guesses:
-            e = conn.execute("SELECT data FROM extractions WHERE content_hash = ?", (h,)).fetchone()
-            data = json.loads(e[0] or "{}") if e else None
-            if data is None or (data.get("job_function") or {}).get("value"):
-                continue
-            data["job_function"] = guess
-            conn.execute("UPDATE extractions SET data = ?, at = ? WHERE content_hash = ?",
-                         (json.dumps(data, ensure_ascii=False), llm_fill._stamp(), h))
-            keys |= {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE content_hash = ?", (h,))}
-            placed += 1
-    if keys:
-        extract.derive(conn, sorted(keys))
-    return {"readings": readings, "merged": merged, "categories": placed}
 
 
 _SIDE_BOARD = re.compile(r"campus|intern|early|student|graduate|redeploy|restricted|contractor|alumni|referral", re.I)
@@ -526,7 +450,7 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
 
 def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
     """Write the public files into out_dir: jobs.db.xz, jobs.csv.gz and manifest.json (returned)."""
-    from . import llm_fill, site
+    from . import gap_fill, site
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     now = _now()
@@ -540,7 +464,7 @@ def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
                 # boards that stopped existing, for the maintainer to fix or drop
                 "switched_off": [f"{a}:{b}" for a, b in conn.execute(
                     "SELECT ats, slug FROM boards WHERE last_error LIKE 'Switched off automatically%' ORDER BY ats, slug")],
-                "coverage": _coverage(conn), "llm": llm_fill.summary(conn), "fill": _fill_rates(conn),
+                "coverage": _coverage(conn), "llm": gap_fill.summary(conn), "fill": _fill_rates(conn),
                 "health": db.get_meta(conn, "build_health")}
     conn.close()
     manifest["db"], manifest["csv"] = write_public_db(Path(db_path), out, {

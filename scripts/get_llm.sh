@@ -3,8 +3,8 @@
 # keyed by this file, so it's fetched once and again only when a version below changes):
 #   llm/bin/llama-server   llama.cpp's server, built from source for CPUs (every x86-64 variant, picked
 #                          at run time, so a cached build works on whichever runner comes next)
-#   llm/model.gguf         the open model that reads unsettled postings (lighthouse/llm_fill.py)
-#   llm/embed/             the static embedding model that places job titles (lighthouse/categorize.py)
+#   llm/model.gguf         the open model that reads unsettled postings (lighthouse/gap_fill.py)
+#   llm/embed/             the static embedding model that places job titles (lighthouse/gap_fill.py)
 # All free and open (MIT / Apache-2.0); nothing needs a key or an account.
 set -euo pipefail
 

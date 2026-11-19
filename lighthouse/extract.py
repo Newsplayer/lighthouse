@@ -3,9 +3,9 @@ citizenship, degree, visa-sponsorship language, pipeline wording, benefits, trav
 
 Tiers, all cached by description hash so identical text is never processed twice:
   rules:    free regexes, run on every new description during fetch
-  gap fill: the Gap fill workflow only (llm_fill.py): when the posting clearly talks about a field but the
+  gap fill: the Gap fill workflow only (gap_fill.py): when the posting clearly talks about a field but the
              rules can't settle it (unresolved()), a free open model on the build machine reads it once
-             and fills that gap; categorize.py places titles the rules can't. Rule answers are never
+             and fills that gap; it also places titles the rules can't. Rule answers are never
              overwritten; filled fields carry "by": "model" or "titles" ("claude" in data from 2026-11).
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing

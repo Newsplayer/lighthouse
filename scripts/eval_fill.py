@@ -3,13 +3,13 @@
     python scripts/eval_fill.py --db data/builder.db [--server llm/bin/llama-server --model llm/model.gguf]
                                 [--embed llm/embed] [--per-field 20] [--speed-minutes 4]
 
-Model (llm_fill.py), on the same questions the build asks:
+Model (gap_fill.read_gaps), on the same questions the fill asks:
   KNOWN    postings whose rules DID read a field: ask the model that field, from the same kind of
            excerpt, and compare its (grounded) answer with the rule's. Right, wrong, or no answer.
   ABSENT   postings that never mention a field: ask anyway; any kept answer is made up.
   SPEED    the build's own loop on waiting postings for a few minutes: per hour, answers kept, dropped.
   SAMPLE   a few answers on waiting postings, to read.
-Categories (categorize.py):
+Categories (gap_fill.place_titles):
   CATEGORY held-out placed titles guessed from the rest (precision, coverage), and time for all unplaced.
   GUESS    a few guesses for unplaced titles, to read.
 One JSON line per result. Run it in Actions with the network probe and probe/run-site (MAINTAINING.md).
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from lighthouse import categorize, config, db, extract, llm_fill, local_llm  # noqa: E402
+from lighthouse import config, db, extract, gap_fill  # noqa: E402
 from lighthouse.sanitize import html_to_text  # noqa: E402
 
 FIELDS = ("salary", "yoe_min", "visa", "citizenship", "clearance", "degree", "workplace", "travel")
@@ -67,12 +67,12 @@ def sample_rows(conn, n_per_field: int, seed: int = 7):
 
 
 def ask(server, r, fields, shown_override=None):
-    messages, schema, shown = llm_fill.question(r, fields)
+    messages, schema, shown = gap_fill.question(r, fields)
     if shown_override is not None:
         shown = shown_override
         messages[1]["content"] = shown
     ans, _ = server.chat(messages, schema, max_tokens=40 + 60 * len(fields))
-    got, dropped = llm_fill.to_fields(ans or {}, fields, shown)
+    got, dropped = gap_fill.to_fields(ans or {}, fields, shown)
     return ans, got, dropped
 
 
@@ -109,7 +109,7 @@ def eval_model(conn, cfg, server, per_field: int, speed_minutes: float):
 
     # The build's own loop on waiting postings (this database is a throwaway copy: the probe never saves it).
     t = time.time()
-    stats = llm_fill.run(conn, cfg, minutes=speed_minutes, server=server)
+    stats = gap_fill.read_gaps(conn, cfg, minutes=speed_minutes, server=server)
     shown = conn.execute("""SELECT j.title, l.data FROM llm_extractions l JOIN jobs j ON j.content_hash = l.content_hash
                             WHERE l.model = ? ORDER BY l.at DESC LIMIT 12""", (server.name,)).fetchall()
     for s in shown:
@@ -118,21 +118,21 @@ def eval_model(conn, cfg, server, per_field: int, speed_minutes: float):
 
 
 def eval_categories(conn, embed_path: str):
-    embed = categorize.load_embedder(embed_path)
+    embed = gap_fill.load_embedder(embed_path)
     if embed is None:
         return out("CATEGORY", {"error": f"no embedding model at {embed_path}"})
     labeled = []
     for r in conn.execute("SELECT title, departments FROM jobs WHERE active = 1 AND is_canonical = 1"):
-        cat = categorize.classify.job_function(r["title"], r["departments"] or "")
+        cat = gap_fill.classify.job_function(r["title"], r["departments"] or "")
         if cat:
-            labeled.append((categorize.text_of(r["title"], r["departments"]), cat))
+            labeled.append((gap_fill.text_of(r["title"], r["departments"]), cat))
     t = time.time()
-    ev = categorize.evaluate(labeled, embed, n=3000)
+    ev = gap_fill.evaluate(labeled, embed, n=3000)
     out("CATEGORY", {"model": embed_path, "examples": len(labeled), **ev, "seconds": round(time.time() - t, 1)})
-    unplaced = [categorize.text_of(r["title"], r["departments"]) for r in conn.execute(
+    unplaced = [gap_fill.text_of(r["title"], r["departments"]) for r in conn.execute(
         "SELECT title, departments FROM jobs WHERE active = 1 AND is_canonical = 1 AND job_function IS NULL")]
     t = time.time()
-    got = categorize.guess(labeled, sorted(set(unplaced)), embed)
+    got = gap_fill.guess(labeled, sorted(set(unplaced)), embed)
     placed = sum(1 for g in got if g[0])
     out("CATEGORY_ALL", {"unplaced_roles": len(unplaced), "unique_titles": len(got), "placed_titles": placed,
                          "seconds": round(time.time() - t, 1)})
@@ -157,8 +157,8 @@ def main():
         eval_categories(conn, a.embed)
     if a.url or (a.server and a.model):
         t = time.time()
-        server = local_llm.Remote(a.url, "local", a.parallel) if a.url else \
-            local_llm.Server(a.server, a.model, parallel=a.parallel)
+        server = gap_fill.Remote(a.url, "local", a.parallel) if a.url else \
+            gap_fill.Server(a.server, a.model, parallel=a.parallel)
         with server:
             out("SERVER", {"model": server.name, "start_seconds": round(time.time() - t, 1)})
             eval_model(conn, cfg, server, a.per_field, a.speed_minutes)

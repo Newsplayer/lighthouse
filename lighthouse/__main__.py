@@ -19,7 +19,7 @@ import json
 import logging
 from pathlib import Path
 
-from . import config, db, snapshot
+from . import config, db, gap_fill, snapshot
 
 
 def _num(v):   # the workflow passes repository variables, which may be empty
@@ -38,9 +38,9 @@ def _index(args) -> None:
     elif args.action == "fill":
         conn = db.connect(path)
         try:
-            print(json.dumps(snapshot.fill_gaps(conn, config.load(), _num(args.minutes)), indent=2))
+            print(json.dumps(gap_fill.fill(conn, config.load(), _num(args.minutes)), indent=2))
             if args.file:
-                print(f"Saved {snapshot.save_answers(conn, args.file)} answers to {args.file}.")
+                print(f"Saved {gap_fill.save_answers(conn, args.file)} answers to {args.file}.")
         finally:
             conn.close()
     elif args.action == "merge":
@@ -48,7 +48,7 @@ def _index(args) -> None:
             raise SystemExit("usage: python -m lighthouse index merge answers.json.gz [--db data/builder.db]")
         conn = db.connect(path)
         try:
-            print(json.dumps(snapshot.merge_answers(conn, args.file)))
+            print(json.dumps(gap_fill.merge_answers(conn, args.file)))
         finally:
             conn.close()
     elif args.action == "summary":
