@@ -1,14 +1,19 @@
-"""Posting locations -> places people can filter by: country, state or province, metro area, city.
+"""Posting locations -> the places people filter by: country, and in the US, Canada and Mexico also
+state or province, metro area and city. No API: everything comes from built-in tables.
 
-Careers systems write the same city a dozen ways ("New York, NY", "NY-New York", "New York City",
-"US, NY, New York", "New York, New York, United States"). This reads them into one normalized place
-per location, from a table of the 26k cities of the US, Canada and Mexico with 1,000+ people
-(lighthouse/data/places.tsv.gz, GeoNames, built by scripts/make_places.py), so the website can offer
-"Austin, TX", "Austin area", "Texas" and "United States" as choices and match every spelling.
+Countries first (countries(), in_scope()): the shapes careers systems actually emit ("San Francisco,
+CA", "US, CA, Santa Clara", "Remote - US", "London, UK", "Bengaluru, India"), with a list of 77k city
+names worldwide (data/cities.tsv.gz). An empty answer means "can't tell", and callers keep the posting.
+The build uses it to skip postings located only outside its countries (LIGHTHOUSE_COUNTRIES), the
+biggest saving on global employers.
 
-Places elsewhere get only their country (lighthouse/geo.py). Nothing is guessed: a name that several
-cities share ("Springfield", "Richmond") with nothing saying which one stays at the state or country
-level the text gives, or is left out.
+Then places (parse()): the same city is written a dozen ways ("New York, NY", "NY-New York", "New York
+City", "US, NY, New York"); each location becomes one normalized place, from the 26k US, Canadian and
+Mexican cities with 1,000+ people (data/places.tsv.gz), so the website can offer "Austin, TX", "Austin
+area", "Texas" and "United States" and match every spelling. Nothing is guessed: a name several cities
+share ("Springfield") with nothing saying which stays at the state or country level the text gives.
+
+Both tables come from GeoNames (CC BY 4.0); scripts/make_places.py rebuilds them.
 """
 
 from __future__ import annotations
@@ -20,7 +25,218 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from . import geo
+US_STATES = {
+    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
+    "CT": "connecticut", "DE": "delaware", "FL": "florida", "GA": "georgia", "HI": "hawaii", "ID": "idaho",
+    "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas", "KY": "kentucky", "LA": "louisiana",
+    "ME": "maine", "MD": "maryland", "MA": "massachusetts", "MI": "michigan", "MN": "minnesota",
+    "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada",
+    "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
+    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
+    "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee", "TX": "texas",
+    "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
+    "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia", "PR": "puerto rico",
+}
+CA_PROVINCES = {"ON": "ontario", "QC": "quebec", "BC": "british columbia", "AB": "alberta", "MB": "manitoba",
+                "SK": "saskatchewan", "NS": "nova scotia", "NB": "new brunswick", "NL": "newfoundland",
+                "PE": "prince edward island", "YT": "yukon", "NT": "northwest territories", "NU": "nunavut"}
+# Mexican states (names that are also common US place names, e.g. Hidalgo or Durango, are left out).
+MX_STATES = ("aguascalientes", "baja california", "baja california sur", "campeche", "chiapas", "chihuahua",
+             "coahuila", "colima", "guanajuato", "jalisco", "michoacan", "michoacán", "nuevo leon", "nuevo león",
+             "oaxaca", "puebla", "queretaro", "querétaro", "quintana roo", "san luis potosi", "san luis potosí",
+             "sinaloa", "sonora", "tabasco", "tamaulipas", "tlaxcala", "veracruz", "yucatan", "yucatán", "zacatecas",
+             "ciudad de mexico", "ciudad de méxico", "estado de mexico", "estado de méxico")
+
+COUNTRIES = {
+    "US": ("united states", "united states of america", "usa", "u.s.", "u.s.a.", "us", "america"),
+    "CA": ("canada",),
+    "GB": ("united kingdom", "uk", "u.k.", "england", "scotland", "wales", "great britain", "britain", "northern ireland"),
+    "IE": ("ireland",), "DE": ("germany", "deutschland"), "FR": ("france",), "NL": ("netherlands", "the netherlands", "holland"),
+    "ES": ("spain",), "PT": ("portugal",), "IT": ("italy",), "CH": ("switzerland",), "AT": ("austria",),
+    "BE": ("belgium",), "SE": ("sweden",), "NO": ("norway",), "DK": ("denmark",), "FI": ("finland",),
+    "PL": ("poland",), "CZ": ("czech republic", "czechia"), "RO": ("romania",), "HU": ("hungary",),
+    "GR": ("greece",), "TR": ("turkey", "türkiye"), "IL": ("israel",), "AE": ("united arab emirates", "uae"),
+    "SA": ("saudi arabia",), "IN": ("india",), "SG": ("singapore",), "JP": ("japan",), "KR": ("south korea", "korea"),
+    "CN": ("china",), "HK": ("hong kong",), "TW": ("taiwan",), "AU": ("australia",), "NZ": ("new zealand",),
+    "BR": ("brazil", "brasil"), "MX": ("mexico", "méxico"), "AR": ("argentina",), "CO": ("colombia",),
+    "CL": ("chile",), "PH": ("philippines",), "MY": ("malaysia",), "ID": ("indonesia",), "VN": ("vietnam",),
+    "TH": ("thailand",), "ZA": ("south africa",), "NG": ("nigeria",), "KE": ("kenya",), "EG": ("egypt",),
+    "PK": ("pakistan",), "UA": ("ukraine",), "LT": ("lithuania",), "LV": ("latvia",), "EE": ("estonia",),
+    "BG": ("bulgaria",), "RS": ("serbia",), "HR": ("croatia",), "LU": ("luxembourg",), "CR": ("costa rica",),
+}
+# Cities that often appear without a country.
+CITIES = {
+    "US": ("new york", "nyc", "san francisco", "bay area", "seattle", "austin", "boston", "chicago", "los angeles",
+           "denver", "atlanta", "dallas", "houston", "miami", "washington dc", "washington, d.c.", "palo alto",
+           "mountain view", "menlo park", "sunnyvale", "san jose", "santa clara", "redmond", "cambridge, ma",
+           "pittsburgh", "philadelphia", "phoenix", "san diego", "salt lake city", "minneapolis", "detroit",
+           "nashville", "raleigh", "charlotte", "portland", "st. louis", "columbus", "arlington", "reston",
+           "huntsville", "el segundo", "hawthorne", "brooklyn", "manhattan", "silicon valley"),
+    "GB": ("london", "manchester", "edinburgh", "cambridge, uk", "oxford", "bristol", "belfast", "glasgow", "leeds"),
+    "CA": ("toronto", "vancouver", "montreal", "montréal", "ottawa", "calgary", "waterloo", "edmonton"),
+    "IE": ("dublin", "cork"), "DE": ("berlin", "munich", "münchen", "hamburg", "frankfurt", "stuttgart", "cologne"),
+    "FR": ("paris", "lyon"), "NL": ("amsterdam", "rotterdam", "eindhoven"), "ES": ("madrid", "barcelona"),
+    "PT": ("lisbon", "porto"), "IT": ("milan", "rome"), "CH": ("zurich", "zürich", "geneva"),
+    "SE": ("stockholm",), "DK": ("copenhagen",), "PL": ("warsaw", "krakow", "kraków"), "RO": ("bucharest",),
+    "CZ": ("prague",), "AT": ("vienna",), "IL": ("tel aviv",), "AE": ("dubai", "abu dhabi"),
+    "IN": ("bangalore", "bengaluru", "hyderabad", "mumbai", "pune", "chennai", "gurgaon", "gurugram", "noida",
+           "new delhi", "delhi"),
+    "SG": ("singapore",), "JP": ("tokyo", "osaka"), "KR": ("seoul",), "CN": ("shanghai", "beijing", "shenzhen"),
+    "AU": ("sydney", "melbourne", "brisbane", "perth"), "BR": ("são paulo", "sao paulo", "rio de janeiro"),
+    "MX": ("mexico city", "guadalajara", "monterrey", "querétaro", "queretaro", "tijuana", "ciudad juárez",
+           "ciudad juarez", "juárez", "saltillo", "zapopan", "apodaca", "mérida", "león, gto"),
+    "AR": ("buenos aires",), "CO": ("bogotá", "bogota", "medellín"),
+    "TW": ("taipei",), "HK": ("hong kong",), "PH": ("manila",), "TH": ("bangkok",), "NZ": ("auckland", "wellington"),
+    "BE": ("brussels",), "FI": ("helsinki",), "NO": ("oslo",), "HU": ("budapest",), "GR": ("athens",),
+}
+_ABBREV = {"sf": "US", "nyc": "US", "ny": "US", "dc": "US", "cdmx": "MX", "ldn": "GB"}
+
+_NAME_TO_CODE: dict[str, str] = {}
+for code, names in COUNTRIES.items():
+    for n in names:
+        _NAME_TO_CODE[n] = code
+_CITY_TO_CODE = {c: code for code, cities in CITIES.items() for c in cities}
+_STATE_NAMES = {v: k for k, v in US_STATES.items()}
+_PROV_NAMES = set(CA_PROVINCES.values())
+_COUNTRY_SPLIT = re.compile(r"\s*(?:;|\||/|\band\b|\n| or )\s*", re.I)
+_MX_STATES = set(MX_STATES)
+# Whole-word names inside free text ("Tampa Florida United States", "Mississauga Ontario Canada"),
+# longest first so "new mexico" wins over "mexico".
+_WORD_NAMES = sorted({**{n: c for n, c in _NAME_TO_CODE.items() if len(n) > 3 and "." not in n},
+                      **{n: "US" for n in _STATE_NAMES}, **{n: "CA" for n in _PROV_NAMES},
+                      **{n: "MX" for n in MX_STATES}}.items(), key=lambda kv: -len(kv[0]))
+_WORD_RE = re.compile(r"\b(" + "|".join(re.escape(n) for n, _ in _WORD_NAMES) + r")\b", re.I)
+_WORD_CODE = dict(_WORD_NAMES)
+_STATE_ZIP = re.compile(r"\b([A-Z]{2})\s*,?\s+\d{5}(?:-\d{4})?\b")      # "Erie PA, 16502" / "TX 75001"
+_CA_POSTAL = re.compile(r"\b[ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTV-Z]\s?\d[ABCEGHJ-NPRSTV-Z]\d\b")
+_PREFIX = re.compile(r"^\s*([A-Z]{2})\s*[-–]\s*([A-Z]{2,3})?")            # Workday "CA-QC-Longueuil", "GB - Luton"
+_ISO_CODES = set(COUNTRIES)
+_CITIES_FILE = Path(__file__).with_name("data") / "cities.tsv.gz"
+
+
+@lru_cache(maxsize=1)
+def _gazetteer() -> dict[str, str]:
+    """City name -> country for 77k cities of 5,000+ people (GeoNames, CC BY 4.0), loaded on first
+    use. Only names one country clearly owns; never a foreign country for a name a North American
+    city also has."""
+    try:
+        with gzip.open(_CITIES_FILE, "rt", encoding="utf-8") as f:
+            return dict(line.rstrip("\n").split("\t", 1) for line in f if line[:1] != "#" and "\t" in line)
+    except OSError:
+        return {}
+
+
+def _country_norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return " ".join(s.lower().replace("-", " ").replace("'", "").split())
+_TOKEN = re.compile(r"[a-zà-ÿ.']+(?:\s+[a-zà-ÿ.']+)*", re.I)
+
+
+def _one(loc: str) -> set[str]:
+    raw = loc.strip()
+    low = raw.lower()
+    if not low:
+        return set()
+    out: set[str] = set()
+    # Workday style "US, CA, Santa Clara" / "USA - Remote" / "Remote - US"
+    head = re.split(r"[\s,\-–()]+", raw)
+    for tok in head:
+        t = tok.strip(".").upper()
+        if t in ("US", "USA"):
+            out.add("US")
+        elif t == "UK":
+            out.add("GB")
+    # Country-code prefix: "CA-QC-Longueuil", "GB - Luton", "MX-NLE-Apodaca". A code that is also a
+    # US state (CA, IN, DE...) counts only when a province of that country follows.
+    m = _PREFIX.match(raw)
+    if m:
+        cc, nxt = m.group(1), m.group(2) or ""
+        if cc == "CA" and nxt in CA_PROVINCES:
+            out.add("CA")
+        elif cc in _ISO_CODES and cc not in US_STATES:
+            out.add(cc)
+    parts = [p.strip().lower() for p in re.split(r"[,\-–()~]", raw) if p.strip()]
+    for p in parts:
+        if p in _ABBREV:
+            out.add(_ABBREV[p])
+        elif p in _NAME_TO_CODE:
+            out.add(_NAME_TO_CODE[p])
+        elif p in _STATE_NAMES:
+            out.add("US")
+        elif p in _PROV_NAMES:
+            out.add("CA")
+        elif p in _MX_STATES:
+            out.add("MX")
+    city = {code for c, code in _CITY_TO_CODE.items() if c in low}
+    # ", CA" after a city: a US state code unless the text names another country. A province code
+    # that is also a Mexican state code (NL, BC) yields to a named Mexican city ("Monterrey, NL").
+    for code in re.findall(r",\s*([A-Z]{2})\b", raw):
+        if code in US_STATES and not (code == "CA" and "canada" in low):
+            out.add("US")
+        elif code in CA_PROVINCES and "MX" not in city and "mexico" not in low:
+            out.add("CA")
+    for code in _STATE_ZIP.findall(raw):
+        if code in US_STATES:
+            out.add("US")
+    if _CA_POSTAL.search(raw) and ("canada" in low or any(f" {c}" in raw for c in CA_PROVINCES)):
+        out.add("CA")
+    if not out:
+        for m in _WORD_RE.finditer(raw):       # names inside free text
+            name = m.group(1).lower()
+            if name == "mexico" and "new mexico" in low:
+                continue
+            out.add(_WORD_CODE[name])
+    if not out and city:
+        out.add(sorted(city)[0] if len(city) == 1 else next(iter(city)))
+    if not out:                               # last resort: a known city name as one part
+        gaz = _gazetteer()
+        for p in [raw, *raw.split(","), *parts]:
+            code = gaz.get(_country_norm(p))
+            if code:
+                out.add(code)
+                break
+    if {"US", "CA"} <= out and "canada" not in low:   # "Ontario, CA" is in California
+        out.discard("CA")
+    return out
+
+
+@lru_cache(maxsize=65536)
+def countries(text: str) -> frozenset[str]:
+    """All country codes a location string mentions (several for multi-location postings)."""
+    out: set[str] = set()
+    for piece in _COUNTRY_SPLIT.split(text or ""):
+        out |= _one(piece)
+    return frozenset(out)
+
+
+def countries_of(locations: list[str]) -> frozenset[str]:
+    out: set[str] = set()
+    for l in locations:
+        out |= countries(l)
+    return frozenset(out)
+
+
+def in_scope(locations: list[str], allowed: set[str] | frozenset[str]) -> bool:
+    """Keep a posting unless every location is known and outside `allowed`. Unknown or
+    country-less "Remote" postings are kept."""
+    if not allowed:
+        return True
+    found = countries_of([l for l in locations if l])
+    return not found or bool(found & set(allowed))
+
+
+def encode(codes) -> str:
+    """Stored as ',US,GB,' so SQL can match one code with LIKE '%,US,%'."""
+    return "," + ",".join(sorted(codes)) + "," if codes else ""
+
+
+CHOICES = [("US", "United States"), ("CA", "Canada"), ("GB", "United Kingdom"), ("IE", "Ireland"), ("DE", "Germany"),
+           ("FR", "France"), ("NL", "Netherlands"), ("ES", "Spain"), ("CH", "Switzerland"), ("SE", "Sweden"),
+           ("PL", "Poland"), ("IL", "Israel"), ("IN", "India"), ("SG", "Singapore"), ("JP", "Japan"),
+           ("AU", "Australia"), ("BR", "Brazil"), ("MX", "Mexico")]
+
+
+# ================================================================ places in the US, Canada and Mexico
 
 VERSION = 1          # bump when parsing changes: the website then writes a new base with the new places
 NA = ("US", "CA", "MX")
@@ -28,7 +244,7 @@ _FILE = Path(__file__).with_name("data") / "places.tsv.gz"
 
 COUNTRY_NAMES = {"US": "United States", "CA": "Canada", "MX": "Mexico"}
 REGION_NAMES = {
-    "US": {code: ("District of Columbia" if code == "DC" else name.title()) for code, name in geo.US_STATES.items()},
+    "US": {code: ("District of Columbia" if code == "DC" else name.title()) for code, name in US_STATES.items()},
     "CA": {"AB": "Alberta", "BC": "British Columbia", "MB": "Manitoba", "NB": "New Brunswick",
            "NL": "Newfoundland and Labrador", "NS": "Nova Scotia", "ON": "Ontario", "PE": "Prince Edward Island",
            "QC": "Quebec", "SK": "Saskatchewan", "YT": "Yukon", "NT": "Northwest Territories", "NU": "Nunavut"},
@@ -232,7 +448,7 @@ def _classify(raw_part: str) -> _Part:
     regions, countries, _ = _region_words()
     code = raw_part.strip()
     if len(code) == 2 and code.isupper():
-        if code in geo.US_STATES:
+        if code in US_STATES:
             p.regions.add(("US", code))
         if code in REGION_NAMES["CA"]:
             p.regions.add(("CA", code))
@@ -252,8 +468,8 @@ def _classify(raw_part: str) -> _Part:
     if p.n in countries:
         p.countries.add(countries[p.n])
         p.city_ok = False
-    elif geo._NAME_TO_CODE.get(p.n, "US") not in NA:
-        p.foreign = geo._NAME_TO_CODE[p.n]
+    elif _NAME_TO_CODE.get(p.n, "US") not in NA:
+        p.foreign = _NAME_TO_CODE[p.n]
         p.city_ok = False
     elif p.n in regions:
         p.regions |= regions[p.n]
@@ -312,11 +528,11 @@ def _parts(piece: str) -> list[_Part]:
             pieces = [chunk]                     # "Winston-Salem"
         for x in pieces:
             m = _TRAIL_CODE.match(x)
-            if m and (m.group(2) in geo.US_STATES or m.group(2) in REGION_NAMES["CA"]):
+            if m and (m.group(2) in US_STATES or m.group(2) in REGION_NAMES["CA"]):
                 out += [_classify(m.group(1)), _classify(m.group(2))]       # "Peoria AZ", "Pittsburgh PA"
                 continue
             m = _LEAD_CODE.match(x)
-            if m and (m.group(1) in geo.US_STATES or m.group(1) in REGION_NAMES["CA"]) and _norm(m.group(2)) in names:
+            if m and (m.group(1) in US_STATES or m.group(1) in REGION_NAMES["CA"]) and _norm(m.group(2)) in names:
                 out += [_classify(m.group(1)), _classify(m.group(2))]       # "ID Boise"
                 continue
             out.append(_classify(x))
@@ -370,22 +586,22 @@ def _resolve(parts: list[_Part], piece: str, ctx: set) -> list[Place]:
                 if not p.n:                      # "New York New York United States": the city of that name
                     p.n = next((w for w in found if w in names and w not in country_words), "")
                     p.city_ok = bool(p.n)
-    countries = set().union(*(p.countries for p in parts))
+    ccs = set().union(*(p.countries for p in parts))
     foreign = {p.foreign for p in parts if p.foreign}
-    if foreign and not countries:
+    if foreign and not ccs:
         return [Place(cc) for cc in sorted(foreign)]     # "Campo Largo, PR, Brazil"
-    mexico = "MX" in countries or any(r[0] == "MX" for p in parts for r in p.regions | p.inner) \
+    mexico = "MX" in ccs or any(r[0] == "MX" for p in parts for r in p.regions | p.inner) \
         or any(p.city_ok and _only_in(p.n, "MX") for p in parts)
     if mexico:
         for p in parts:
             p.regions |= {("MX", c) for c in p.mx_codes}
-    if "US" in countries and "CA" not in countries:
+    if "US" in ccs and "CA" not in ccs:
         for p in parts:                          # "US, CA, Santa Clara": California, not Canada
             p.regions.discard(("CA", "*"))
-    if countries:
+    if ccs:
         for p in parts:                          # "Monterrey, NL, Mexico": Nuevo León, not Newfoundland
-            if any(r[0] in countries for r in p.regions):
-                p.regions = {r for r in p.regions if r[0] in countries}
+            if any(r[0] in ccs for r in p.regions):
+                p.regions = {r for r in p.regions if r[0] in ccs}
     all_regions = set().union(*(p.regions | p.inner for p in parts))
 
     def around(i: int) -> set:
@@ -397,7 +613,7 @@ def _resolve(parts: list[_Part], piece: str, ctx: set) -> list[Place]:
         if not slug:
             m = _AREA.match(p.n)
             if m and m.group(1) != p.n:
-                core = _choose(names.get(m.group(1), []), around(i), countries, ctx)
+                core = _choose(names.get(m.group(1), []), around(i), ccs, ctx)
                 slug = core.metro if core else ""
         if slug:
             _, cc, region, _ = metro_table[slug]
@@ -409,7 +625,7 @@ def _resolve(parts: list[_Part], piece: str, ctx: set) -> list[Place]:
         near = around(i)
         if p.regions and not near and p.n != "new york":
             continue                             # a region name alone is the region: "Ontario", "Texas, US"
-        c = _choose(names.get(p.n) or names.get("the " + p.n, []), near, countries, ctx)   # "Woodlands": The Woodlands
+        c = _choose(names.get(p.n) or names.get("the " + p.n, []), near, ccs, ctx)   # "Woodlands": The Woodlands
         if c:
             return [Place(c.country, c.region, c.name, c.metro)]
     # 3. a city inside longer text: "Cleveland Clinic Main Campus", "Store Peoria"
@@ -423,19 +639,19 @@ def _resolve(parts: list[_Part], piece: str, ctx: set) -> list[Place]:
                 gram = " ".join(words[k:k + size])
                 if gram not in names or gram in _NOT_A_CITY or (gram in _COMMON_WORDS and not near):
                     continue
-                c = _choose(names[gram], near, countries, ctx, min_pop=0 if near else 20000)
+                c = _choose(names[gram], near, ccs, ctx, min_pop=0 if near else 20000)
                 if c:
                     return [Place(c.country, c.region, c.name, c.metro)]
     # 4. a city abroad whose letters looked like a state code: "Bangalore, KA, IN", "Marktoberdorf, DE"
-    abroad = geo._gazetteer()
+    abroad = _gazetteer()
     for p in parts:
-        cc = (geo._CITY_TO_CODE.get(p.n) or abroad.get(p.n)) if p.city_ok and not p.regions else None
+        cc = (_CITY_TO_CODE.get(p.n) or abroad.get(p.n)) if p.city_ok and not p.regions else None
         if cc and cc not in NA:
             return [Place(cc)]
     # 5. the region, then the country
     exact = {r for r in all_regions if r[1] != "*"}
-    if countries and len(exact) > 1:
-        exact = {r for r in exact if r[0] in countries} or exact
+    if ccs and len(exact) > 1:
+        exact = {r for r in exact if r[0] in ccs} or exact
     if exact == {("US", "WA")} and any(p.n == "washington" for p in parts) \
             and not any(p.raw.strip() == "WA" or "state" in p.n for p in parts):
         return [Place("US")]                     # "Washington" alone: the state or the capital
@@ -443,10 +659,10 @@ def _resolve(parts: list[_Part], piece: str, ctx: set) -> list[Place]:
         cc, code = next(iter(exact))
         return [Place(cc, code)]
     if exact and len({r[0] for r in exact}) == 1:
-        countries = countries | {next(iter(exact))[0]}
-    if countries:
-        return [Place(cc) for cc in sorted(countries)]
-    return [Place(cc) for cc in sorted(geo.countries(piece))]
+        ccs = ccs | {next(iter(exact))[0]}
+    if ccs:
+        return [Place(cc) for cc in sorted(ccs)]
+    return [Place(cc) for cc in sorted(countries(piece))]
 
 
 @lru_cache(maxsize=200_000)
@@ -454,7 +670,7 @@ def parse(text: str) -> tuple[Place, ...]:
     """The places a location string names, in its order, without repeats."""
     if not text or not text.strip():
         return ()
-    found = geo.countries(text)
+    found = countries(text)
     if found and not found & set(NA):
         return tuple(Place(cc) for cc in sorted(found))          # only abroad: "London, UK", "Bengaluru"
     pieces = [x for x in _SPLIT.split(text) if x and x.strip()]

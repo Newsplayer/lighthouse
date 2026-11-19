@@ -26,8 +26,8 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **No paid services, and users never need a key or account.**
   - Every user feature must work with nothing set up.
   - **The builder fills filter fields with a free, open model on the build machine** (no key, no
-    account): llama.cpp + Qwen3.5 2B via `llm_fill.py`, and job categories from similar titles via
-    `categorize.py` (model2vec), in the *Gap fill* workflow (`fill.yml`), alongside builds. Both are fetched by
+    account): llama.cpp + Qwen3.5 2B, and job categories from similar titles (model2vec), both in
+    `gap_fill.py`, run by the *Gap fill* workflow (`fill.yml`) alongside builds. Both are fetched by
     `scripts/get_llm.sh` (pinned versions; measure a new model with `scripts/eval_fill.py` first).
     - Only the sentences around an unsettled field are shown, and an answer is kept only when its
       quote is really in the text.
@@ -60,18 +60,17 @@ goal, the prioritized work, and the decisions waiting on the owner.
 |---|---|
 | Companies by careers page → job boards | `config/companies.csv`, `lighthouse/discover.py` |
 | Direct board lists | `config/boards/*.csv` |
-| Readers for each careers system (14) | `lighthouse/sources/` |
+| Readers for each careers system (14; the five one-request board APIs share `boards.py`) | `lighthouse/sources/` |
 | Fetch runner, per-board retries, description time cap | `lighthouse/fetch.py` |
 | HTTP: rate limits, shared Workday budget, response limits | `lighthouse/net.py` |
 | The builder's tables (`SCHEMA`, `migrate`), writes, and the list queries the page is tested against | `lighthouse/db.py` |
 | The build; the public files (`jobs.db.xz`, `jobs.csv.gz`, `manifest.json`); seeding a new builder from them | `lighthouse/snapshot.py` |
 | Rule extraction (pay, YOE, visa, clearance...) / classification (function, seniority, skills) | `lighthouse/extract.py`, `lighthouse/classify.py` |
-| Location → country (rules + GeoNames city list; rebuild with `scripts/make_cities.py`) | `lighthouse/geo.py`, `lighthouse/data/cities.tsv.gz` |
-| Location → city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild the table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/places.tsv.gz` |
-| Ghost score | `lighthouse/ghost.py` |
+| Location → country, and city, state/province, metro area for the website (bump `places.VERSION` when parsing changes; rebuild either table with `scripts/make_places.py`) | `lighthouse/places.py`, `lighthouse/data/cities.tsv.gz`, `places.tsv.gz` |
+| Duplicates, reposts and the ghost score | `lighthouse/dedupe.py` |
 | Build health (manifest `health`, Actions summary, the site's Sources view, the broken-boards issue) | `snapshot.health`, `summary_markdown`, `boards_markdown` |
-| Eligibility in Python: the reference `site/logic.js` is tested against (`check` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/profile.py` |
-| Builder gap fill: open model on the build machine / its server / job categories from similar titles | `lighthouse/llm_fill.py` / `lighthouse/local_llm.py` / `lighthouse/categorize.py` |
+| Eligibility in Python: the reference `site/logic.js` is tested against (`check_eligibility` and `eligibility_sql` must agree; a test enforces it) | `lighthouse/db.py` |
+| The gap fill: open model on the build machine, its server, job categories from similar titles, and the answers handed to builds | `lighthouse/gap_fill.py` |
 | Getting the models (pinned) / measuring them on real data | `scripts/get_llm.sh` / `scripts/eval_fill.py` |
 | Website: generator / page (`logic.js` has no DOM; Node tests it against the Python logic) | `lighthouse/site.py` / `site/` |
 | Workflows: builder (each build starts the next), gap fill, page-only deploy, tests and lint, network probe, branch tidying | `.github/workflows/job-index.yml`, `fill.yml`, `website.yml`, `tests.yml`, `network-probe.yml`, `tidy-branches.yml` |
@@ -80,7 +79,7 @@ goal, the prioritized work, and the decisions waiting on the owner.
 
 ## Versions to bump
 
-- **`RULES_VERSION`** (`workers.py`): bump when extraction rules change. The next build re-reads
+- **`RULES_VERSION`** (`extract.py`): bump when extraction rules change. The next build re-reads
   every description once.
 - **`DERIVE_VERSION`** (`classify.py`): bump when derived columns change.
 - **`FORMAT`** (`site.py`) / **`VERSION`** (`places.py`): bump when the website's files or the place
@@ -88,12 +87,12 @@ goal, the prioritized work, and the decisions waiting on the owner.
 - **`SCHEMA_VERSION`** (`db.py`): bump when the builder's tables (`SCHEMA`) change, and add the step
   from the previous version to `migrate()`. The production database lives in the Actions cache and
   must be carried forward.
-- **The public database** (tables and the `postings` view in `snapshot.py`) is read by other
+- **The public database** (its tables, and `POSTINGS_TABLE` in `snapshot.py`) is read by other
   people's queries. Say so in the PR when a table or column changes, and update the README.
 
 ## How to work here
 
-- **Tests:** run `python -m pytest -q` (130 pass) and `ruff check .` before every commit
+- **Tests:** run `python -m pytest -q` (133 pass) and `ruff check .` before every commit
   (`pip install -r requirements-dev.txt`). `tests.yml` runs both on every pull request and push to
   `main`.
   - The website's tests run `site/logic.js` in Node and the page in Chromium (Playwright).

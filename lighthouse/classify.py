@@ -5,14 +5,14 @@ All of it runs in the Job index Action (extract.derive), so the website just fil
 Function and seniority come mostly from the title (so they work even for postings whose description
 hasn't been fetched yet); the rest come from the description text. Nothing is guessed: no match = None.
 When the rules can't settle a field the posting clearly talks about, a free open model on the build
-machine reads it (llm_fill.py) and fills only that gap.
+machine reads it (gap_fill.py) and fills only that gap.
 """
 
 from __future__ import annotations
 
 import re
 
-DERIVE_VERSION = "d3"   # bump when these rules change, so every row is re-labelled once
+DERIVE_VERSION = "d4"   # bump when these rules change, so every row is re-labelled once
 
 # ------------------------------------------------------------------ job function
 # Checked in order; the first match wins ("Machine Learning Engineer" is ML, not Software).

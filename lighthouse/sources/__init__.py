@@ -9,19 +9,15 @@ from __future__ import annotations
 import re
 
 from .amazon import AmazonSource
-from .ashby import AshbySource
 from .base import BoardNotFound, Source, SourceError
+from .boards import AshbySource, GreenhouseSource, LeverSource, RecruiteeSource, WorkableSource
 from .eightfold import EightfoldSource
 from .jibe import JibeSource
 from .jsonld import JsonLdSource
 from .oracle import OracleSource
 from .phenom import PhenomSource
 from .successfactors import SuccessFactorsSource
-from .greenhouse import GreenhouseSource
-from .lever import LeverSource
-from .recruitee import RecruiteeSource
 from .smartrecruiters import SmartRecruitersSource
-from .workable import WorkableSource
 from .workday import WorkdaySource
 
 SOURCES: dict[str, type[Source]] = {cls.name: cls for cls in (

@@ -167,7 +167,7 @@ Work top to bottom.
       full base for the local app takes 6.5 min to write (579 MB).
 - **Owner's changes on `main` (2026-11-07):**
   - **Builder gap fill:** Claude Haiku with the maintainer's key, capped at $10/month, reads only
-    the postings whose filter fields the rules couldn't settle (`llm_fill.py`). **Replaced 2026-11-09**
+    the postings whose filter fields the rules couldn't settle (`gap_fill.py`). **Replaced 2026-11-09**
     by a free open model on the build machine (D8).
   - **Mass-closure hold:** this is P0-1.
   - **Old postings deleted:** after 45 days closed.
@@ -183,7 +183,7 @@ Work top to bottom.
     site, ~25 KB gzip per file.
   - Generated in 30 s.
 - **Local app:** retired 2026-11-12 (D9). Its eligibility rules live on as the Python reference the
-  page's JavaScript is tested against (`profile.py`, `db.Filters`).
+  page's JavaScript is tested against (`db.py`: `Filters`, `check_eligibility`).
 
 ## 3. Freshness: how updates reach users
 
@@ -253,8 +253,8 @@ Job boards change all day, so freshness is a core feature.
 
 | Option | Use | Verdict |
 |---|---|---|
-| **Open model on the runner's CPU, shown only the sentences around each gap** (llama.cpp + Qwen3.5 2B, Apache-2.0; `llm_fill.py`) | Filter fields the rules couldn't settle | **Adopted 2026-11-09 (D8).** Measured on the real builder database: 700–1,500 postings an hour on the free 4-core runner (it depends on the machine); agreed with the rules' answers 89% of the time where both answered (several disagreements were rule mistakes); answers kept only when the quote is in the text. Runs 60 min per build after publishing. |
-| **model2vec static embeddings, nearest placed titles** (`categorize.py`) | Job category for titles no rule places | **Adopted 2026-11-09.** 92% right on held-out placed titles, guessing 76% of them; placed 18,673 of 63,551 unplaced titles in 41 s. |
+| **Open model on the runner's CPU, shown only the sentences around each gap** (llama.cpp + Qwen3.5 2B, Apache-2.0; `gap_fill.py`) | Filter fields the rules couldn't settle | **Adopted 2026-11-09 (D8).** Measured on the real builder database: 700–1,500 postings an hour on the free 4-core runner (it depends on the machine); agreed with the rules' answers 89% of the time where both answered (several disagreements were rule mistakes); answers kept only when the quote is in the text. Runs 60 min per build after publishing. |
+| **model2vec static embeddings, nearest placed titles** (`gap_fill.py`) | Job category for titles no rule places | **Adopted 2026-11-09.** 92% right on held-out placed titles, guessing 76% of them; placed 18,673 of 63,551 unplaced titles in 41 s. |
 | Gemini API free tier, with the maintainer's key (repo secret) | Filter fields and a short summary per posting (P3-1) | **Not needed now.** Was the plan: about 500 requests a day per model for Flash-Lite as of Nov 2026, with separate quotas per model. At 20–25 postings per request that's ~10–12k postings a day per model. Free-tier content may be used by Google to improve its products; send only public posting text. Use the OpenAI-compatible endpoint, so the provider can be swapped. |
 | Groq free tier (maintainer's key) | Small second provider | 1,000 requests/day but 200k tokens/day per model, so only ~250 postings a day. Fallback only. |
 | **model2vec static embeddings** (`model2vec` 0.10, numpy only, MIT; e.g. `potion-base-8M`, `potion-retrieval-32M`) | Semantic search, "more like this", resume similarity, title → occupation | **Adopt (P3-3).** Up to ~500× faster than the original transformer on CPU: minutes for every posting, incremental after that. Ship 256-bit binary vectors (~32 B per posting). |
@@ -572,7 +572,7 @@ means. Keep every change incremental and measured (§2 baselines).
 
 1. **Filter fields from an LLM in the builder.**
    - **Done, free (2026-11-09):** an open model on the build machine fills only the fields the rules
-     couldn't settle (`llm_fill.py`), and similar titles give missing categories (`categorize.py`).
+     couldn't settle (`gap_fill.py`), and similar titles give missing categories (`gap_fill.py`).
      It replaced Claude Haiku with the maintainer's key.
    - What's left: summaries and the extra fields below. Gemini's free tier remains an alternative.
    - New builder step `lighthouse/enrich.py`. It's skipped when the `LLM_API_KEY` secret is unset,

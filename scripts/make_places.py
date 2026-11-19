@@ -1,26 +1,32 @@
-"""Build lighthouse/data/places.tsv.gz: the cities of the US, Canada and Mexico with their state or
-province, population, coordinates and metro area, for normalizing posting locations
-(lighthouse/places.py). Data: GeoNames (geonames.org), CC BY 4.0.
+"""Build the two location tables lighthouse/places.py reads, from GeoNames (geonames.org, CC BY 4.0).
 
+    python scripts/make_places.py places cities1000.txt admin1CodesASCII.txt lighthouse/data/places.tsv.gz
+    python scripts/make_places.py cities cities.json lighthouse/data/cities.tsv.gz
+
+places.tsv.gz: the cities of the US, Canada and Mexico with their state or province, population,
+coordinates and metro area, for the website's place filters. Inputs:
     curl -O https://download.geonames.org/export/dump/cities1000.zip     (unzip it)
     curl -O https://download.geonames.org/export/dump/admin1CodesASCII.txt
-    python scripts/make_places.py cities1000.txt admin1CodesASCII.txt lighthouse/data/places.tsv.gz
-
 Rows (tab-separated):
     M  slug  label  country  region  aliases (";"-separated)     a metro area
     C  name  country  region  population  lat  lon  metro        a city of 1,000+ people
     A  alias  country  region  city                              another name for a city
-
 Regions are postal codes in the US and Canada (TX, ON) and ISO 3166-2 codes in Mexico (NLE, CMX).
 A city is in a metro area when it is within the area's radius of one of its anchor cities (the
 nearest, relative to radius, when several areas reach it). Neighbourhoods (PPLX) are left out;
 New York City's boroughs become the city itself, and it is called "New York" (its usual name in postings).
+
+cities.tsv.gz: city name -> country, worldwide, for telling which country a posting is in (see
+make_cities below for which names are kept).
 """
 
 import gzip
 import io
+import json
 import math
 import sys
+import unicodedata
+from collections import defaultdict
 
 CA_REGIONS = {"01": "AB", "02": "BC", "03": "MB", "04": "NB", "05": "NL", "07": "NS", "08": "ON", "09": "PE",
               "10": "QC", "11": "SK", "12": "YT", "13": "NT", "14": "NU"}
@@ -174,7 +180,7 @@ def km(a, b):
     return 12742 * math.asin(math.sqrt(h))
 
 
-def main(cities_path, admin1_path, out):
+def make_places(cities_path, admin1_path, out):
     names = {}
     for line in open(admin1_path, encoding="utf-8"):
         code, name = line.split("\t")[:2]
@@ -232,5 +238,55 @@ def main(cities_path, admin1_path, out):
     print(len(cities), "cities,", in_metro, "in", len(METROS), "metro areas,", len(ALIASES), "aliases")
 
 
+# ---------------------------------------------------------------- cities.tsv.gz: city name -> country, worldwide
+# From GeoNames cities of 5,000+ people (a JSON of {id: {name, countrycode, population}}). A name is kept only
+# when one country clearly owns it (its largest city of that name has 3x the people of any other country's), so
+# "Cambridge" (GB/US) is left out. A name any US, Canadian or Mexican city also has is never given another country
+# ("Birmingham" stays unknown rather than GB): a wrongly foreign tag would hide a real local job.
+NA = {"US", "CA", "MX"}
+STOP = {"remote", "hybrid", "virtual", "home", "office", "field", "global", "central", "north", "south", "east",
+        "west", "union", "college", "university", "commerce", "liberty", "independence", "mobile", "orange",
+        "reading", "nice", "sale", "split", "deal", "march", "bath", "hope", "victoria", "georgia", "jersey",
+        "washington", "york", "lincoln", "jackson", "florence", "manchester", "salem", "aurora", "wellington",
+        "multiple", "various", "anywhere", "worldwide", "flexible", "headquarters", "hq", "onsite", "on site",
+        "distribution", "plant", "warehouse", "corporate", "campus", "downtown", "midtown", "uptown", "industrial",
+        "san", "santa", "saint", "mount", "fort", "port", "lake", "river", "valley", "beach", "springs"}
+
+
+def norm(s):
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return " ".join(s.lower().replace("-", " ").replace("'", "").split())
+
+
+def make_cities(src, out):
+    best = defaultdict(dict)                      # name -> {cc: max population}
+    for c in json.load(open(src)).values():
+        for n in {c["name"], norm(c["name"])}:
+            n = n.lower().strip()
+            if len(n) < 4 or n in STOP:
+                continue
+            p = c["population"] or 0
+            if p > best[n].get(c["countrycode"], -1):
+                best[n][c["countrycode"]] = p
+    rows = []
+    for n, by in best.items():
+        top = sorted(by.items(), key=lambda kv: -kv[1])
+        if top[0][0] not in NA and any(cc in NA for cc in by):
+            continue
+        if len(top) == 1 or top[0][1] >= 3 * max(top[1][1], 1):
+            rows.append(f"{n}\t{top[0][0]}")
+    rows.sort()
+    with gzip.open(out, "wt", encoding="utf-8", compresslevel=9) as f:
+        f.write("# city name -> ISO country. Data: GeoNames (geonames.org), CC BY 4.0. Built by scripts/make_places.py\n")
+        f.write("\n".join(rows) + "\n")
+    print(len(rows), "names")
+
+
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    what, args = (sys.argv[1:2] or [""])[0], sys.argv[2:]
+    if what == "places" and len(args) == 3:
+        make_places(*args)
+    elif what == "cities" and len(args) == 2:
+        make_cities(*args)
+    else:
+        raise SystemExit(__doc__)

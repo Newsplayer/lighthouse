@@ -2,11 +2,11 @@
 import json
 from datetime import datetime, timezone
 
-from lighthouse import config, db, fetch, geo, profile, workers
+from lighthouse import config, db, extract, fetch, places
 from lighthouse.extract import rules, yoe_from_title
 from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
-from lighthouse.sources.greenhouse import GreenhouseSource
+from lighthouse.sources.boards import GreenhouseSource
 
 from conftest import FakeClient
 
@@ -53,7 +53,7 @@ def test_years_asked_filter_and_title_fallback(tmp_path):
     assert titles(db.Filters(yoe_hi=4, yoe_unknown=False)) == ["Data Analyst:2"]
     assert [r["yoe_min"] for r in db.list_jobs(conn, db.Filters(sort="yoe"))[0]] == [2, 5, 7, None]
     # a title-based estimate never rules anyone out
-    p = {**profile.DEFAULT, "years_experience": 1}
+    p = {**db.DEFAULT_PROFILE, "years_experience": 1}
     assert db.get_job(conn, "greenhouse:acme:3", p)["elig"] == 1
     assert db.get_job(conn, "greenhouse:acme:2", p)["elig"] == 0
 
@@ -63,9 +63,9 @@ def test_geo_classifier():
              "Toronto, Ontario, Canada": {"CA"}, "Vancouver, BC": {"CA"}, "Bengaluru, India": {"IN"}, "Remote": set(),
              "New York City, NY; Dublin": {"US", "IE"}, "2 Locations": set(), "USA - Remote": {"US"}, "SF": {"US"}}
     for loc, want in cases.items():
-        assert set(geo.countries(loc)) == want, loc
-    assert geo.in_scope(["Remote"], {"US"}) and not geo.in_scope(["London, UK"], {"US"})
-    assert geo.in_scope(["London, UK", "Austin, TX"], {"US"})
+        assert set(places.countries(loc)) == want, loc
+    assert places.in_scope(["Remote"], {"US"}) and not places.in_scope(["London, UK"], {"US"})
+    assert places.in_scope(["London, UK", "Austin, TX"], {"US"})
 
 
 def test_country_scope_filters_list_and_ingest_without_closing(tmp_path, monkeypatch):
@@ -114,14 +114,14 @@ def test_unchanged_board_and_descriptions_are_skipped(tmp_path, gh):
 
 
 def test_precompute_parallel_matches_serial(tmp_path, monkeypatch):
-    monkeypatch.setattr(workers, "PARALLEL_MIN", 2)
+    monkeypatch.setattr(extract, "PARALLEL_MIN", 2)
     a, b = db.connect(tmp_path / "a.db"), db.connect(tmp_path / "b.db")
     jobs = [job(i, body=f"<p>Needs {i % 9 + 1}+ years of experience. " + f"Topic {i} details. " * 25 + "</p>")
             for i in range(12)]
     for c in (a, b):
         db.upsert_board(c, "greenhouse", "acme", jobs)
     assert fetch.precompute(a) == 12
-    monkeypatch.setattr(workers, "PARALLEL_MIN", 10**9)
+    monkeypatch.setattr(extract, "PARALLEL_MIN", 10**9)
     assert fetch.precompute(b) == 12
     q = "SELECT j.uid, j.minhash, e.data FROM jobs j JOIN extractions e ON e.content_hash = j.content_hash ORDER BY j.uid"
     assert [tuple(r) for r in a.execute(q)] == [tuple(r) for r in b.execute(q)]
@@ -138,10 +138,10 @@ def test_geo_north_america_shapes():
              "IT - Roma - Via Faustiniana": {"IT"}, "Toulouse": {"FR"}, "Vélizy-Villacoublay": {"FR"},
              "Schenectady": {"US"}, "IN - TDC 1 (IN110)": set()}
     for loc, want in cases.items():
-        assert set(geo.countries(loc)) == want, loc
+        assert set(places.countries(loc)) == want, loc
     # A bare name a North American city also has is never placed abroad (it would hide a local job).
-    assert geo.countries("Birmingham") == frozenset() and geo.countries("Stafford") == frozenset()
-    assert geo.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not geo.in_scope(["Toulouse"], {"US", "CA", "MX"})
+    assert places.countries("Birmingham") == frozenset() and places.countries("Stafford") == frozenset()
+    assert places.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not places.in_scope(["Toulouse"], {"US", "CA", "MX"})
 
 
 def test_fast_clustering_gives_the_same_clusters_as_comparing_every_pair(tmp_path):

@@ -71,7 +71,7 @@ def test_public_database_is_plain_whitelisted_and_carries_excerpts_only(tmp_path
     assert sorted(p.name for p in b.dist.iterdir()) == ["jobs.csv.gz", "jobs.db.xz", "manifest.json"]
     c = public_db(b, tmp_path)
     tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert tables == {"jobs", "excerpts", "events", "extractions", "boards", "companies", "about"}
+    assert tables == {"postings", "jobs", "events", "extractions", "boards", "companies", "about"}
     cols = {r[1] for r in c.execute("PRAGMA table_info(jobs)")}
     assert not cols & snapshot.PRIVATE_JOB_COLUMNS and {"uid", "title", "expires_at", "ghost_score", "yoe_min"} <= cols
     raw = b"".join(str(v).encode() for t in tables for row in c.execute(f"SELECT * FROM {t}") for v in row)
@@ -83,19 +83,38 @@ def test_public_database_is_plain_whitelisted_and_carries_excerpts_only(tmp_path
     assert row["has_description"] == 1 and row["url"] == "https://x/2" and row["ats"] == "greenhouse"
     assert c.execute("SELECT years_experience FROM postings WHERE title = 'Data Analyst'").fetchone()[0] == 3
     assert c.execute("SELECT COUNT(*) FROM events WHERE kind = 'new'").fetchone()[0] == 2
-    # the CSV is the same view, without the excerpts
+    # the CSV is the same table, without the excerpts
     with gzip.open(b.dist / "jobs.csv.gz", "rt", encoding="utf-8") as f:
         rows = list(csv.DictReader(io.StringIO(f.read())))
     assert [r["title"] for r in rows] == ["Accountant", "Data Analyst"] and "excerpt" not in rows[0]
     assert rows[1]["years_experience"] == "3"
 
-    # a closed role stays in jobs (history) and leaves the postings view; every build replaces the files
+    # a closed role stays in jobs (history) and leaves postings; every build replaces the files
     b.ingest("acme", [job(1)])
     m2 = b.export()
     c2 = public_db(b, tmp_path)
     assert m2["jobs"] == 1 and m2["db"]["rows"] == 2 and m2["db"]["active"] == 1
     assert [r[0] for r in c2.execute("SELECT title FROM postings")] == ["Data Analyst"]
-    assert c2.execute("SELECT COUNT(*) FROM excerpts").fetchone()[0] == 1
+    assert c2.execute("SELECT COUNT(*) FROM postings WHERE excerpt IS NOT NULL").fetchone()[0] == 1
+
+
+def test_published_roles_are_clean_and_say_what_their_columns_mean(tmp_path):
+    from dataclasses import replace
+    b = Builder(tmp_path)
+    b.ingest("acme", [replace(job(1), title="  Senior   Data\tAnalyst \n", location=" ",
+                              posted_at=datetime(2999, 1, 1, tzinfo=timezone.utc)),
+                      replace(job(2), title="   "),                    # no title: not a role anyone can use
+                      job(3, "Accountant")])
+    b.export()
+    c = public_db(b, tmp_path)
+    rows = {r[0]: r[1:] for r in c.execute("SELECT title, location, countries, posted_on FROM postings")}
+    assert set(rows) == {"Senior Data Analyst", "Accountant"}
+    assert rows["Senior Data Analyst"] == (None, None, None)                 # blanks are NULL, not "", and no future dates
+    assert rows["Accountant"] == ("Austin 3, TX", "US", "2026-10-01")
+    schema = c.execute("SELECT sql FROM sqlite_master WHERE name = 'postings'").fetchone()[0]
+    assert 'use this for "new"' in schema and "not converted" in schema     # the column notes travel with the file
+    types = {r[1]: r[2] for r in c.execute("PRAGMA table_info(postings)")}
+    assert types["years_experience"] == "INTEGER" and types["title"] == "TEXT" and len(types) == 37
 
 
 def test_builder_applies_board_list_and_closes_switched_off_boards(tmp_path):
@@ -148,6 +167,19 @@ def test_slow_workday_boards_never_hold_up_the_other_boards(tmp_path, monkeypatc
     assert waited == [True]                               # the others were read while it was still going
 
 
+def test_a_builder_also_seeds_from_a_file_published_before_postings_was_a_table(tmp_path):
+    b = Builder(tmp_path)
+    b.ingest("acme", [job(1)])
+    b.export()
+    c = public_db(b, tmp_path)               # make it look like an older file: excerpts apart, postings a view
+    c.executescript("""CREATE TABLE excerpts AS SELECT j.content_hash, p.excerpt AS text FROM postings p
+                       JOIN jobs j ON j.uid = p.id; DROP TABLE postings; CREATE VIEW postings AS SELECT * FROM jobs;""")
+    c.close()
+    assert snapshot.seed_builder(tmp_path / f"public{b.n}.db", tmp_path / "fresh.db") == 1
+    s = db.connect(tmp_path / "fresh.db")
+    assert s.execute("SELECT text FROM site_excerpts").fetchone()[0].startswith("Build dashboards")
+
+
 def test_builder_can_restart_from_the_published_database(tmp_path):
     b = Builder(tmp_path)
     same = "<p>Run the regional warehouse network and its carriers. " + " ".join(f"duty{k}" for k in range(80)) + "</p>"
@@ -167,7 +199,8 @@ def test_builder_can_restart_from_the_published_database(tmp_path):
     first_seen = conn.execute("SELECT first_seen FROM jobs WHERE external_id = '1'").fetchone()[0]
     # no descriptions travel in the public file; the published excerpt stands in until the board is read again
     assert db.content(conn, "greenhouse:acme:1") == ""
-    assert conn.execute("SELECT text FROM site_excerpts").fetchone()[0].startswith("Build dashboards")
+    excerpts = [r[0] for r in conn.execute("SELECT text FROM site_excerpts")]
+    assert len(excerpts) == 2 and any(e.startswith("Build dashboards") for e in excerpts)   # both open roles'
     assert conn.execute("SELECT COUNT(*) FROM jobs WHERE minhash IS NULL").fetchone()[0] == 4
     counts = db.upsert_board(conn, "greenhouse", "acme", [job(1), job(3, "Controller"), twins[0]])   # one twin's text is back
     assert counts["new"] == 1 and db.content(conn, "greenhouse:acme:1").startswith("<p>Build dashboards")

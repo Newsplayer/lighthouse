@@ -159,8 +159,9 @@ is deleted after a day.
 - **As a spreadsheet:** download `jobs.csv.gz` from **Releases → Job index**. One row per open role,
   one column per filter (the column list is in the README).
 - **As a database:** download `jobs.db.xz` from the same release, unpack it (`xz -d jobs.db.xz`) and
-  open it in DB Browser for SQLite. Browse the `postings` view (same columns, plus an excerpt), or
-  query `jobs` directly. The README lists the tables.
+  open it in DB Browser for SQLite. Browse the `postings` table (the same columns, plus an excerpt;
+  its definition says what each column means), or `jobs` for every listing ever seen. The README lists
+  the tables.
 - **How complete it is:** the manifest's `fill` entry says, per filter, the share of open roles it's
   known for, and how many have a description. Many postings simply don't mention a field.
 - **How the last build went:** open the run on the **Actions** tab. Its summary page shows the build
@@ -257,15 +258,15 @@ that belongs to someone else lists the wrong jobs under this name, so fix or rem
 
 Commit and push as usual. A push to `main` that changes `lighthouse/` or `config/` starts a build.
 
-- **You changed the field rules (`RULES_VERSION` in `workers.py`) or the filter labels
+- **You changed the field rules (`RULES_VERSION` in `extract.py`) or the filter labels
   (`DERIVE_VERSION` in `classify.py`):** the next build re-reads every description once, not just the
   boards that changed. Earlier gap fills are kept, not read again.
 - **You changed the builder's tables (`SCHEMA` in `db.py`):** bump `SCHEMA_VERSION` and add the step
   from the previous version to `migrate()`. The next build re-processes every company once.
 - **You changed the website's files (`FORMAT` in `site.py`) or the place rules (`VERSION` in
   `places.py`):** the next build writes a new weekly job list by itself.
-- **You changed the public database's tables or the `postings` view:** say so in the release notes
-  and the README; other people's queries read them.
+- **You changed the public database's tables or `postings`' columns (`POSTINGS_TABLE` in
+  `snapshot.py`):** say so in the release notes and the README; other people's queries read them.
 
 ### Look every company up again
 
@@ -329,12 +330,13 @@ any left over are looked up when they're next due.
      fails, the rule answers stand. Descriptions already read are recovered from the published
      database when seeding.
 3. **Write the public files** (`snapshot.export`), new every build:
-   - **`jobs.db.xz`:** a plain SQLite database: every listing with its fields and history (`jobs`,
-     `events`), an excerpt of each open role (`excerpts`), where each field was read from
-     (`extractions`), the boards and the companies list, and the `postings` view (one row per open
-     role, a column per filter). No full descriptions: those stay in the builder. Compressed with `xz`
-     on every core.
-   - **`jobs.csv.gz`:** the `postings` view without the excerpts.
+   - **`jobs.db.xz`:** a plain SQLite database. `postings`: one row per open role, sorted by company, a
+     column per filter in plain words, and an excerpt. It's cleaned as it's written: whitespace
+     collapsed, empty strings stored as NULL, roles without a title left out, no dates in the future.
+     Also every listing with its fields and history (`jobs`, `events`), where each field was read from
+     (`extractions`), and the boards and the companies list. No full descriptions: those stay in the
+     builder. Compressed with `xz` on every core.
+   - **`jobs.csv.gz`:** `postings` without the excerpts.
    - **`manifest.json`:** counts, how full each filter is (`fill`), and how the build went (`health`).
 
    The files are written by whitelist (jobs, boards, rule extractions, history, coverage), so nothing

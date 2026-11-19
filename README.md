@@ -33,15 +33,15 @@ The links below always point to the newest build.
 | File | What it is |
 |---|---|
 | [`jobs.db.xz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.db.xz) | Everything, as one SQLite file. Unpack it (`xz -d jobs.db.xz`, or 7-Zip) and open it with any SQLite tool: DB Browser for SQLite, Datasette, `sqlite3`, pandas. |
-| [`jobs.csv.gz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.csv.gz) | Open roles only, one row per role: the `postings` columns below, as a spreadsheet. |
+| [`jobs.csv.gz`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/jobs.csv.gz) | Open roles only, one row per role: the `postings` table below, without the excerpts. |
 | [`manifest.json`](https://github.com/Newsplayer/lighthouse/releases/download/job-index/manifest.json) | When it was built, how many roles, and how the build went. |
 
-Start with the `postings` view: one row per open role, duplicates collapsed. The other tables:
+Start with the `postings` table: one row per open role, duplicates collapsed. What
+each column means is written into the table's definition, so any SQLite tool shows it. The other tables:
 
 | Table | Holds |
 |---|---|
 | `jobs` | Every listing, including closed ones (kept about 45 days) and the duplicate listings `postings` collapses. To get the same rows as `postings`, filter `active = 1 AND is_canonical = 1`. |
-| `excerpts` | About 600 characters per role. The full posting is at `url`. |
 | `events` | When each listing appeared, closed and reopened. |
 | `extractions` | For each description, the sentence each field was read from. |
 | `boards`, `companies` | The boards read, and which listed companies are covered (and why not). |
@@ -58,11 +58,11 @@ ghost_signals, has_description, filled_by_ai, url, ats, board, excerpt
 
 What you'd otherwise have to guess:
 
-- An empty field means the posting doesn't say. The exception is `countries`: an empty string there
-  means the location couldn't be placed in a country (often "Remote" with nothing else).
+- An empty field (NULL) means the posting doesn't say. For `countries` it means no country could be
+  read from the location (often "Remote" with nothing else).
 - Pay is per year in `pay_currency`, and isn't converted: CAD and MXN amounts are in those currencies.
   Hourly pay is multiplied by 2,080; `pay_stated_per` says whether the posting gave it per hour or per
-  year.
+  year. Pay no posting really means (a misread "$130,000 – $150,000,000") is left empty.
 - `years_experience_source` is `stated` (a requirement), `preferred` (under "nice to have") or
   `title`: estimated from the title because the posting gives no number (Senior → 5, Staff → 8...).
   Treat `title` as a guess.
@@ -145,12 +145,12 @@ keys or paid services.
 | One reader per careers system | `lighthouse/sources/` |
 | Rate limits, robots.txt, time limits | `lighthouse/net.py`, `lighthouse/fetch.py` |
 | The builder's database | `lighthouse/db.py` |
-| Duplicates and reposts / ghost score | `lighthouse/dedupe.py` / `lighthouse/ghost.py` |
+| Duplicates, reposts and the ghost score | `lighthouse/dedupe.py` |
 | Field rules | `lighthouse/extract.py`, `lighthouse/classify.py` |
-| The open model's gap fill | `lighthouse/llm_fill.py`, `lighthouse/categorize.py`, `scripts/get_llm.sh`, `.github/workflows/fill.yml` |
+| The open model's gap fill | `lighthouse/gap_fill.py`, `scripts/get_llm.sh`, `.github/workflows/fill.yml` |
 | The build and the public files | `lighthouse/snapshot.py`, `.github/workflows/job-index.yml` |
 | Website: generator / page | `lighthouse/site.py` / `site/` |
-| The page's filters and eligibility in Python, which the page is tested against | `lighthouse/db.py` (`Filters`, `list_jobs`), `lighthouse/profile.py` |
+| The page's filters and eligibility in Python, which the page is tested against | `lighthouse/db.py` (`Filters`, `list_jobs`, `check_eligibility`) |
 
 ```
 python -m lighthouse index build --out dist      # find boards, fetch, analyse, write the public files
@@ -177,5 +177,4 @@ same change to the other.
 ## Credits
 
 City names for location matching: [GeoNames](https://www.geonames.org/) (CC BY 4.0), compacted into
-`lighthouse/data/cities.tsv.gz` by `scripts/make_cities.py` and `lighthouse/data/places.tsv.gz` by
-`scripts/make_places.py`.
+`lighthouse/data/cities.tsv.gz` and `lighthouse/data/places.tsv.gz` by `scripts/make_places.py`.

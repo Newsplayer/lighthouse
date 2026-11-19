@@ -3,9 +3,9 @@ citizenship, degree, visa-sponsorship language, pipeline wording, benefits, trav
 
 Tiers, all cached by description hash so identical text is never processed twice:
   rules:    free regexes, run on every new description during fetch
-  gap fill: the Gap fill workflow only (llm_fill.py): when the posting clearly talks about a field but the
+  gap fill: the Gap fill workflow only (gap_fill.py): when the posting clearly talks about a field but the
              rules can't settle it (unresolved()), a free open model on the build machine reads it once
-             and fills that gap; categorize.py places titles the rules can't. Rule answers are never
+             and fills that gap; it also places titles the rules can't. Rule answers are never
              overwritten; filled fields carry "by": "model" or "titles" ("claude" in data from 2026-11).
 
 Every field is {"value": ..., "evidence": "<the sentence it came from>"}. When nothing
@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 
 from .models import strings, utcnow
 from .sanitize import html_to_text
 
+RULES_VERSION = "rules-v6"   # bump when rules() changes: the next build reads every description again, once
 FIELDS = ("salary", "workplace", "yoe_min", "clearance", "citizenship", "degree", "visa", "pipeline",
           "skills", "employment", "benefits", "travel", "languages", "job_function", "seniority")
 
@@ -277,7 +280,7 @@ def rules(text: str, title: str = "", location: str = "") -> dict:
         if out["degree"]["value"]:
             break
 
-    from .ghost import PIPELINE_LANGUAGE
+    from .dedupe import PIPELINE_LANGUAGE
     mm = _first(PIPELINE_LANGUAGE, text, _spans(text, low, _PIPELINE_KEYS, 50, 70))
     if mm:
         out["pipeline"] = _f(mm.group(0), _line(text, mm.start(), mm.end()))
@@ -398,7 +401,6 @@ def llm_for(conn, hashes) -> dict[str, dict]:
 
 def ensure_rules(conn, company_keys) -> int:
     """Run the free extractor on any description hash that has no extraction yet."""
-    from .workers import RULES_VERSION
     n = 0
     for ck in company_keys:
         rows = conn.execute(
@@ -436,6 +438,16 @@ def _annual(v, per):
     return v * _ANNUAL.get(per or "year", 1) if v is not None else None
 
 
+_STRONG_CURRENCIES = {"USD", "CAD", "EUR", "GBP"}
+
+
+def _unbelievable_pay(smin, smax, cur) -> bool:
+    """Yearly pay no real posting means, which a misread number produces: under 10,000, a range spanning
+    more than 20x ("$130,000 - $150,000,000"), or over 2 million in dollars, euros or pounds. MXN or
+    other currencies' millions are real pay."""
+    return smax < 10000 or bool(smin and smax > 20 * smin) or (smax > 2_000_000 and (cur or "USD") in _STRONG_CURRENCIES)
+
+
 _DERIVE_SELECT = """SELECT j.uid, j.title, j.workplace, j.salary_min, j.salary_max, j.salary_currency,
        j.salary_interval, j.content_hash, j.derived_of, j.cluster_locations, j.location, j.departments,
        j.employment_type, e.data, e.method, e.at AS data_at
@@ -450,7 +462,7 @@ def derive(conn, company_keys) -> None:
 
 
 def _derive_rows(conn, rows) -> None:
-    from . import classify, geo
+    from . import classify, places
     with conn:
         for r in rows:
             # data_at changes whenever the extraction is rewritten (new rules, a gap-fill answer)
@@ -472,7 +484,9 @@ def _derive_rows(conn, rows) -> None:
             smin, smax = _annual(smin, per), _annual(smax, per)
             if smax is None:
                 smax = smin
-            if smax is not None and smax < 10000:  # implausible as annual pay: treat as unknown
+            if smin is not None and smax is not None and smin > smax:
+                smin, smax = smax, smin
+            if smax is not None and _unbelievable_pay(smin, smax, cur):
                 smin = smax = cur = per = None
             cit = val("citizenship")
             yoe = val("yoe_min")
@@ -492,7 +506,7 @@ def _derive_rows(conn, rows) -> None:
                        languages=?, derived_of=? WHERE uid=?""",
                 (r["workplace"] or val("workplace"), smin, smax, cur, interval_of(per) if smax else None, yoe, ysrc,
                  val("visa"), val("clearance"), None if cit is None else int(bool(cit)), val("degree"),
-                 geo.encode(geo.countries_of(locs)),
+                 places.encode(places.countries_of(locs)),
                  classify.job_function(r["title"], r["departments"] or "")
                  or pick(val("job_function"), classify.FUNCTION_NAMES),
                  classify.seniority(r["title"], stated, ysrc) or pick(val("seniority"), classify.SENIORITY),
@@ -511,3 +525,36 @@ def get(conn, content_hash: str) -> tuple[dict, str | None]:
     for f in FIELDS:                 # the published index leaves out fields a posting doesn't mention
         data.setdefault(f, {"value": None, "evidence": None})
     return data, r["method"]
+
+
+# ---------------------------------------------------------------- the rules on every core
+# CPU-heavy per-description work runs in a process pool. compute() is pure (no database, no network),
+# so worker processes can't step on SQLite; the parent streams batches and writes the results.
+PARALLEL_MIN = 300           # below this many descriptions, a pool costs more than it saves
+BATCH = 2000
+
+
+def compute(item: tuple) -> tuple:
+    """(content_hash, html, title, location, need_sig, need_rules[, hints]) ->
+    (content_hash, minhash, rules, unresolved fields). hints: departments + what the ATS already says."""
+    from .dedupe import minhash
+    chash, html, title, location, need_sig, need_rules = item[:6]
+    hints = item[6] if len(item) > 6 else {}
+    text = html_to_text(html or "")
+    data = rules(text, title or "", location or "") if need_rules else None
+    todo = unresolved(text, data, title or "", hints.get("departments") or "", hints) if data is not None else None
+    return chash, minhash(text) if need_sig else None, data, todo
+
+
+def compute_all(items: list[tuple], workers: int | None = None):
+    """Yield compute() for items, in parallel when it's worth it. Falls back to serial on any pool error."""
+    workers = workers or max(1, min(os.cpu_count() or 2, 8))  # parent mostly waits on results
+    if len(items) >= PARALLEL_MIN and workers > 1:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                yield from pool.map(compute, items, chunksize=32)
+            return
+        except Exception:  # e.g. a sandbox that forbids subprocesses
+            pass
+    for it in items:
+        yield compute(it)

@@ -106,7 +106,7 @@ def test_dead_board_switched_off_after_two_not_found(tmp_path, monkeypatch):
     cfgp.write_text('[settings]\nskip_hourly_titles = true\n[[boards]]\nats="greenhouse"\nslug="gone"\n'
                     '[[boards]]\nats="greenhouse"\nslug="flaky"\n[[boards]]\nats="greenhouse"\nslug="acme"\n')
     from lighthouse.models import Job
-    from lighthouse.sources.greenhouse import GreenhouseSource as G
+    from lighthouse.sources.boards import GreenhouseSource as G
 
     def fake(self, slug, known=None):
         if slug == "gone":

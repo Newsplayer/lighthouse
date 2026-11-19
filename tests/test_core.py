@@ -2,11 +2,10 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
-from lighthouse import config, db, dedupe, extract, fetch, profile
-from lighthouse import ghost
+from lighthouse import config, db, dedupe, extract, fetch
 from lighthouse.models import Job, company_key
 from lighthouse.sanitize import html_to_text, sanitize_html
-from lighthouse.sources.greenhouse import GreenhouseSource
+from lighthouse.sources.boards import GreenhouseSource
 
 BODY = "<p>" + " ".join(f"We build reliable payment systems for word{i} customers." for i in range(60)) + "</p>"
 
@@ -42,7 +41,7 @@ def test_ghost_needs_two_signals():
     def ghost_reasons(title, posted_at, max_age_days):
         row = {"effective_first_seen": posted_at.isoformat(), "first_seen": None, "repost_count": 0, "title": title,
                "content_html": "", "updated_at": None}
-        return ghost.signals(row, max_age_days, text="")
+        return dedupe.signals(row, max_age_days, text="")
     assert ghost_reasons("Senior Data Analyst", datetime.now(timezone.utc), 60) == []
     assert len(ghost_reasons("Senior Data Analyst", old, 60)) == 1
     assert len(ghost_reasons("General Application - Talent Pool", old, 60)) == 2
@@ -97,6 +96,23 @@ def test_empty_detail_never_overwrites_content(tmp_path):
     assert "payment systems" in db.get_job(conn, "greenhouse:acme:1")["content_html"]
 
 
+def test_pay_no_posting_means_is_left_unknown(tmp_path):
+    from dataclasses import replace
+    conn = db.connect(tmp_path / "t.db")
+    pay = lambda eid, lo, hi, cur="USD": replace(job(eid, body=""), salary_min=lo, salary_max=hi,   # noqa: E731
+                                                 salary_currency=cur, salary_interval="year")
+    db.upsert_board(conn, "greenhouse", "acme", [
+        pay(1, 130000, 150_000_000),            # a misread number: the range spans 1,000x
+        pay(2, 600000, 3_000_000),              # $3M a year
+        pay(3, 150000, 120000),                 # written the wrong way round: kept, in order
+        pay(4, 3_511_864, 4_828_813, "MXN"),    # millions of pesos are real pay
+        pay(5, 90000, 120000)])
+    fetch.postprocess(conn, config.load(tmp_path / "none.toml"))
+    got = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT external_id, pay_min_annual, pay_max_annual FROM jobs")}
+    assert got == {"1": (None, None), "2": (None, None), "3": (120000, 150000), "4": (3511864, 4828813),
+                   "5": (90000, 120000)}
+
+
 def test_extraction_and_derived_filters(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     body = ("<p>Salary: $120,000 - $150,000 per year.</p><ul><li>5+ years of experience in data engineering</li>"
@@ -126,7 +142,7 @@ def test_eligibility(tmp_path):
                                                                        body="<p>" + "Analyze data daily. " * 40 + "</p>")])
     cfg = config.load(tmp_path / "none.toml")
     fetch.postprocess(conn, cfg)
-    p = {**profile.DEFAULT, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]}
+    p = {**db.DEFAULT_PROFILE, "years_experience": 2, "needs_sponsorship": True, "locations": ["Austin"]}
     r = db.get_job(conn, "greenhouse:acme:1", p)
     reasons = json.loads(r["elig_reasons"])
     assert r["elig"] == 0 and any("sponsor" in x for x in reasons) and any("5+ years" in x for x in reasons)
@@ -138,7 +154,7 @@ def test_eligibility(tmp_path):
 def test_fetch_run_parallel_with_errors(tmp_path, monkeypatch, gh):
     cfgp = tmp_path / "s.toml"
     cfgp.write_text('[[boards]]\nats="greenhouse"\nslug="acme"\n[[boards]]\nats="greenhouse"\nslug="broken"\n[[boards]]\nats="greenhouse"\nslug="legacy"\n')
-    from lighthouse.sources.greenhouse import GreenhouseSource as G
+    from lighthouse.sources.boards import GreenhouseSource as G
 
     def fake_fetch(self, slug, known=None):
         if slug == "broken":

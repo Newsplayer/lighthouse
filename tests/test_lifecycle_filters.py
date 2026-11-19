@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from lighthouse import classify, config, db, extract, fetch, llm_fill, snapshot
+from lighthouse import classify, config, db, extract, fetch, gap_fill, snapshot
 from lighthouse.models import Job
 from lighthouse.sanitize import sanitize_html
 
@@ -92,7 +92,7 @@ def test_merge_never_overrides_a_rule_answer():
 # ---------------------------------------------------------------- the open-model gap fill on the builder
 
 class FakeModel:
-    """Stands in for llama-server (local_llm.Server): answers each question with answer(user_text, schema),
+    """Stands in for llama-server (gap_fill.Server): answers each question with answer(user_text, schema),
     and records what it was asked."""
     name, parallel = "fake-model", 2
 
@@ -142,9 +142,9 @@ def builder_db(tmp_path):
 def test_gap_fill_asks_only_unsettled_fields_and_keeps_rule_answers(builder_db):
     conn, cfg = builder_db
     model = FakeModel(model_says)
-    stats = llm_fill.run(conn, cfg, minutes=1, server=model)
+    stats = gap_fill.read_gaps(conn, cfg, minutes=1, server=model)
     asked = {text.split("\n")[0]: fields for text, fields in model.asked}
-    # 2 had nothing unsettled; 3 only lacks a category (that's categorize.py's job, not the model's)
+    # 2 had nothing unsettled; 3 only lacks a category (that's place_titles' job, not the model's)
     assert set(asked) == {"Title: Data Analyst", "Title: Field Analyst"}
     assert asked["Title: Data Analyst"] == ["visa_quote", "visa_sponsorship"]           # yoe was settled
     assert "yoe_min" in asked["Title: Field Analyst"] and "salary_min" not in asked["Title: Field Analyst"]
@@ -157,13 +157,13 @@ def test_gap_fill_asks_only_unsettled_fields_and_keeps_rule_answers(builder_db):
     assert method == "rules" and data["visa"] == {"value": "no", "evidence": "without the need for employer support",
                                                   "by": "model"} and "by" not in data["yoe_min"]
     assert db.list_jobs(conn, db.Filters(visa="not_no"))[1] == 3
-    again = llm_fill.run(conn, cfg, minutes=1, server=model)                              # read once per description
+    again = gap_fill.read_gaps(conn, cfg, minutes=1, server=model)                              # read once per description
     assert again["read"] == 0 and len(model.asked) == 2
     conn.execute("UPDATE extractions SET model = 'old'")                                  # new rules keep the fills
     conn.commit()
     fetch.precompute(conn)
     assert extract.get(conn, row("1")["content_hash"])[0]["visa"]["value"] == "no"
-    assert llm_fill.summary(conn) == {"model": "fake-model", "descriptions_read": 2, "with_answers": 2, "waiting": 0}
+    assert gap_fill.summary(conn) == {"model": "fake-model", "descriptions_read": 2, "with_answers": 2, "waiting": 0}
 
 
 def test_gap_fill_keeps_only_answers_quoted_from_the_text(builder_db):
@@ -176,12 +176,12 @@ def test_gap_fill_keeps_only_answers_quoted_from_the_text(builder_db):
         if "yoe_min" in out:
             out.update(yoe_min=7, yoe_quote="five plus years")                            # quote real, number not
         return out
-    stats = llm_fill.run(conn, cfg, minutes=1, server=FakeModel(makes_things_up))
+    stats = gap_fill.read_gaps(conn, cfg, minutes=1, server=FakeModel(makes_things_up))
     assert stats["read"] == 2 and stats["fields_filled"] == 0 and stats["dropped_ungrounded"] == 3
     assert {r["visa"] for r in conn.execute("SELECT visa FROM jobs")} == {None}
     # read, nothing usable: not read again, and the extraction says so
     data = extract.get(conn, conn.execute("SELECT content_hash FROM jobs WHERE external_id='1'").fetchone()[0])[0]
-    assert "llm_read" in data and llm_fill.candidates(conn, 100, 99) == []
+    assert "llm_read" in data and gap_fill.candidates(conn, 100, 99) == []
 
 
 def test_answer_checks():
@@ -191,39 +191,39 @@ def test_answer_checks():
            "yoe_min": 3, "yoe_quote": "3+ years' experience", "workplace": "remote", "workplace_quote": "Remote - US",
            "languages": ["Spanish", "klingon"], "languages_quote": "fluent spanish required",
            "travel": "sometimes", "travel_quote": "x"}
-    got, dropped = llm_fill.to_fields(ans, ["salary", "yoe_min", "workplace", "languages", "travel"], shown)
+    got, dropped = gap_fill.to_fields(ans, ["salary", "yoe_min", "workplace", "languages", "travel"], shown)
     assert got["salary"]["value"] == {"min": 85000, "max": 110000, "currency": None, "interval": "year"}
     assert got["yoe_min"]["value"] == 3 and got["workplace"]["value"] == "remote"   # quotes may come from the location
     assert got["languages"]["value"] == ["spanish"] and "travel" not in got and dropped == []
     for quote, level in (("Approximately 20% travel.", "occasional"), ("up to 25% of the time", "occasional"),
                          ("Travel Required: 00% - 25%", "occasional"), ("Travel: 50%", "frequent"), ("0% travel", "none")):
-        got = llm_fill.to_fields({"travel": "frequent", "travel_quote": quote}, ["travel"], f"Excerpts: {quote}")[0]
+        got = gap_fill.to_fields({"travel": "frequent", "travel_quote": quote}, ["travel"], f"Excerpts: {quote}")[0]
         assert got["travel"]["value"] == level, quote                              # the quoted share decides
     for quote, value, kept in (("Bachelor's degree preferred", "bachelors", False),
                                ("Bachelor's Degree or equivalent work experience", "bachelors", False),
                                ("Bachelor of Science degree in Chemistry required", "bachelors", True)):
-        got = llm_fill.to_fields({"degree_required": value, "degree_quote": quote}, ["degree"], f"Excerpts: {quote}")[0]
+        got = gap_fill.to_fields({"degree_required": value, "degree_quote": quote}, ["degree"], f"Excerpts: {quote}")[0]
         assert ("degree" in got) == kept, quote                                    # preferred isn't required
     for quote, value, kept in (("DoD Clearance: Secret", "secret", True), ("SC level security clearance", "secret", False),
                                ("Active Secret clearance and the ability to obtain TS/SCI", "secret", True),
                                ("Active TS/SCI with poly", "ts", False), ("Must hold a security clearance", "unspecified", True)):
-        got = llm_fill.to_fields({"clearance": value, "clearance_quote": quote}, ["clearance"], f"Excerpts: {quote}")[0]
+        got = gap_fill.to_fields({"clearance": value, "clearance_quote": quote}, ["clearance"], f"Excerpts: {quote}")[0]
         assert ("clearance" in got) == kept, quote                                 # the level is named in the quote
     bad = {**ans, "salary_max": 120000}
-    assert "salary" in llm_fill.to_fields(bad, ["salary"], shown)[1]               # 120,000 isn't in the quote
-    assert llm_fill.snippet("x " * 400 + "We will not sponsor a visa for this role. " + "y " * 400, ["visa"]).count("sponsor") == 1
-    assert llm_fill.fields_of("visa,job_function,yoe_min") == ["visa", "yoe_min"]
+    assert "salary" in gap_fill.to_fields(bad, ["salary"], shown)[1]               # 120,000 isn't in the quote
+    assert gap_fill.snippet("x " * 400 + "We will not sponsor a visa for this role. " + "y " * 400, ["visa"]).count("sponsor") == 1
+    assert gap_fill.fields_of("visa,job_function,yoe_min") == ["visa", "yoe_min"]
 
 
 def test_gap_fill_without_a_model_is_rules_only(builder_db, monkeypatch):
     conn, cfg = builder_db
     for k in ("LIGHTHOUSE_LLM_URL", "LIGHTHOUSE_LLM_SERVER", "LIGHTHOUSE_LLM_MODEL"):
         monkeypatch.delenv(k, raising=False)
-    assert llm_fill.server_from_env(cfg) is None
-    assert "no open model" in llm_fill.run(conn, cfg)["skipped"]
+    assert gap_fill.server_from_env(cfg) is None
+    assert "no open model" in gap_fill.read_gaps(conn, cfg)["skipped"]
     monkeypatch.setenv("LIGHTHOUSE_LLM_URL", "https://api.example.com")
     with pytest.raises(ValueError):                                      # only a model on this machine
-        llm_fill.server_from_env(cfg)
+        gap_fill.server_from_env(cfg)
 
 
 def test_gap_fills_ship_in_the_public_database_and_survive_a_lost_cache(tmp_path):
@@ -231,7 +231,7 @@ def test_gap_fills_ship_in_the_public_database_and_survive_a_lost_cache(tmp_path
     b.ingest("acme", [posting(1, "Data Analyst", "Must be authorized to work in the U.S. without the need for "
                                                  "employer support.")])
     conn = db.connect(b.path)
-    llm_fill.run(conn, b.cfg, minutes=1, server=FakeModel(model_says))
+    gap_fill.read_gaps(conn, b.cfg, minutes=1, server=FakeModel(model_says))
     conn.close()
     m = b.export()
     assert m["llm"]["descriptions_read"] == 1 and m["llm"]["model"] == "fake-model"
@@ -244,7 +244,7 @@ def test_gap_fills_ship_in_the_public_database_and_survive_a_lost_cache(tmp_path
     snapshot.seed_builder(b.dist / snapshot.DB_NAME, seeded)
     s = db.connect(seeded)
     assert s.execute("SELECT model FROM llm_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "seeded"
-    assert llm_fill.candidates(s, 100, 99) == []
+    assert gap_fill.candidates(s, 100, 99) == []
 
 
 def test_a_description_the_model_found_nothing_in_is_not_read_again(tmp_path):
@@ -252,7 +252,7 @@ def test_a_description_the_model_found_nothing_in_is_not_read_again(tmp_path):
     b.ingest("acme", [posting(1, "Data Analyst", "Must be authorized to work in the U.S. without the need for "
                                                  "employer support.")])
     conn = db.connect(b.path)
-    llm_fill.run(conn, b.cfg, minutes=1, server=FakeModel(lambda text, schema: {}))   # read, nothing to add
+    gap_fill.read_gaps(conn, b.cfg, minutes=1, server=FakeModel(lambda text, schema: {}))   # read, nothing to add
     ch = conn.execute("SELECT content_hash FROM jobs").fetchone()[0]
     assert "llm_read" in json.loads(conn.execute("SELECT data FROM extractions").fetchone()[0])
     conn.close()
@@ -261,7 +261,7 @@ def test_a_description_the_model_found_nothing_in_is_not_read_again(tmp_path):
     snapshot.seed_builder(b.dist / snapshot.DB_NAME, seeded)  # the Actions cache is gone
     s = db.connect(seeded)
     assert s.execute("SELECT data FROM llm_extractions WHERE content_hash=?", (ch,)).fetchone()[0] == "{}"
-    assert llm_fill.candidates(s, 100, 99) == []              # nothing to read again
+    assert gap_fill.candidates(s, 100, 99) == []              # nothing to read again
     assert public_db(b, tmp_path).execute("SELECT filled_by_ai FROM postings").fetchone()[0] is None   # no fills shown
 
 
@@ -269,7 +269,6 @@ def test_a_fill_running_alongside_builds_hands_its_answers_over_in_a_file(tmp_pa
     pytest.importorskip("numpy")
     import sqlite3
 
-    from lighthouse import categorize
     cfg, _ = cfg_file(tmp_path)
     build = db.connect(tmp_path / "b.db")
     db.sync_config_boards(build, cfg.boards)
@@ -283,18 +282,18 @@ def test_a_fill_running_alongside_builds_hands_its_answers_over_in_a_file(tmp_pa
     with sqlite3.connect(tmp_path / "fill.db") as copy:              # the fill job starts from the build's database
         build.backup(copy)
     fill = db.connect(tmp_path / "fill.db")
-    categorize.run(fill, embed=_bag_of_words)
-    llm_fill.run(fill, cfg, minutes=1, server=FakeModel(model_says))
+    gap_fill.place_titles(fill, embed=_bag_of_words)
+    gap_fill.read_gaps(fill, cfg, minutes=1, server=FakeModel(model_says))
     answers = tmp_path / "answers.json.gz"
-    assert snapshot.save_answers(fill, answers) == 2                 # one model reading, one category guess
+    assert gap_fill.save_answers(fill, answers) == 2                 # one model reading, one category guess
 
     # meanwhile the next build rewrote those postings' rule answers (after the model read them)
-    build.execute("UPDATE extractions SET at = ?", (llm_fill._stamp(),))
+    build.execute("UPDATE extractions SET at = ?", (gap_fill._stamp(),))
     build.commit()
-    assert snapshot.merge_answers(build, answers) == {"readings": 1, "merged": 1, "categories": 1}
+    assert gap_fill.merge_answers(build, answers) == {"readings": 1, "merged": 1, "categories": 1}
     row = lambda eid: build.execute("SELECT visa, job_function FROM jobs WHERE external_id = ?", (str(eid),)).fetchone()
     assert row(1)["visa"] == "no" and row(50)["job_function"] == "Software Engineering"
-    assert snapshot.merge_answers(build, answers) == {"readings": 0, "merged": 0, "categories": 0}   # safe to repeat
+    assert gap_fill.merge_answers(build, answers) == {"readings": 0, "merged": 0, "categories": 0}   # safe to repeat
 
 
 # ---------------------------------------------------------------- job categories from similar titles
@@ -311,13 +310,12 @@ def _bag_of_words(texts):
 
 def test_categories_from_similar_titles(tmp_path):
     pytest.importorskip("numpy")
-    from lighthouse import categorize
     labeled = [(f"Software Engineer {k}", "Software Engineering") for k in range(20)] + \
               [(f"Registered Nurse unit {k}", "Healthcare & Clinical") for k in range(20)]
-    got = categorize.guess(labeled, ["Staff Engineer Platform Software", "Nurse Unit Lead", "Llama Wrangler"],
+    got = gap_fill.guess(labeled, ["Staff Engineer Platform Software", "Nurse Unit Lead", "Llama Wrangler"],
                            _bag_of_words, min_sim=0.2)
     assert [g[0] for g in got] == ["Software Engineering", "Healthcare & Clinical", None]
-    ev = categorize.evaluate(labeled, _bag_of_words, n=10)
+    ev = gap_fill.evaluate(labeled, _bag_of_words, n=10)
     assert ev["held_out"] == 10 and ev["precision"] == 1.0
 
     cfg, _ = cfg_file(tmp_path)
@@ -328,13 +326,13 @@ def test_categories_from_similar_titles(tmp_path):
                     [posting(50, "Senior Code Platform Wizard", "Build it well.")])     # no rule places this title
     fetch.postprocess(conn, cfg)
     assert conn.execute("SELECT job_function FROM jobs WHERE external_id='50'").fetchone()[0] is None
-    stats = categorize.run(conn, embed=_bag_of_words)
+    stats = gap_fill.place_titles(conn, embed=_bag_of_words)
     assert stats["unplaced"] == 1 and stats["guessed"] == 1
     row = conn.execute("SELECT job_function, content_hash FROM jobs WHERE external_id='50'").fetchone()
     assert row["job_function"] == "Software Engineering"
     f = extract.get(conn, row["content_hash"])[0]["job_function"]
     assert f["by"] == "titles" and f["evidence"].startswith("like: Senior Software Engineer Code Platform")
-    assert categorize.run(conn, embed=_bag_of_words)["unplaced"] == 0            # done once
+    assert gap_fill.place_titles(conn, embed=_bag_of_words)["unplaced"] == 0            # done once
 
 
 # ---------------------------------------------------------------- lifecycle
@@ -464,16 +462,15 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 
 
 def test_local_server_starts_answers_and_stops(tmp_path):
-    from lighthouse import local_llm
     exe = tmp_path / "llama-server"
     exe.write_text(FAKE_LLAMA_SERVER)
     exe.chmod(0o755)
     model = tmp_path / "tiny-model-Q4_K_M.gguf"
     model.write_bytes(b"GGUF")
-    with local_llm.Server(exe, model, parallel=2, start_seconds=30) as server:
+    with gap_fill.Server(exe, model, parallel=2, start_seconds=30) as server:
         assert server.name == "tiny-model-Q4_K_M" and server.url.startswith("http://127.0.0.1:")
         for _ in range(300):                       # well past a pipe's worth of log lines
-            ans, _ = server.chat([{"role": "user", "content": "x"}], llm_fill.schema_for(["visa"]))
+            ans, _ = server.chat([{"role": "user", "content": "x"}], gap_fill.schema_for(["visa"]))
         assert ans == {"visa_sponsorship": None, "visa_quote": ""}
         proc = server.proc
     assert proc.poll() is not None                 # stopped with the block
@@ -481,4 +478,4 @@ def test_local_server_starts_answers_and_stops(tmp_path):
     broken.write_text("#!/bin/sh\necho 'cannot load model' >&2\nexit 3\n")
     broken.chmod(0o755)
     with pytest.raises(RuntimeError, match="cannot load model"):
-        local_llm.Server(broken, model, start_seconds=10).__enter__()
+        gap_fill.Server(broken, model, start_seconds=10).__enter__()

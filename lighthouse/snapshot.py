@@ -3,7 +3,7 @@ manifest.json on the `job-index` release. README.md describes them for their use
 
 The public database is written by whitelist (write_public_db), and a test checks it. Anything added
 to it must be job data: never descriptions in full, and nothing about the people using the site.
-Other people's queries read its tables and the `postings` view, so a renamed or dropped column breaks
+Other people's queries read its tables (postings first), so a renamed or dropped column breaks
 them; say so in the PR and update the README.
 
 The same file is what a new builder starts from when the Actions cache is lost (seed_builder), so a
@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, db, dedupe, extract, workers
+from . import __version__, db, dedupe, extract
 from .models import age_hours, utcnow
 
 log = logging.getLogger("lighthouse.index")
@@ -74,7 +74,7 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
           llm: bool = True, llm_minutes: float | None = None, fetch_minutes: float | None = None) -> dict:
     """Find boards for the listed companies, fetch every enabled board into the builder database, let a
     free open model on this machine fill the fields the rules couldn't settle (when one is set up: see
-    llm_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
+    gap_fill.server_from_env) and guess the categories of titles they couldn't place, then write the
     public files. full: look every company up again and retry boards that were switched off."""
     from . import config as config_mod
     from . import fetch, net
@@ -113,7 +113,8 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
     if retired or keys:   # postings closed (boards switched off in the list) or deleted: re-cluster those companies
         fetch.postprocess(conn, cfg, set(retired) | keys)
     if llm:   # optional steps: the rule answers are published whatever happens here
-        fill_gaps(conn, cfg, llm_minutes)
+        from . import gap_fill
+        gap_fill.fill(conn, cfg, llm_minutes)
     _company_openings(conn)
     db.set_meta(conn, "build_health", health(conn, results, started, (time.monotonic() - t0) / 60,
                                              s.ghost_hide_signals))
@@ -121,83 +122,6 @@ def build(out_dir: Path | str, countries=(), config_path=None, db_path: Path | s
         log.info("compacted the database")
     conn.close()
     return export(db_path, out_dir, countries=countries)
-
-
-def fill_gaps(conn, cfg, minutes: float | None = None) -> dict:
-    """The builder's free gap fill: categories for titles no rule places (categorize.py), then the open
-    model on this machine for fields the rules couldn't settle (llm_fill.py), for `minutes`. Never
-    raises: whatever fails, the rule answers stand. Returns what each step did."""
-    from . import categorize, llm_fill
-    out = {}
-    try:
-        out["categories"] = categorize.run(conn)
-    except Exception as exc:
-        log.warning("category guesses skipped: %s", exc)
-        out["categories"] = {"error": str(exc)[:200]}
-    try:
-        server = llm_fill.server_from_env(cfg)
-        if server is None:
-            out["model"] = llm_fill.run(conn, cfg)          # merges anything stored; says why nothing was read
-        else:
-            with server:
-                out["model"] = llm_fill.run(conn, cfg, minutes=minutes, server=server)
-    except Exception as exc:
-        log.warning("gap fill skipped: %s", exc)
-        out["model"] = {"error": str(exc)[:200]}
-    return out
-
-
-def save_answers(conn, path: Path | str) -> int:
-    """The gap fill's answers, for the next build to merge (merge_answers): every model reading kept, and
-    each job category guessed from similar titles. The Gap fill workflow saves this small file, never the builder
-    database, so it runs alongside builds without writing over a newer one. Returns rows written."""
-    from .categorize import BY
-    n = 0
-    with gzip.open(path, "wt", encoding="utf-8") as f:
-        for h, data, model in conn.execute("SELECT content_hash, data, model FROM llm_extractions"):
-            f.write(json.dumps({"llm": [h, data, model]}, ensure_ascii=False) + "\n")
-            n += 1
-        for h, data in conn.execute("SELECT content_hash, data FROM extractions WHERE data LIKE ?", (f'%"{BY}"%',)):
-            guess = json.loads(data).get("job_function") or {}
-            if guess.get("by") == BY:
-                f.write(json.dumps({"category": [h, guess]}, ensure_ascii=False) + "\n")
-                n += 1
-    return n
-
-
-def merge_answers(conn, path: Path | str) -> dict:
-    """Merge a gap fill's answers (save_answers) into the builder database. A reading that's new or changed
-    is stamped now, so it's merged even where a build rewrote that posting's rule answers after the model
-    read it (the fill runs alongside builds). Category guesses go only to postings the rules still can't
-    place. Safe to repeat: unchanged readings and placed postings are left alone."""
-    from . import extract, llm_fill
-    stamp, readings, guesses = llm_fill._stamp(), 0, []
-    with gzip.open(path, "rt", encoding="utf-8") as f, conn:
-        for line in f:
-            row = json.loads(line)
-            if "llm" in row:
-                readings += conn.execute(
-                    "INSERT INTO llm_extractions(content_hash, data, model, at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(content_hash) DO UPDATE SET data = excluded.data, model = excluded.model, "
-                    "at = excluded.at WHERE llm_extractions.data <> excluded.data", (*row["llm"], stamp)).rowcount
-            elif "category" in row:
-                guesses.append(row["category"])
-    merged = llm_fill.apply(conn)
-    placed, keys = 0, set()
-    with conn:
-        for h, guess in guesses:
-            e = conn.execute("SELECT data FROM extractions WHERE content_hash = ?", (h,)).fetchone()
-            data = json.loads(e[0] or "{}") if e else None
-            if data is None or (data.get("job_function") or {}).get("value"):
-                continue
-            data["job_function"] = guess
-            conn.execute("UPDATE extractions SET data = ?, at = ? WHERE content_hash = ?",
-                         (json.dumps(data, ensure_ascii=False), llm_fill._stamp(), h))
-            keys |= {r[0] for r in conn.execute("SELECT DISTINCT company_key FROM jobs WHERE content_hash = ?", (h,))}
-            placed += 1
-    if keys:
-        extract.derive(conn, sorted(keys))
-    return {"readings": readings, "merged": merged, "categories": placed}
 
 
 _SIDE_BOARD = re.compile(r"campus|intern|early|student|graduate|redeploy|restricted|contractor|alumni|referral", re.I)
@@ -378,7 +302,11 @@ def seed_builder(db_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
                                  "VALUES (?, ?, 'seeded', ?)", (chash, json.dumps(filled, ensure_ascii=False), now))
             conn.execute("INSERT INTO events (uid, kind, at) SELECT uid, kind, at FROM s.events ORDER BY rowid")
             # the website shows the published excerpts until the descriptions are read again
-            conn.execute("INSERT OR REPLACE INTO site_excerpts (content_hash, text) SELECT content_hash, text FROM s.excerpts")
+            if conn.execute("SELECT 1 FROM s.sqlite_master WHERE name = 'excerpts'").fetchone():   # files before 2026-11-19
+                conn.execute("INSERT OR REPLACE INTO site_excerpts (content_hash, text) SELECT content_hash, text FROM s.excerpts")
+            else:
+                conn.execute("INSERT OR REPLACE INTO site_excerpts (content_hash, text) SELECT j.content_hash, p.excerpt "
+                             "FROM s.postings p JOIN s.jobs j ON j.uid = p.id WHERE p.excerpt IS NOT NULL")
             # One-response boards are read in full once (not skipped as unchanged), so their postings
             # get their descriptions back.
             conn.execute("UPDATE boards SET body_hash = NULL")
@@ -398,47 +326,79 @@ def seed_builder(db_file: Path | str, db_path: Path | str = BUILDER_DB) -> int:
 PRIVATE_JOB_COLUMNS = db.RETIRED_JOB_COLUMNS | {"minhash", "minhash_of", "missed", "row_sig", "derived_of", "detail_marker"}
 
 # One row per open role (duplicate listings collapsed into the role), one column per filter, in plain
-# words: what you browse in any SQLite tool, and what jobs.csv.gz holds. Lists are comma-separated; pay
-# is per year (hourly x 2080) with pay_stated_per saying how the posting gave it.
-POSTINGS_VIEW = """CREATE VIEW postings AS SELECT
-    j.uid AS id, j.title, j.company,
-    j.location,
-    (SELECT group_concat(value, ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))) AS all_locations,
-    replace(trim(j.countries, ','), ',', ', ') AS countries,
-    j.workplace_eff AS workplace,
-    j.emp_type AS employment_type,
-    j.seniority,
-    j.job_function,
-    j.yoe_min AS years_experience,
-    j.yoe_source AS years_experience_source,
-    j.degree,
-    j.visa AS visa_sponsorship,
-    j.clearance,
-    j.citizenship AS us_citizens_only,
-    CAST(j.pay_min_annual AS INTEGER) AS pay_min_per_year,
-    CAST(j.pay_max_annual AS INTEGER) AS pay_max_per_year,
-    j.pay_currency,
-    j.pay_interval AS pay_stated_per,
-    replace(trim(j.skills, ','), ',', ', ') AS skills,
-    replace(trim(j.benefits, ','), ',', ', ') AS benefits,
+# words: what most people want, and what jobs.csv.gz holds. A table, not a view, so it's quick to query.
+# The comments travel with it inside the file: any SQLite tool shows what each column means.
+POSTINGS_TABLE = """CREATE TABLE postings (
+    id TEXT PRIMARY KEY,            -- "<ats>:<board>:<the employer's posting id>" (jobs.uid)
+    title TEXT,
+    company TEXT,
+    location TEXT,                  -- as the employer wrote it
+    all_locations TEXT,             -- every place this role is listed, separated by " | "
+    countries TEXT,                 -- ISO codes, ", "-separated; NULL when no country could be read
+    workplace TEXT,                 -- remote | hybrid | onsite
+    employment_type TEXT,           -- full_time | part_time | contract | temporary | internship
+    seniority TEXT,                 -- intern | entry | mid | senior | lead | manager | director | executive
+    job_function TEXT,              -- the role's category, e.g. Data & Analytics
+    years_experience INTEGER,       -- years of experience asked
+    years_experience_source TEXT,   -- stated (required) | preferred | title (estimated from the title: a guess)
+    degree TEXT,                    -- bachelors | masters | phd: the lowest the posting requires
+    visa_sponsorship TEXT,          -- yes | no: what the posting says about sponsoring a visa
+    clearance TEXT,                 -- public_trust | secret | ts | ts_sci | unspecified (required, level not given)
+    us_citizens_only INTEGER,       -- 1 when the posting requires US citizenship
+    pay_min_per_year INTEGER,       -- in pay_currency, not converted; hourly pay x 2080
+    pay_max_per_year INTEGER,
+    pay_currency TEXT,              -- ISO code: USD, CAD, MXN...
+    pay_stated_per TEXT,            -- how the posting gave pay: year | hour | month...
+    skills TEXT,                    -- ", "-separated
+    benefits TEXT,                  -- ", "-separated
+    travel TEXT,                    -- none | occasional | frequent
+    languages_required TEXT,        -- ", "-separated
+    departments TEXT,               -- as the employer gave them, ", "-separated
+    posted_on TEXT,                 -- YYYY-MM-DD from the careers system; a repost resets it
+    first_seen_on TEXT,             -- YYYY-MM-DD, the earliest the role was seen anywhere: use this for "new"
+    times_listed INTEGER,           -- listings collapsed into this row (one role posted in six cities: 6)
+    reposts INTEGER,                -- times it was taken down and posted again
+    ghost_score INTEGER,            -- 0-4 signs of a ghost job; the website hides 3 and up
+    ghost_signals TEXT,             -- those signs, "; "-separated
+    has_description INTEGER,        -- 1 when the description was read (most columns come from it)
+    filled_by_ai TEXT,              -- columns no rule could read, filled by a small open model from the posting's own words
+    url TEXT,                       -- the employer's page: the full posting, and where to apply
+    ats TEXT,                       -- the careers system: workday, greenhouse, jsonld (a careers site)...
+    board TEXT,                     -- that system's board (boards.slug)
+    excerpt TEXT                    -- about 600 characters of the description
+)"""
+
+# Fills postings from the public jobs and extractions (and the builder's excerpts, attached as src).
+# clean() trims and collapses whitespace and turns "" into NULL; a role with no title is left out. Rows go
+# by company and title: newest first made jobs.csv.gz 37% bigger (a company's rows side by side compress).
+POSTINGS_FILL = """INSERT INTO postings SELECT
+    j.uid, clean(j.title), clean(j.company), clean(j.location),
+    (SELECT group_concat(clean(value), ' | ') FROM json_each(COALESCE(j.cluster_locations, json_array(j.location)))),
+    NULLIF(replace(trim(j.countries, ','), ',', ', '), ''),
+    j.workplace_eff, j.emp_type, j.seniority, j.job_function,
+    j.yoe_min, j.yoe_source, j.degree, j.visa, j.clearance, j.citizenship,
+    CAST(j.pay_min_annual AS INTEGER), CAST(j.pay_max_annual AS INTEGER), j.pay_currency, j.pay_interval,
+    NULLIF(replace(trim(j.skills, ','), ',', ', '), ''),
+    NULLIF(replace(trim(j.benefits, ','), ',', ', '), ''),
     j.travel,
-    replace(trim(j.languages, ','), ',', ', ') AS languages_required,
-    (SELECT group_concat(value, ', ') FROM json_each(COALESCE(j.departments, '[]'))) AS departments,
-    substr(j.posted_at, 1, 10) AS posted_on,
-    substr(j.effective_first_seen, 1, 10) AS first_seen_on,
-    j.cluster_count AS times_listed,
-    j.repost_count AS reposts,
-    j.ghost_score,
-    (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))) AS ghost_signals,
-    x.text IS NOT NULL AS has_description,
+    NULLIF(replace(trim(j.languages, ','), ',', ', '), ''),
+    (SELECT group_concat(clean(value), ', ') FROM json_each(COALESCE(j.departments, '[]'))),
+    CASE WHEN substr(j.posted_at, 1, 10) <= date('now') THEN substr(j.posted_at, 1, 10) END,
+    substr(COALESCE(j.effective_first_seen, j.first_seen), 1, 10),
+    j.cluster_count, j.repost_count, j.ghost_score,
+    (SELECT group_concat(value, '; ') FROM json_each(COALESCE(j.ghost_reasons, '[]'))),
+    x.text IS NOT NULL,
     (SELECT group_concat(f.key, ', ') FROM extractions e, json_each(e.data) f
-      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') IS NOT NULL) AS filled_by_ai,
-    j.url,
-    j.source AS ats,
-    j.source_board AS board,
-    x.text AS excerpt
-FROM jobs j LEFT JOIN excerpts x ON x.content_hash = j.content_hash
-WHERE j.active = 1 AND j.is_canonical = 1"""
+      WHERE e.content_hash = j.content_hash AND json_extract(f.value, '$.by') IS NOT NULL),
+    j.url, j.source, j.source_board, x.text
+FROM jobs j LEFT JOIN src.site_excerpts x ON x.content_hash = j.content_hash AND x.text <> ''
+WHERE j.active = 1 AND j.is_canonical = 1 AND clean(j.title) IS NOT NULL
+ORDER BY 3 COLLATE NOCASE, 2 COLLATE NOCASE"""
+
+
+def _clean(v):
+    """Whitespace trimmed and collapsed (newlines and tabs too); "" becomes NULL."""
+    return (" ".join(v.split()) or None) if isinstance(v, str) else v
 
 
 def _compact_extraction(data: str | None) -> str | None:
@@ -480,6 +440,7 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
     c.execute("PRAGMA journal_mode=OFF")
     c.execute("PRAGMA synchronous=OFF")
     c.create_function("compact", 1, _compact_extraction, deterministic=True)
+    c.create_function("clean", 1, _clean, deterministic=True)
     c.execute("ATTACH DATABASE ? AS src", (str(src_path),))
     cols = ", ".join(n for n in _cols(c, "jobs", "src") if n not in PRIVATE_JOB_COLUMNS)
     c.executescript(f"""
@@ -487,8 +448,6 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
         CREATE UNIQUE INDEX jobs_uid ON jobs(uid);
         CREATE INDEX jobs_cluster ON jobs(cluster_id);
         CREATE INDEX jobs_hash ON jobs(content_hash);
-        CREATE TABLE excerpts AS SELECT content_hash, text FROM src.site_excerpts WHERE text <> '';
-        CREATE UNIQUE INDEX excerpts_hash ON excerpts(content_hash);
         CREATE TABLE events AS SELECT uid, kind, at FROM src.events ORDER BY id;
         CREATE INDEX events_uid ON events(uid);
         CREATE TABLE extractions AS SELECT content_hash, method, compact(data) AS data, model, at
@@ -497,7 +456,8 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
         CREATE TABLE boards AS SELECT * FROM src.boards;
         CREATE TABLE companies AS SELECT * FROM src.companies;
         CREATE TABLE about (key TEXT PRIMARY KEY, value TEXT);
-        {POSTINGS_VIEW};
+        {POSTINGS_TABLE};
+        {POSTINGS_FILL};
     """)
     c.executemany("INSERT INTO about (key, value) VALUES (?, ?)", [(k, json.dumps(v)) for k, v in about.items()])
     c.commit()
@@ -505,7 +465,7 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
     rows, active = c.execute("SELECT COUNT(*), COALESCE(SUM(active), 0) FROM jobs").fetchone()
     csv_info = None
     try:        # a convenience for people: never stops the database from publishing
-        cur = c.execute("SELECT * FROM postings ORDER BY company COLLATE NOCASE, title COLLATE NOCASE")
+        cur = c.execute("SELECT * FROM postings ORDER BY rowid")   # by company and title, as written
         keep = [i for i, d in enumerate(cur.description) if d[0] != "excerpt"]
         n = 0
         with gzip.open(out / CSV_NAME, "wt", encoding="utf-8", newline="", compresslevel=6) as f:
@@ -526,7 +486,7 @@ def write_public_db(src_path: Path, out: Path, about: dict) -> tuple[dict, dict 
 
 def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
     """Write the public files into out_dir: jobs.db.xz, jobs.csv.gz and manifest.json (returned)."""
-    from . import llm_fill, site
+    from . import gap_fill, site
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     now = _now()
@@ -534,19 +494,21 @@ def export(db_path: Path | str, out_dir: Path | str, countries=()) -> dict:
     site.excerpts(conn)          # an excerpt for every open role, kept in the builder database
     # A role listed in 40 places is one role, 40 postings. "jobs" counts roles: the number every list adds up to.
     roles, postings = conn.execute("SELECT COALESCE(SUM(is_canonical), 0), COUNT(*) FROM jobs WHERE active = 1").fetchone()
-    manifest = {"lighthouse": __version__, "rules_version": workers.RULES_VERSION, "built_at": now,
+    manifest = {"lighthouse": __version__, "rules_version": extract.RULES_VERSION, "built_at": now,
                 "countries": list(countries), "jobs": roles, "postings": postings,
                 "boards": conn.execute("SELECT COUNT(*) FROM boards WHERE enabled = 1 AND last_ok IS NOT NULL").fetchone()[0],
                 # boards that stopped existing, for the maintainer to fix or drop
                 "switched_off": [f"{a}:{b}" for a, b in conn.execute(
                     "SELECT ats, slug FROM boards WHERE last_error LIKE 'Switched off automatically%' ORDER BY ats, slug")],
-                "coverage": _coverage(conn), "llm": llm_fill.summary(conn), "fill": _fill_rates(conn),
+                "coverage": _coverage(conn), "llm": gap_fill.summary(conn), "fill": _fill_rates(conn),
                 "health": db.get_meta(conn, "build_health")}
     conn.close()
     manifest["db"], manifest["csv"] = write_public_db(Path(db_path), out, {
         "built_at": now, "lighthouse": __version__, "countries": list(countries),
-        "about": "Open job postings read from employers' own careers sites by Lighthouse. Descriptions are "
-                 "excerpts; jobs.url is the employer's page. The postings view has one row per open role."})
+        "about": "Open job postings read from employers' own careers sites by Lighthouse. Start with the "
+                 "postings table: one row per open role (ORDER BY first_seen_on DESC for the newest); its columns are described in its definition. "
+                 "jobs keeps every listing, closed ones too, for history. Descriptions are excerpts; url is the "
+                 "employer's page."})
     (out / MANIFEST).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return manifest
 

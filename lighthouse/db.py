@@ -55,7 +55,7 @@ CREATE TABLE jobs (
     minhash BLOB, minhash_of TEXT, cluster_id TEXT, is_canonical INTEGER NOT NULL DEFAULT 0,
     cluster_count INTEGER NOT NULL DEFAULT 1, cluster_locations TEXT, effective_first_seen TEXT,
     repost_count INTEGER NOT NULL DEFAULT 0,
-    -- ghost score (ghost.py)
+    -- ghost score (dedupe.py)
     ghost_score INTEGER NOT NULL DEFAULT 0, ghost_reasons TEXT,
     -- filter fields: the careers system's structure, else the rules, else the gap fill (extract.derive)
     workplace_eff TEXT, pay_min_annual REAL, pay_max_annual REAL, pay_currency TEXT, pay_interval TEXT,
@@ -479,11 +479,11 @@ def purge_out_of_scope(conn, countries) -> tuple[int, set[str]]:
     want = {c.strip().upper() for c in countries or () if c.strip()}
     if not want:
         return 0, set()
-    from . import geo
+    from . import places
     uids, keys = [], set()
     for r in conn.execute("SELECT uid, company_key, location, locations FROM jobs"):
         locs = strings(r["locations"]) or ([r["location"]] if r["location"] else [])
-        if locs and not geo.in_scope(locs, want):
+        if locs and not places.in_scope(locs, want):
             uids.append(r["uid"])
             keys.add(r["company_key"])
     return delete_postings(conn, uids), keys
@@ -616,7 +616,6 @@ def _where(conn, f: Filters) -> tuple[list[str], list]:
     elif f.language:
         where.append("j.languages LIKE ?"); args.append(f"%,{f.language.strip().lower()},%")
     if f.eligible_only and f.profile:
-        from .profile import eligibility_sql
         clause = eligibility_sql(conn, f.profile, f.yoe_slack)
         if clause:
             where.append(f"({clause[0]})"); args += clause[1]
@@ -638,8 +637,7 @@ def list_jobs(conn, f: Filters, page: int = 1, per_page: int = 50) -> tuple[list
     rows = [dict(r) for r in conn.execute(
         f"SELECT {_LIST_COLS} FROM jobs j WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ? OFFSET ?",
         args + [per_page, max(0, page - 1) * per_page])]
-    from .profile import annotate
-    annotate(rows, f.profile or {}, f.yoe_slack)
+    annotate_eligibility(rows, f.profile or {}, f.yoe_slack)
     return rows, conn.execute(f"SELECT COUNT(*) FROM jobs j WHERE {' AND '.join(where)}", args).fetchone()[0]
 
 
@@ -656,8 +654,7 @@ def get_job(conn: sqlite3.Connection, uid: str, profile: dict | None = None, yoe
                             "AND cluster_locations IS NOT NULL LIMIT 1", (row.get("cluster_id"),)).fetchone()
         own = json.loads(row.get("locations") or "[]") or ([row["location"]] if row.get("location") else [])
         row["cluster_locations"] = lead[0] if lead else json.dumps(own)
-    from .profile import annotate
-    annotate([row], profile or {}, yoe_slack)
+    annotate_eligibility([row], profile or {}, yoe_slack)
     return row
 
 
@@ -671,3 +668,135 @@ def content(conn, uid: str) -> str:
                             ORDER BY k.content_hash = j.content_hash DESC, k.is_canonical DESC LIMIT 1""",
                          (uid,)).fetchone()
     return unpack(r[0]) if r else ""
+
+
+# ================================================================ eligibility ("Can you apply?")
+# The reference the website's answers are tested against (site/logic.js is the copy that runs in the
+# browser; tests/test_site.py compares the two). A posting is ruled out only when it clearly states
+# something the person can't meet (no sponsorship, citizenship, clearance, location, years of
+# experience, salary floor, degree). Unknown values never rule anyone out. check_eligibility() and
+# eligibility_sql() must agree on every row: one explains, the other filters (a test checks).
+
+CLEARANCE_ORDER = {"none": 0, "public_trust": 1, "secret": 2, "ts": 3, "ts_sci": 4}
+DEGREE_ORDER = {"none": 0, "bachelors": 1, "masters": 2, "phd": 3}
+DEGREE_LABEL = {"bachelors": "a bachelor's degree", "masters": "a master's degree", "phd": "a PhD"}
+
+DEFAULT_PROFILE = {
+    "years_experience": None,
+    "degree": "none",
+    "needs_sponsorship": False,
+    "us_citizen": False,
+    "clearance": "none",
+    "locations": [],             # e.g. ["Austin", "New York", "Remote"]
+    "workplaces": ["remote", "hybrid", "onsite"],
+    "min_salary": None,          # annual, posting currency
+}
+
+
+def profile_is_set(p: dict) -> bool:
+    return bool(p.get("years_experience") is not None or p.get("locations") or p.get("needs_sponsorship"))
+
+
+def check_eligibility(row, p: dict, yoe_slack: int = 2) -> list[str]:
+    """Reasons this posting is out of reach. Empty list = eligible."""
+    reasons = []
+    if row["visa"] == "no" and p.get("needs_sponsorship"):
+        reasons.append("Says it can't sponsor visas; you need sponsorship")
+    if row["citizenship"] and not p.get("us_citizen"):
+        reasons.append("Requires U.S. citizenship")
+    clr = row["clearance"]
+    if clr:
+        held = CLEARANCE_ORDER.get(p.get("clearance") or "none", 0)
+        need = CLEARANCE_ORDER.get(clr, 2)  # "unspecified" ~ secret
+        if not p.get("us_citizen") and held == 0:
+            reasons.append("Requires a security clearance (generally U.S. citizens only)")
+        elif held < need and held > 0:
+            reasons.append(f"Asks for {clr.replace('_', '/').upper()} clearance")
+    wp = row["workplace_eff"]
+    wants = set(p.get("workplaces") or [])
+    if wp and wants and wp not in wants:
+        reasons.append(f"{wp.capitalize()} role; you want {', '.join(sorted(wants))}")
+    locs = [l.strip().lower() for l in p.get("locations") or [] if l.strip()]
+    if locs and wp != "remote":
+        places = json.loads(row["cluster_locations"] or "[]") or [row["location"] or ""]
+        posted = " | ".join(places).lower()
+        remote_ok = "remote" in locs and "remote" in posted
+        if posted and not remote_ok and not any(l in posted for l in locs if l != "remote"):
+            more = f" (+{len(places) - 1} more)" if len(places) > 1 else ""
+            reasons.append(f"Located in {places[0]}{more}; not one of your locations")
+    yoe, have = row["yoe_min"], p.get("years_experience")
+    stated = (row["yoe_source"] if "yoe_source" in row.keys() else "stated") == "stated"
+    if stated and yoe is not None and have is not None and yoe > have + yoe_slack:
+        reasons.append(f"Asks for {yoe}+ years of experience; you have {have}")
+    floor = p.get("min_salary")
+    if floor and row["pay_max_annual"] and row["pay_max_annual"] < floor:
+        reasons.append(f"Pays up to {row['pay_max_annual']:,.0f}; your minimum is {floor:,.0f}")
+    deg = row["degree"]
+    if deg and DEGREE_ORDER.get(deg, 0) > DEGREE_ORDER.get(p.get("degree") or "none", 0):
+        reasons.append(f"Asks for {DEGREE_LABEL.get(deg, deg)}")
+    return reasons
+
+
+def _posted_places(cluster_locations, location) -> str:
+    places = json.loads(cluster_locations or "[]") or [location or ""]
+    return " | ".join(places).lower()
+
+
+def eligibility_sql(conn, p: dict, yoe_slack: int = 2, alias: str = "j") -> tuple[str, list] | None:
+    """The same rules as check_eligibility(), as one WHERE clause over jobs (None = no profile, so everything
+    counts as eligible). Locations use a small SQL function for exact matching."""
+    if not profile_is_set(p):
+        return None
+    j = alias
+    conds, args = [], []
+    if p.get("needs_sponsorship"):
+        conds.append(f"{j}.visa IS NOT 'no'")
+    us = bool(p.get("us_citizen"))
+    if not us:
+        conds.append(f"({j}.citizenship IS NULL OR {j}.citizenship = 0)")
+    held = CLEARANCE_ORDER.get(p.get("clearance") or "none", 0)
+    rank = (f"CASE {j}.clearance WHEN 'none' THEN 0 WHEN 'public_trust' THEN 1 WHEN 'secret' THEN 2 "
+            f"WHEN 'ts' THEN 3 WHEN 'ts_sci' THEN 4 ELSE 2 END")
+    if not us and held == 0:
+        conds.append(f"({j}.clearance IS NULL OR {j}.clearance = '')")
+    elif held > 0:
+        conds.append(f"({j}.clearance IS NULL OR {j}.clearance = '' OR {rank} <= ?)")
+        args.append(held)
+    wants = sorted(set(p.get("workplaces") or []))
+    if wants:
+        conds.append(f"({j}.workplace_eff IS NULL OR {j}.workplace_eff = '' OR {j}.workplace_eff IN "
+                     f"({','.join('?' * len(wants))}))")
+        args += wants
+    locs = [l.strip().lower() for l in p.get("locations") or [] if l.strip()]
+    if locs:
+        want_remote = "remote" in locs
+        others = [l for l in locs if l != "remote"]
+
+        def loc_ok(cluster_locations, location) -> int:
+            posted = _posted_places(cluster_locations, location)
+            return int(not posted or (want_remote and "remote" in posted) or any(l in posted for l in others))
+        conn.create_function("lh_loc_ok", 2, loc_ok, deterministic=True)
+        conds.append(f"({j}.workplace_eff IS 'remote' OR lh_loc_ok({j}.cluster_locations, {j}.location))")
+    have = p.get("years_experience")
+    if have is not None:
+        conds.append(f"({j}.yoe_source IS NOT 'stated' OR {j}.yoe_min IS NULL OR {j}.yoe_min <= ?)")
+        args.append(have + yoe_slack)
+    floor = p.get("min_salary")
+    if floor:
+        conds.append(f"({j}.pay_max_annual IS NULL OR {j}.pay_max_annual = 0 OR {j}.pay_max_annual >= ?)")
+        args.append(floor)
+    mine = DEGREE_ORDER.get(p.get("degree") or "none", 0)
+    if mine < 3:
+        conds.append(f"(CASE {j}.degree WHEN 'bachelors' THEN 1 WHEN 'masters' THEN 2 WHEN 'phd' THEN 3 "
+                     f"ELSE 0 END <= ?)")
+        args.append(mine)
+    return (" AND ".join(conds) or "1=1"), args
+
+
+def annotate_eligibility(rows: list[dict], p: dict, yoe_slack: int = 2) -> None:
+    """Add elig (1/0, None without a profile) and elig_reasons (JSON) to rows about to be shown."""
+    on = profile_is_set(p)
+    for r in rows:
+        reasons = check_eligibility(r, p, yoe_slack) if on else []
+        r["elig"] = (0 if reasons else 1) if on else None
+        r["elig_reasons"] = json.dumps(reasons)
