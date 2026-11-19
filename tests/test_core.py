@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from lighthouse import config, db, dedupe, extract, fetch
 from lighthouse.models import Job, company_key
 from lighthouse.sanitize import html_to_text, sanitize_html
-from lighthouse.sources.greenhouse import GreenhouseSource
+from lighthouse.sources.boards import GreenhouseSource
 
 BODY = "<p>" + " ".join(f"We build reliable payment systems for word{i} customers." for i in range(60)) + "</p>"
 
@@ -137,7 +137,7 @@ def test_eligibility(tmp_path):
 def test_fetch_run_parallel_with_errors(tmp_path, monkeypatch, gh):
     cfgp = tmp_path / "s.toml"
     cfgp.write_text('[[boards]]\nats="greenhouse"\nslug="acme"\n[[boards]]\nats="greenhouse"\nslug="broken"\n[[boards]]\nats="greenhouse"\nslug="legacy"\n')
-    from lighthouse.sources.greenhouse import GreenhouseSource as G
+    from lighthouse.sources.boards import GreenhouseSource as G
 
     def fake_fetch(self, slug, known=None):
         if slug == "broken":

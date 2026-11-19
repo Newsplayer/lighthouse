@@ -6,7 +6,7 @@ from lighthouse import config, db, extract, fetch, places
 from lighthouse.extract import rules, yoe_from_title
 from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
-from lighthouse.sources.greenhouse import GreenhouseSource
+from lighthouse.sources.boards import GreenhouseSource
 
 from conftest import FakeClient
 

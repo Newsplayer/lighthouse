@@ -1,11 +1,7 @@
 from lighthouse.sources import SOURCES, detect, detect_in_html
-from lighthouse.sources.ashby import AshbySource
 from lighthouse.sources.base import BoardNotFound
-from lighthouse.sources.greenhouse import GreenhouseSource
-from lighthouse.sources.lever import LeverSource
-from lighthouse.sources.recruitee import RecruiteeSource
+from lighthouse.sources.boards import AshbySource, GreenhouseSource, LeverSource, RecruiteeSource, WorkableSource
 from lighthouse.sources.smartrecruiters import SmartRecruitersSource
-from lighthouse.sources.workable import WorkableSource
 
 from conftest import FakeClient
 
