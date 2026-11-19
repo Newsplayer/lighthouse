@@ -153,7 +153,7 @@ class Source:
 
     def keep(self, uid: str, title: str, locations) -> bool:
         """Title and country filters, checked on raw fields before any parsing or detail call."""
-        from ..geo import in_scope
+        from ..places import in_scope
         if (self.skip_title and self.skip_title.search(title or "")) or \
                 (self.countries and not in_scope([l for l in locations if l], self.countries)):
             self.dropped.add(uid)

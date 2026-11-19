@@ -29,7 +29,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from .. import geo
+from .. import places
 from ..models import Job, parse_dt
 from ..net import PutBack
 from ..sanitize import sanitize_html
@@ -41,7 +41,7 @@ MAX_LISTED = 40000  # stop a runaway listing (the largest real site seen is abou
 MAX_SPLITS = 3      # filters applied on top of each other to get under the cap
 MAX_VALUES = 120    # a filter with more values than this costs too many requests to split by
 LIST_WORKERS = 4    # listing pages read at once
-_COUNTRY_NAMES = {name: code for code, names in geo.COUNTRIES.items() for name in names}
+_COUNTRY_NAMES = {name: code for code, names in places.COUNTRIES.items() for name in names}
 _URL = re.compile(r"(?P<tenant>[\w-]+)\.(?P<dc>wd\d+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Z]{2}/)?(?P<site>[\w-]+)", re.I)
 # The same boards are also served as wdN.myworkdaysite.com/recruiting/<tenant>/<site>
 _SITE_URL = re.compile(r"(?P<dc>wd\d+)\.myworkdaysite\.com/(?:[a-z]{2}-[A-Z]{2}/)?recruiting/(?P<tenant>[\w-]+)/(?P<site>[\w-]+)", re.I)
@@ -75,7 +75,7 @@ def country_facet(facets, wanted) -> dict | None:
         by_param.setdefault(param, []).append(v)
     best = None
     for param, values in by_param.items():
-        codes = [_COUNTRY_NAMES.get(geo._norm(v.get("descriptor") or "")) for v in values]
+        codes = [_COUNTRY_NAMES.get(places._country_norm(v.get("descriptor") or "")) for v in values]
         named = sum(1 for c in codes if c)
         if named < 0.6 * len(values) and not (named and "country" in param.lower()):
             continue

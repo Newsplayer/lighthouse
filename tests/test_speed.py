@@ -2,7 +2,7 @@
 import json
 from datetime import datetime, timezone
 
-from lighthouse import config, db, extract, fetch, geo
+from lighthouse import config, db, extract, fetch, places
 from lighthouse.extract import rules, yoe_from_title
 from lighthouse.models import Job
 from lighthouse.sources.base import Unchanged
@@ -63,9 +63,9 @@ def test_geo_classifier():
              "Toronto, Ontario, Canada": {"CA"}, "Vancouver, BC": {"CA"}, "Bengaluru, India": {"IN"}, "Remote": set(),
              "New York City, NY; Dublin": {"US", "IE"}, "2 Locations": set(), "USA - Remote": {"US"}, "SF": {"US"}}
     for loc, want in cases.items():
-        assert set(geo.countries(loc)) == want, loc
-    assert geo.in_scope(["Remote"], {"US"}) and not geo.in_scope(["London, UK"], {"US"})
-    assert geo.in_scope(["London, UK", "Austin, TX"], {"US"})
+        assert set(places.countries(loc)) == want, loc
+    assert places.in_scope(["Remote"], {"US"}) and not places.in_scope(["London, UK"], {"US"})
+    assert places.in_scope(["London, UK", "Austin, TX"], {"US"})
 
 
 def test_country_scope_filters_list_and_ingest_without_closing(tmp_path, monkeypatch):
@@ -138,10 +138,10 @@ def test_geo_north_america_shapes():
              "IT - Roma - Via Faustiniana": {"IT"}, "Toulouse": {"FR"}, "Vélizy-Villacoublay": {"FR"},
              "Schenectady": {"US"}, "IN - TDC 1 (IN110)": set()}
     for loc, want in cases.items():
-        assert set(geo.countries(loc)) == want, loc
+        assert set(places.countries(loc)) == want, loc
     # A bare name a North American city also has is never placed abroad (it would hide a local job).
-    assert geo.countries("Birmingham") == frozenset() and geo.countries("Stafford") == frozenset()
-    assert geo.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not geo.in_scope(["Toulouse"], {"US", "CA", "MX"})
+    assert places.countries("Birmingham") == frozenset() and places.countries("Stafford") == frozenset()
+    assert places.in_scope(["Birmingham"], {"US", "CA", "MX"}) and not places.in_scope(["Toulouse"], {"US", "CA", "MX"})
 
 
 def test_fast_clustering_gives_the_same_clusters_as_comparing_every_pair(tmp_path):

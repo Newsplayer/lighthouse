@@ -479,11 +479,11 @@ def purge_out_of_scope(conn, countries) -> tuple[int, set[str]]:
     want = {c.strip().upper() for c in countries or () if c.strip()}
     if not want:
         return 0, set()
-    from . import geo
+    from . import places
     uids, keys = [], set()
     for r in conn.execute("SELECT uid, company_key, location, locations FROM jobs"):
         locs = strings(r["locations"]) or ([r["location"]] if r["location"] else [])
-        if locs and not geo.in_scope(locs, want):
+        if locs and not places.in_scope(locs, want):
             uids.append(r["uid"])
             keys.add(r["company_key"])
     return delete_postings(conn, uids), keys

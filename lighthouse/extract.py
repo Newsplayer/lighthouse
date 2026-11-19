@@ -452,7 +452,7 @@ def derive(conn, company_keys) -> None:
 
 
 def _derive_rows(conn, rows) -> None:
-    from . import classify, geo
+    from . import classify, places
     with conn:
         for r in rows:
             # data_at changes whenever the extraction is rewritten (new rules, a gap-fill answer)
@@ -494,7 +494,7 @@ def _derive_rows(conn, rows) -> None:
                        languages=?, derived_of=? WHERE uid=?""",
                 (r["workplace"] or val("workplace"), smin, smax, cur, interval_of(per) if smax else None, yoe, ysrc,
                  val("visa"), val("clearance"), None if cit is None else int(bool(cit)), val("degree"),
-                 geo.encode(geo.countries_of(locs)),
+                 places.encode(places.countries_of(locs)),
                  classify.job_function(r["title"], r["departments"] or "")
                  or pick(val("job_function"), classify.FUNCTION_NAMES),
                  classify.seniority(r["title"], stated, ysrc) or pick(val("seniority"), classify.SENIORITY),
